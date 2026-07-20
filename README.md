@@ -179,4 +179,9 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
 
 ## License
 
-Apache-2.0. See `LICENSE`.
+[Elastic License 2.0](LICENSE) (source-available).
+
+In plain words: use it, read it, modify it, share it — personally or at
+work, for free. What you may not do is sell shyn or offer it to others as
+a commercial or managed service; that right stays with the project. The
+full text is one page and worth reading.

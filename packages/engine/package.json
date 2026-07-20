@@ -1,7 +1,7 @@
 {
   "name": "@shyn/engine",
   "version": "0.4.11-alpha",
-  "license": "Apache-2.0",
+  "license": "Elastic-2.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
