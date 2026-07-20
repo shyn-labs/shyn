@@ -42,7 +42,7 @@ function buildApp(name: string, bundleId: string, extraPlistKeys = "") {
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSUIElement</key><true/>
-  <key>NSHumanReadableCopyright</key><string>Apache-2.0</string>${extraPlistKeys}
+  <key>NSHumanReadableCopyright</key><string>Elastic License 2.0</string>${extraPlistKeys}
 </dict></plist>
 `);
   execFileSync("codesign", ["--force", "--sign", identity, join(ROOT, `dist/capture/${name}.app`)],
