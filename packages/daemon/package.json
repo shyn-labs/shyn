@@ -1,0 +1,21 @@
+{
+  "name": "@shyn/daemon",
+  "version": "0.4.11-alpha",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./rpc": "./src/rpc.ts"
+  },
+  "bin": {
+    "shynd": "./src/main.ts"
+  },
+  "dependencies": {
+    "@shyn/engine": "workspace:*"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "appId": "com.shyn.status",
+  "productName": "shyn-status",
+  "directories": { "output": "release" },
+  "files": ["dist/**", "package.json", "!node_modules"],
+  "mac": {
+    "target": "dir",
+    "identity": null,
+    "extendInfo": { "LSUIElement": true }
+  }
+}

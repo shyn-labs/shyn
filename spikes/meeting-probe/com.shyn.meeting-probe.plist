@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.shyn.meeting-probe</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/you/Library/Application Support/shyn/bin/meeting-probe.app/Contents/MacOS/meeting-probe</string>
+    <string>loop</string>
+    <string>/tmp/meeting-probe</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/meeting-probe/agent.out</string>
+  <key>StandardErrorPath</key><string>/tmp/meeting-probe/agent.err</string>
+</dict></plist>

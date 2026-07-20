@@ -1,0 +1,16 @@
+node_modules/
+tasks/
+dist/
+dist/.node-cache/
+*.db
+*.sock
+spikes/tmp/
+models/
+extension/server/
+.superpowers/
+
+# Swift build artifacts
+packages/capture-agent/.build/
+spikes/capture-probe/.build/
+.build/
+packages/status-ui/release/

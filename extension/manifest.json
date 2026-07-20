@@ -1,0 +1,13 @@
+{
+  "manifest_version": "0.2",
+  "name": "shyn",
+  "display_name": "Shyn — local memory",
+  "version": "0.4.11-alpha",
+  "description": "Fully local ambient memory. Your corpus is indexed locally; only snippets relevant to questions you ask are shared with the AI you ask.",
+  "author": { "name": "Shyn" },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.mjs",
+    "mcp_config": { "command": "node", "args": ["${__dirname}/server/index.mjs"] }
+  }
+}

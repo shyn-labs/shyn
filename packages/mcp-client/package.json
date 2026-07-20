@@ -1,0 +1,19 @@
+{
+  "name": "@shyn/mcp-client",
+  "version": "0.4.11-alpha",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "shyn-mcp": "./src/main.ts"
+  },
+  "dependencies": {
+    "@shyn/daemon": "workspace:*",
+    "@shyn/engine": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  }
+}

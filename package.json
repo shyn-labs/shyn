@@ -1,0 +1,34 @@
+{
+  "name": "shyn-monorepo",
+  "version": "0.2.0",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "shyn": "node --import tsx packages/cli/src/main.ts",
+    "setup": "bash scripts/setup.sh",
+    "test": "pnpm -r test",
+    "test:e2e": "vitest run test/e2e.test.ts",
+    "build:dist": "node scripts/build-dist.mjs",
+    "build-capture": "node --import tsx scripts/build-capture-app.mts",
+    "build:status": "node --import tsx scripts/build-status-app.mts",
+    "build:mcpb": "node scripts/build-mcpb.mjs",
+    "build:release": "node --import tsx scripts/build-release-tarball.mts",
+    "typecheck": "pnpm -r typecheck",
+    "eval:keyword": "tsx packages/engine/eval/run-eval.ts keyword",
+    "eval:hybrid": "tsx packages/engine/eval/run-eval.ts hybrid",
+    "eval:latency": "tsx packages/engine/eval/run-latency.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "better-sqlite3-multiple-ciphers": "12.11.1",
+    "esbuild": "^0.28.1",
+    "node-llama-cpp": "^3.19.0",
+    "sqlite-vec": "^0.1.9",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  },
+  "packageManager": "pnpm@9.12.0"
+}
