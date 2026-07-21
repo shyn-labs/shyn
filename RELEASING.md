@@ -59,6 +59,15 @@ without cutting the GitHub release, for a dry-run.
       the staged bundle carries the fresh natives.
 - [ ] **Artifact completeness.** Resolved 2026-07-11: `scripts/release.sh` now builds and publishes ALL artifacts (payload tarball incl. apps + vendored node, `.mcpb`) to `$SHYN_TAP_REPO` and updates the cask. Verify the dry-run output lists them.
 - [ ] **Tap publish sanity.** After release: `brew update && brew install --cask shyn-labs/tap/shyn` on this machine installs the new version; `shyn setup` re-stages; grants persist.
+- [ ] **MCP Registry.** Update `server.json`: bump `version` and both the
+      release-URL `identifier` and `fileSha256` of the new `shyn.mcpb`
+      (`openssl dgst -sha256 dist/shyn.mcpb`). Then
+      `mcp-publisher login dns --domain shyn.day --private-key <hex of ~/.config/mcp-publisher/shyn-day-ed25519.pem>`
+      and `mcp-publisher publish`. Auth is the DNS TXT record on shyn.day's
+      apex (namespace `day.shyn/*`) — GitHub-org auth was bugged at first
+      publish (registry issue #1468). Tokens live 5 minutes: login and
+      publish in one sitting. PulseMCP and other aggregators ingest from
+      this registry; no separate submissions needed.
 - [ ] **Version bump excludes `@shyn/status-ui`** — it is private and
       pinned `0.0.0`, deliberately outside the four-package lockstep.
 - [ ] **Live meeting sanity.** Since v0.2.0 the meeting agent's detection is
