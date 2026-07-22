@@ -5,7 +5,7 @@
 
 # shyn — your Mac's memory, on tap ☀️
 
-**[shyn.day](https://shyn.day)** · macOS (Apple Silicon) · pre-alpha
+**[shyn.day](https://shyn.day)** · macOS (Apple Silicon) · pre-alpha · [Elastic License 2.0](LICENSE)
 
 **Shyn is the always-on memory companion for your Mac.** It quietly
 remembers what you see, hear, and read — your screen, your meetings, your
