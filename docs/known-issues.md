@@ -327,6 +327,10 @@ public repo.
   no longer creates one, but music + sustained mic voice (e.g. talking to
   someone in the room) can. maxDurationMinutes caps the damage. Revisit
   with a real VAD if it bites in practice.
+  UPDATE 2026-07-22: it bit — speaker audio + Slack frontmost entered a
+  phantom pre-roll via the listen-only booster (speaker→mic bleed can voice
+  both channels). Slack removed from the booster list (89de722); the
+  real-VAD revisit still stands for the remaining two-channel case.
 
 ## Logged (SP5 distribution, 2026-07-11)
 
