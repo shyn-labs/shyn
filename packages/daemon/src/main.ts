@@ -99,7 +99,11 @@ const server = serverHandle = await startServer({
     console.error("embed backend still unavailable after a recent self-restart — staying up in keyword-only mode");
   },
   extraStatus: () => ({ modelDownloadPct: modelPct, modelDownloaded: modelPct === 100 }),
-  readers: [new ChromeHistoryReader(), new SafariHistoryReader(), new NotesReader()],
+  // SHYN_TEST_NO_READERS: run without history readers — a daemon on a scratch
+  // SHYN_HOME otherwise backfills the machine's real Chrome/Safari/Notes into it.
+  readers: process.env.SHYN_TEST_NO_READERS === "1"
+    ? []
+    : [new ChromeHistoryReader(), new SafariHistoryReader(), new NotesReader()],
   screenRetentionDays: resolveRetentionDays(),
   meetingRetentionDays: resolveMeetingRetentionDays(),
 });
