@@ -43,13 +43,20 @@ func systemAudioActive() -> Bool {
 
 // Booster signal only (spec: not required, so browser-tab calls still
 // trigger via the audio signals alone).
+//
+// Membership bar: being frontmost in the app must ITSELF predict "user is in
+// a call". Dedicated meeting apps qualify. Slack does NOT — it is frontmost
+// all day as a chat app, so with the listen-only booster (system audio +
+// frontmost, no mic required) any music/podcast while reading Slack became a
+// phantom pre-roll (lived 2026-07-22: a notification click + speakers =
+// red dot). Slack huddles still record via the two-channel path the moment
+// the user speaks; pure listen-only huddles are the accepted loss.
 let meetingBundleIds: Set<String> = [
     "us.zoom.xos",                  // Zoom
     "com.microsoft.teams2",         // Teams (new)
     "com.microsoft.teams",          // Teams (classic)
     "Cisco-Systems.Spark",          // Webex
     "com.cisco.webexmeetingsapp",   // Webex Meetings
-    "com.tinyspeck.slackmacgap",    // Slack (huddles)
     "com.apple.FaceTime",           // FaceTime
 ]
 
