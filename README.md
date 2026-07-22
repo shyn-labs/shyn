@@ -140,6 +140,28 @@ pnpm shyn uninstall --purge   # scorched earth: data, logs, keys
 Settings → Extensions page. (Registers the MCP client; the daemon must be
 running via `install` above.)
 
+### Other clients, including fully local models
+
+Shyn is a standard stdio MCP server — any MCP client works, and your memory
+never has to touch a paid API at all. Tested so far:
+
+- **Claude Code / Claude Desktop** — daily drivers, best-in-class at knowing
+  *when* to reach into memory unprompted.
+- **Qwen3 14B running locally** (MLX on Apple Silicon) via Open WebUI, with
+  [mcpo](https://github.com/open-webui/mcpo) bridging MCP to OpenAPI:
+
+  ```bash
+  uvx mcpo --port 8600 -- "$HOME/Library/Application Support/shyn/bin/shyn-mcp"
+  # then add http://localhost:8600 as a tool server in Open WebUI
+  ```
+
+Honest notes from testing: retrieval quality is identical everywhere — the
+ranking runs inside the daemon, not the model. What varies is the driver.
+Smaller local models answer well when you're explicit ("search my memory
+for…") but are less reliable at deciding to search on their own, and
+thinking-mode models may need their reasoning reined in (`/no_think` for
+Qwen3). Budget ~10GB of unified memory for a 14B model alongside the daemon.
+
 ## Everyday controls
 
 ```bash
