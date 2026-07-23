@@ -66,7 +66,7 @@ describe("meeting transcription e2e (fake agent → real daemon)", () => {
     //    (opaque payload store — no daemon handler change needed)
     const stats = { agentVersion: "0.1.0", lastCaptureTs: now, captures: 3,
       meeting: { state: "recording", meetingsCaptured: 1, lastTranscribedTs: now,
-                 modelReady: true, tcc: { mic: true, audio: true },
+                 modelReady: true, tcc: { mic: true, audio: true, calendar: false },
                  sessionStartedAt: now - 300, sessionApp: "Google Meet",
                  whisperDownloading: false } };
     await rpcCall(sock, "captureStats", stats);
@@ -95,5 +95,25 @@ describe("meeting transcription e2e (fake agent → real daemon)", () => {
     expect(hit.title).toBe(title);
     expect(hit.uri).toBe(uri);
     expect(hit.text).toContain("standup");
+  });
+
+  // Calendar-stamped variant (CaptureCore MeetingPayloadTests generate this
+  // shape; here we freeze that the daemon round-trips it untouched).
+  it("calendar-stamped payload: event title leads, calendar meta keys pass through", async () => {
+    const uri = "meeting://us.zoom.xos/2026-07-23-1000";
+    const title = "Sprint standup · Zoom · 23 Jul 2026, 10:00 AM";
+    await rpcCall(sock, "ingest", {
+      source: "meeting", uri, title, ts: now - 1800,
+      text: "Me: shall we start the flamingo retro\nOthers: yes",
+      meta: { app: "Zoom", bundleId: "us.zoom.xos", startedAt: String(now - 1800),
+              endedAt: String(now), durationSec: "1800", channels: "me,others",
+              calTitle: "Sprint standup", attendees: "Maya R, Dev P, Sam K",
+              attendeeCount: "3" },
+    });
+    const found = await rpcCall(sock, "search", { query: "flamingo retro" });
+    const hit = found.hits.find((h: any) => h.source === "meeting");
+    expect(hit).toBeTruthy();
+    expect(hit.title).toBe(title);
+    expect(hit.uri).toBe(uri);
   });
 });

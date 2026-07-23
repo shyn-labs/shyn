@@ -59,4 +59,5 @@ buildApp("shyn-capture", "com.shyn.capture");
 // them dies silently or never prompts).
 buildApp("shyn-meeting", "com.shyn.meeting", `
   <key>NSMicrophoneUsageDescription</key><string>Shyn transcribes your meetings locally.</string>
-  <key>NSAudioCaptureUsageDescription</key><string>Shyn records system audio during meetings to transcribe the other side of the call locally.</string>`);
+  <key>NSAudioCaptureUsageDescription</key><string>Shyn records system audio during meetings to transcribe the other side of the call locally.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>Shyn reads your calendar on this Mac to title meeting transcripts. Nothing is sent anywhere.</string>`);

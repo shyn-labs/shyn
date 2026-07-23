@@ -1,27 +1,9 @@
 import Foundation
 import CaptureCore
 
-// Builds the meeting-source IngestPayload (wire contract frozen by
-// packages/daemon/test/meeting-e2e.test.ts — keep field-for-field in sync)
-// and owns the byte-honest audio purge.
-
-func meetingPayload(bundleId: String?, appName: String, startEpoch: Int, endEpoch: Int,
-                    transcript: String) -> IngestPayload {
-    let f = DateFormatter()
-    f.dateFormat = "yyyy-MM-dd-HHmm"   // meeting START in LOCAL time (spec uri scheme)
-    f.locale = Locale(identifier: "en_US_POSIX")
-    let stamp = f.string(from: Date(timeIntervalSince1970: Double(startEpoch)))
-    let app = bundleId ?? "call"
-    let human = DateFormatter(); human.dateStyle = .medium; human.timeStyle = .short
-    return IngestPayload(
-        source: "meeting",
-        uri: "meeting://\(app)/\(stamp)",
-        title: "\(appName) meeting · \(human.string(from: Date(timeIntervalSince1970: Double(startEpoch))))",
-        ts: startEpoch, text: transcript,
-        meta: ["app": appName, "bundleId": app, "startedAt": String(startEpoch),
-               "endedAt": String(endEpoch), "durationSec": String(endEpoch - startEpoch),
-               "channels": "me,others"])
-}
+// The meeting-source IngestPayload builder moved to
+// CaptureCore/MeetingPayload.swift (unit-testable). This file owns the
+// byte-honest audio purge and the stats/control wire.
 
 func purgeAudio(sessionDir: URL) { try? FileManager.default.removeItem(at: sessionDir) }
 
@@ -39,7 +21,7 @@ func sweepOrphanAudio(root: URL, olderThanSeconds: Double = 86_400) {
 // --- Stats (posted under the top-level "meeting" key; the daemon merges
 // captureStats posts by top-level key so screen + meeting agents coexist) ---
 
-struct MeetingTcc: Codable, Sendable { var mic: Bool; var audio: Bool }
+struct MeetingTcc: Codable, Sendable { var mic: Bool; var audio: Bool; var calendar: Bool = false }
 
 struct MeetingStats: Codable, Sendable {
     var state: String = "idle"

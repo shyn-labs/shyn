@@ -76,6 +76,7 @@ actor MeetingAgent {
     private var sessionStart = 0
     private var sessionBundleId: String?
     private var sessionAppName = "Call"
+    private var sessionWindowTitle: String?   // AX fallback title, preroll-time
     // Pre-roll verification (live finding 2026-07-11: device probes alone
     // spawned a phantom meeting from ambient noise — ambient mic-holders
     // like Granola/Hand Mirror keep the mic device "running" permanently).
@@ -194,6 +195,9 @@ actor MeetingAgent {
             try await recorder.start(sessionDir: dir)
             sessionDir = dir; sessionStart = start
             sessionBundleId = info.bundleId; sessionAppName = info.name
+            // Grabbed at preroll while the call window is likely frontmost;
+            // by upload time a browser could be on another tab.
+            sessionWindowTitle = await MainActor.run { meetingWindowTitle(bundleId: info.bundleId) }
             prerollStart = Double(start); committed = false
             stats.tcc.audio = true
             dbg("preroll → \(dir.path)")
@@ -217,7 +221,9 @@ actor MeetingAgent {
         let start = sessionStart
         let end = Int(Date().timeIntervalSince1970)
         let bundleId = sessionBundleId, appName = sessionAppName
+        let windowTitle = sessionWindowTitle
         sessionDir = nil
+        sessionWindowTitle = nil
         prerollStart = nil
         committed = false
         stats.sessionStartedAt = nil
@@ -237,8 +243,13 @@ actor MeetingAgent {
             // Nothing recognizable — drop the session, still purge the audio.
             purgeAudio(sessionDir: dir); dbg("empty transcript — dropped"); return
         }
+        // Stamp precedence (spec 2026-07-23): EventKit match → preroll
+        // window title → plain "appName meeting · date".
+        let stamp = await calendarStamp(startEpoch: start, endEpoch: end)
         let payload = meetingPayload(bundleId: bundleId, appName: appName,
-                                     startEpoch: start, endEpoch: end, transcript: transcript)
+                                     startEpoch: start, endEpoch: end, transcript: transcript,
+                                     eventTitle: stamp?.title ?? windowTitle,
+                                     attendees: stamp?.attendees ?? [])
         if await ship(payload) {
             purgeAudio(sessionDir: dir)   // byte-honest: audio gone on ingest ack
             stats.meetingsCaptured += 1
@@ -271,6 +282,7 @@ actor MeetingAgent {
             model: MeetingConfig.load(from: configPath).whisperModel,
             modelDir: URL(fileURLWithPath: home + "/models/whisperkit"))
         stats.tcc.mic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        stats.tcc.calendar = calendarAccessAuthorized()
         _ = await ship()   // retry any buffered transcripts opportunistically
         try? await client.postMeetingStats(stats)
     }
@@ -278,6 +290,31 @@ actor MeetingAgent {
     func setWhisperDownloading(_ downloading: Bool) async {
         stats.whisperDownloading = downloading ? true : nil
         await postStats(state: detector.state.rawValue)
+    }
+
+    // Pre-download the CURRENTLY CONFIGURED Whisper model (spec 2026-07-23):
+    // one path covers first onboarding AND a model switch from the popover
+    // (status-ui writes capture.json; checked every tick). The gate
+    // serializes downloads and backs off after a failure.
+    private var predownloadGate = ModelPredownloadGate()
+
+    func maybeKickPredownload() async {
+        let cfg = MeetingConfig.load(from: configPath)
+        let dir = URL(fileURLWithPath: home + "/models/whisperkit")
+        guard predownloadGate.shouldKick(
+            present: whisperModelPresent(model: cfg.whisperModel, modelDir: dir),
+            now: Int(Date().timeIntervalSince1970)) else { return }
+        let model = cfg.whisperModel
+        await setWhisperDownloading(true)
+        Task.detached(priority: .background) {
+            let ok = (try? await WhisperKit(WhisperKitConfig(model: model, downloadBase: dir))) != nil
+            await self.finishPredownload(success: ok)
+        }
+    }
+
+    private func finishPredownload(success: Bool) async {
+        predownloadGate.finished(success: success, now: Int(Date().timeIntervalSince1970))
+        await setWhisperDownloading(false)
     }
 }
 
@@ -307,21 +344,14 @@ actor MeetingAgent {
         }
     }
 
-    // Onboarding (spec SP6): pre-download the Whisper model instead of
-    // stalling the FIRST meeting's transcription for minutes. Background
-    // priority; whisperDownloading drives the onboarding busy state.
-    Task.detached(priority: .background) {
-        let cfg = MeetingConfig.load(from: configPath)
-        let dir = URL(fileURLWithPath: home + "/models/whisperkit")
-        guard !whisperModelPresent(model: cfg.whisperModel, modelDir: dir) else { return }
-        await agent.setWhisperDownloading(true)
-        _ = try? await WhisperKit(WhisperKitConfig(model: cfg.whisperModel, downloadBase: dir))
-        await agent.setWhisperDownloading(false)
-    }
-
+    // Onboarding (spec SP6) + model switches (spec 2026-07-23): the Whisper
+    // pre-download is tick-driven so the FIRST meeting never stalls for
+    // minutes and a popover model switch starts downloading immediately.
+    // whisperDownloading drives the busy state in both flows.
     Task {
         while true {
             await agent.tick()
+            await agent.maybeKickPredownload()
             try? await Task.sleep(for: .seconds(3))
         }
     }

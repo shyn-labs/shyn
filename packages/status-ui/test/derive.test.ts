@@ -8,6 +8,7 @@ export const baseCtx = (over: Partial<DeriveContext> = {}): DeriveContext => ({
   pausedUntil: null,
   now: NOW,
   claudeCommand: CLAUDE_ADD_COMMAND,
+  meetingModel: "small",
   ...over,
 });
 
@@ -305,4 +306,80 @@ it("todo permission steps offer the reveal-apps fallback", () => {
     expect(st.secondaryAction).toEqual({ kind: "reveal-apps" });
     expect(st.optionalNote).toMatch(/drag it from the apps folder/);
   }
+});
+
+describe("meeting model choice (language-framed setting)", () => {
+  const withMeeting = (m: object) => healthyStatus({
+    capture: { ...healthyStatus().capture,
+      meeting: { ...healthyStatus().capture.meeting!, ...m } },
+  });
+
+  it("default: standard selected, not busy, no note", () => {
+    const vm = deriveView({ ok: true, status: healthyStatus() }, baseCtx());
+    expect(vm.modelChoice).toEqual({ selected: "standard", busy: false });
+  });
+
+  it("multilingual selected + downloading → busy with honest interim note", () => {
+    const vm = deriveView(
+      { ok: true, status: withMeeting({ modelReady: false, whisperDownloading: true }) },
+      baseCtx({ meetingModel: "large-v3" }));
+    expect(vm.modelChoice).toMatchObject({ selected: "multilingual", busy: true });
+    expect(vm.modelChoice!.note).toContain("Standard");
+  });
+
+  it("multilingual selected, not ready, not downloading → next-meeting note", () => {
+    const vm = deriveView(
+      { ok: true, status: withMeeting({ modelReady: false }) },
+      baseCtx({ meetingModel: "large-v3" }));
+    expect(vm.modelChoice).toMatchObject({ selected: "multilingual", busy: false });
+    expect(vm.modelChoice!.note).toContain("next meeting");
+  });
+
+  it("multilingual selected and ready → no note", () => {
+    const vm = deriveView(
+      { ok: true, status: withMeeting({ modelReady: true }) },
+      baseCtx({ meetingModel: "large-v3" }));
+    expect(vm.modelChoice).toEqual({ selected: "multilingual", busy: false });
+  });
+
+  it("power-user custom model → custom, named in note, both buttons unselected", () => {
+    const vm = deriveView({ ok: true, status: healthyStatus() },
+      baseCtx({ meetingModel: "medium" }));
+    expect(vm.modelChoice).toMatchObject({ selected: "custom", busy: false });
+    expect(vm.modelChoice!.note).toContain("medium");
+  });
+
+  it("meeting agent not installed or not reporting → null", () => {
+    const vm1 = deriveView({ ok: true, status: healthyStatus() },
+      baseCtx({ installed: { capture: true, meeting: false } }));
+    expect(vm1.modelChoice).toBeNull();
+    const noBlock = healthyStatus();
+    delete (noBlock.capture as { meeting?: unknown }).meeting;
+    const vm2 = deriveView({ ok: true, status: noBlock }, baseCtx());
+    expect(vm2.modelChoice).toBeNull();
+  });
+});
+
+describe("calendar access (meeting stamping)", () => {
+  const withMeeting = (m: object) => healthyStatus({
+    capture: { ...healthyStatus().capture,
+      meeting: { ...healthyStatus().capture.meeting!, ...m } },
+  });
+
+  it("calendar false → muted informational row, never a warning", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ tcc: { mic: true, audio: true, calendar: false } }) }, baseCtx());
+    expect(vm.tray).toBe("healthy");
+    const row = vm.rows.find((r) => r.label === "Calendar")!;
+    expect(row).toMatchObject({ tone: "muted" });
+    expect(row.value).toContain("meetings won't be titled");
+  });
+
+  it("calendar true → no row; older agent without the key → no row", () => {
+    const withCal = deriveView({ ok: true,
+      status: withMeeting({ tcc: { mic: true, audio: true, calendar: true } }) }, baseCtx());
+    expect(withCal.rows.find((r) => r.label === "Calendar")).toBeUndefined();
+    const oldAgent = deriveView({ ok: true, status: healthyStatus() }, baseCtx());
+    expect(oldAgent.rows.find((r) => r.label === "Calendar")).toBeUndefined();
+  });
 });

@@ -12,7 +12,8 @@ import { live } from "./live.js";
 import { deriveView, type TrayState, type ViewModel, CLAUDE_ADD_COMMAND } from "./derive.js";
 import {
   pauseCapture, resumeCapture, readPausedUntil, meetingStop, meetingCancel,
-  type PauseSpec,
+  readMeetingModel, setMeetingModel,
+  type PauseSpec, type MeetingModel,
 } from "./controls.js";
 import {
   shouldAutoOpen, readThrottle, writeThrottle, readCompletedOnce, writeCompletedOnce,
@@ -81,6 +82,7 @@ if (!app.requestSingleInstanceLock()) {
     const vm = deriveView(await poll(sock), {
       installed: installedAgents(),
       pausedUntil: readPausedUntil(home),
+      meetingModel: readMeetingModel(home),
       now: Math.floor(Date.now() / 1000),
       claudeCommand: existsSync(join(home, "bin", "shyn-mcp"))
         ? `claude mcp add shyn -- "${join(home, "bin", "shyn-mcp")}"`
@@ -167,6 +169,10 @@ if (!app.requestSingleInstanceLock()) {
         else if (name === "resume") resumeCapture(home);
         else if (name === "meeting-stop") meetingStop(home);
         else if (name === "meeting-cancel") meetingCancel(home);
+        else if (name === "meeting-model") {
+          if (arg === "small" || arg === "large-v3") setMeetingModel(home, arg as MeetingModel);
+          else console.error("unknown meeting model:", arg);
+        }
         else if (name === "open-onboarding") showOnboarding();
         else if (name === "open-settings") {
           const url = Object.hasOwn(SETTINGS_URLS, arg as string) ? SETTINGS_URLS[arg as SettingsPane] : undefined;

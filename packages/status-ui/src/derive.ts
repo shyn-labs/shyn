@@ -15,7 +15,8 @@ export type DaemonStatus = {
 
 export type MeetingBlock = {
   state: string; meetingsCaptured: number; lastTranscribedTs: number;
-  modelReady: boolean; tcc: { mic: boolean; audio: boolean };
+  modelReady: boolean;
+  tcc: { mic: boolean; audio: boolean; calendar?: boolean };  // calendar: agents ≥ stamping
   sessionStartedAt?: number; sessionApp?: string;
   whisperDownloading?: boolean;
 };
@@ -43,6 +44,15 @@ export type SetupView =
   | { kind: "complete" }
   | { kind: "unavailable" };
 
+// Meeting transcription model, framed by language, not model jargon
+// (spec 2026-07-23): "standard" = whisper small, "multilingual" = large-v3,
+// "custom" = any other value a power user set in capture.json by hand.
+export type ModelChoice = {
+  selected: "standard" | "multilingual" | "custom";
+  busy: boolean;      // whisperDownloading — the pre-download is in flight
+  note?: string;      // honest interim state; absent when nothing to say
+};
+
 export type ViewModel = {
   tray: TrayState;
   verdict: string;
@@ -51,6 +61,7 @@ export type ViewModel = {
   stats: Row[];
   week: Row[];
   paused: boolean;
+  modelChoice: ModelChoice | null;
   setup: SetupView;
   diagnostics: boolean;
 };
@@ -60,6 +71,7 @@ export type DeriveContext = {
   pausedUntil: number | null;  // epoch seconds, from capture.json
   now: number;                 // epoch seconds
   claudeCommand: string;       // claude mcp add command, shim-aware
+  meetingModel: string;        // capture.json meeting.whisperModel ("small" default)
 };
 
 const READER_DISPLAY_NAMES: Record<string, string> = {
@@ -81,7 +93,8 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
     return {
       tray: "warning", verdict: "daemon not running", meeting: null,
       rows: [{ label: "Daemon", value: "unreachable", tone: "err", hint: START_HINT }],
-      stats: [], week: [], paused: false, setup: { kind: "unavailable" },
+      stats: [], week: [], paused: false, modelChoice: null,
+      setup: { kind: "unavailable" },
       diagnostics: true,
     };
   }
@@ -135,6 +148,10 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
         // successful recording — false at boot is NOT a problem state.
         if (m.tcc.audio === false)
           rows.push({ label: "System audio", value: "unverified until first meeting", tone: "muted" });
+        // Calendar access is optional (stamping only) — informational, never
+        // a warning. Older agents don't report the key: say nothing.
+        if (m.tcc.calendar === false)
+          rows.push({ label: "Calendar", value: "no access — meetings won't be titled", tone: "muted" });
       }
     } else {
       rows.push({ label: "Meeting agent", value: "not reporting", tone: "warn", hint: SILENT_HINT });
@@ -169,6 +186,28 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
       tone: "muted",
     });
     week.push({ label: "Searches", value: w.searches.toLocaleString("en-US"), tone: "muted" });
+  }
+
+  // Meeting model choice: only meaningful when the agent is installed and
+  // reporting (modelReady tracks the CURRENTLY CONFIGURED model — the Swift
+  // agent re-reads capture.json on every stats post, so a switch here flips
+  // modelReady false until the new model is on disk).
+  let modelChoice: ModelChoice | null = null;
+  if (ctx.installed.meeting && m) {
+    const selected: ModelChoice["selected"] =
+      ctx.meetingModel === "large-v3" ? "multilingual"
+      : ctx.meetingModel === "small" ? "standard" : "custom";
+    const busy = m.whisperDownloading === true;
+    let note: string | undefined;
+    if (selected === "custom")
+      note = `custom model "${ctx.meetingModel}" set in capture.json`;
+    else if (busy)
+      note = selected === "multilingual"
+        ? "downloading the Multilingual model — meetings still use Standard until it finishes"
+        : "downloading the transcription model…";
+    else if (!m.modelReady)
+      note = "the model downloads at your next meeting — that transcript will take longer";
+    modelChoice = { selected, busy, ...(note !== undefined ? { note } : {}) };
   }
 
   const tray: TrayState =
@@ -254,7 +293,7 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
   const setup: SetupView = complete ? { kind: "complete" }
     : { kind: "steps", steps, done, total: steps.length };
 
-  return { tray, verdict, meeting, rows, stats, week, paused, setup, diagnostics };
+  return { tray, verdict, meeting, rows, stats, week, paused, modelChoice, setup, diagnostics };
 }
 
 function agoText(sec: number): string {

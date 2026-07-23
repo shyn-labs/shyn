@@ -16,7 +16,8 @@ const NOW_STEPS: SetupStep[] = [
 ];
 
 const vm = (setup: ViewModel["setup"]): ViewModel => ({
-  tray: "healthy", verdict: "all systems go", meeting: null, rows: [], stats: [], week: [], paused: false, setup,
+  tray: "healthy", verdict: "all systems go", meeting: null, rows: [], stats: [], week: [], paused: false,
+  modelChoice: null, setup,
   diagnostics: false,
 });
 

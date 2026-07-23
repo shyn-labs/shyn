@@ -10,7 +10,8 @@ const vm = (over: Partial<ViewModel> = {}): ViewModel => ({
   rows: [{ label: "Daemon", value: "v0.2.0", tone: "ok" }],
   stats: [{ label: "Index", value: "16,951 docs · 41,000 vectors", tone: "muted" }],
   week: [],
-  paused: false, setup: { kind: "complete" }, diagnostics: false, ...over,
+  paused: false, modelChoice: { selected: "standard", busy: false },
+  setup: { kind: "complete" }, diagnostics: false, ...over,
 });
 
 const mount = (html: string) => {
@@ -41,7 +42,7 @@ describe("render", () => {
   it("section micro-labels present for rows and stats", () => {
     const el = mount(render(vm(), NOW));
     const labels = [...el.querySelectorAll(".section-lab")].map((n) => n.textContent);
-    expect(labels).toEqual(["Health", "Index"]);
+    expect(labels).toEqual(["Health", "Index", "Meeting language"]);
   });
 
   it("live meeting card: app, elapsed from startedAt, stop/cancel actions", () => {
@@ -85,5 +86,43 @@ describe("render", () => {
     expect(warn.querySelector('[data-action="diagnose"]')).toBeTruthy();
     const healthy = mount(render(vm({ diagnostics: false }), NOW));
     expect(healthy.querySelector('[data-action="diagnose"]')).toBeNull();
+  });
+});
+
+describe("meeting language section", () => {
+  it("renders two language-framed buttons, selected marked, no note by default", () => {
+    const el = mount(render(vm(), NOW));
+    const btns = [...el.querySelectorAll('[data-action="meeting-model"]')];
+    expect(btns.map((b) => (b as HTMLElement).dataset.arg)).toEqual(["small", "large-v3"]);
+    expect(btns[0].classList.contains("selected")).toBe(true);
+    expect(btns[1].classList.contains("selected")).toBe(false);
+    expect(el.textContent).toContain("Standard");
+    expect(el.textContent).toContain("Multilingual");
+    expect(el.querySelector(".model-note")).toBeNull();
+  });
+
+  it("multilingual busy: selected flips, note rendered, buttons disabled while downloading", () => {
+    const el = mount(render(vm({ modelChoice: {
+      selected: "multilingual", busy: true,
+      note: "downloading the Multilingual model — meetings still use Standard until it finishes",
+    } }), NOW));
+    const btns = [...el.querySelectorAll('[data-action="meeting-model"]')] as HTMLButtonElement[];
+    expect(btns[1].classList.contains("selected")).toBe(true);
+    expect(btns.every((b) => b.disabled)).toBe(true);
+    expect(el.querySelector(".model-note")!.textContent).toContain("still use Standard");
+  });
+
+  it("custom model: neither selected, note names the model", () => {
+    const el = mount(render(vm({ modelChoice: {
+      selected: "custom", busy: false, note: 'custom model "medium" set in capture.json',
+    } }), NOW));
+    const btns = [...el.querySelectorAll('[data-action="meeting-model"]')];
+    expect(btns.some((b) => b.classList.contains("selected"))).toBe(false);
+    expect(el.querySelector(".model-note")!.textContent).toContain("medium");
+  });
+
+  it("no meeting agent → section absent", () => {
+    const el = mount(render(vm({ modelChoice: null }), NOW));
+    expect(el.querySelector('[data-action="meeting-model"]')).toBeNull();
   });
 });

@@ -40,6 +40,24 @@ export function readPausedUntil(home: string): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+// Meeting transcription model (capture.json meeting.whisperModel — the
+// Swift agent hot-reloads it; MeetingConfig defaults to "small").
+export type MeetingModel = "small" | "large-v3";
+
+export function readMeetingModel(home: string): string {
+  const meeting = readCfg(home).meeting;
+  const v = meeting && typeof meeting === "object"
+    ? (meeting as Record<string, unknown>).whisperModel : undefined;
+  return typeof v === "string" && v.length > 0 ? v : "small";
+}
+
+export function setMeetingModel(home: string, model: MeetingModel): void {
+  const cfg = readCfg(home);
+  const meeting = cfg.meeting && typeof cfg.meeting === "object"
+    ? (cfg.meeting as Record<string, unknown>) : {};
+  writeCfg(home, { ...cfg, meeting: { ...meeting, whisperModel: model } });
+}
+
 function writeMeetingControl(home: string, action: "stop" | "cancel"): void {
   writeFileSync(join(home, "meeting-control.json"),
     JSON.stringify({ action, ts: Math.floor(Date.now() / 1000) }) + "\n");

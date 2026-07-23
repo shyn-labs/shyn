@@ -43,6 +43,22 @@ export function render(vm: ViewModel, nowSec: number): string {
         <button data-action="pause" data-arg="until-tomorrow">until tomorrow</button>
       </div>`;
 
+  // Language-framed model choice (never model jargon in the labels); both
+  // buttons freeze during a download so a second click can't queue a
+  // conflicting switch mid-flight.
+  const mc = vm.modelChoice;
+  const modelSection = mc ? `
+  <section class="stats"><h2 class="section-lab">Meeting language</h2>
+    <div class="pauses">
+      <button data-action="meeting-model" data-arg="small"
+        class="${mc.selected === "standard" ? "selected" : ""}" ${mc.busy ? "disabled" : ""}>Standard</button>
+      <button data-action="meeting-model" data-arg="large-v3"
+        class="${mc.selected === "multilingual" ? "selected" : ""}" ${mc.busy ? "disabled" : ""}>Multilingual</button>
+    </div>
+    <div class="hint">Standard: English, fast. Multilingual: best for Hindi, Spanish &amp; other languages — one-time ~3GB download.</div>
+    ${mc.note ? `<div class="hint model-note">${esc(mc.note)}</div>` : ""}
+  </section>` : "";
+
   // Always reachable: a friend's problem ("search feels wrong") often has
   // no warning state — exactly when they need the mail button. Warning
   // states get the prominent pair; healthy gets one quiet row.
@@ -64,5 +80,6 @@ export function render(vm: ViewModel, nowSec: number): string {
   <section class="rows"><h2 class="section-lab">Health</h2>${vm.rows.map(rowHtml).join("")}</section>
   <section class="stats"><h2 class="section-lab">Index</h2>${vm.stats.map(rowHtml).join("")}</section>
   ${vm.week.length ? `<section class="stats"><h2 class="section-lab">This week</h2>${vm.week.map(rowHtml).join("")}</section>` : ""}
+  ${modelSection}
   <footer>${controls}${diagnostics}</footer>`;
 }
