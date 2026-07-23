@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "day.shyn/shyn",
   "title": "shyn",
-  "description": "Local-first ambient memory for your Mac — pages, meetings, notes, encrypted on-device.",
-  "version": "0.4.11-alpha",
+  "description": "Local-first ambient memory for your Mac \u2014 pages, meetings, notes, encrypted on-device.",
+  "version": "0.4.12-alpha",
   "repository": {
     "url": "https://github.com/shyn-labs/shyn",
     "source": "github"
@@ -12,8 +12,8 @@
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/shyn-labs/homebrew-tap/releases/download/v0.4.11-alpha/shyn.mcpb",
-      "fileSha256": "7d050ccc36ebdcd16f6ac5e82f5b7a6c20a7c2ce75acb940e2538f5f8e468cf3",
+      "identifier": "https://github.com/shyn-labs/homebrew-tap/releases/download/v0.4.12-alpha/shyn.mcpb",
+      "fileSha256": "1537da540f6617117a279534d3fa37f9b1024a6c9b4562c396696b4e7f500dec",
       "transport": {
         "type": "stdio"
       }
