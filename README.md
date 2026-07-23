@@ -180,8 +180,14 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
   not against malware running as your own user. We say this out loud.
 - **Meetings**: channel-based speaker labels (`Me:` / `Others:`), 10-second
   cancellable grace before any recording, 180-minute hard cap, temp audio
-  byte-purged on ingest. Hindi/Hinglish speech currently lands as an
-  English gist (Whisper behavior — documented, not hidden).
+  byte-purged on ingest. Transcription defaults to Whisper `small`; at that
+  size Hindi/Hinglish and other non-English speech often lands as an English
+  gist (documented, not hidden). For markedly better multilingual
+  transcripts, set `"meeting": { "whisperModel": "large-v3" }` in
+  `~/Library/Application Support/shyn/capture.json` — a ~3GB one-time
+  download, slower per meeting; `medium` is the middle ground. Config
+  hot-reloads: the new model downloads and takes over at the next meeting,
+  no restart.
 - **Sources that need permissions report themselves unavailable with a
   plain-language reason** instead of silently capturing nothing.
 - The eval harness (`pnpm eval:keyword`, `eval:hybrid`) runs a synthetic
