@@ -342,6 +342,7 @@ actor MeetingAgent {
             tap.stop()
             try? FileManager.default.removeItem(at: warmDir)
         }
+        await primeCalendarPrompt()   // Calendars pane has no drag-in; ask once here
     }
 
     // Onboarding (spec SP6) + model switches (spec 2026-07-23): the Whisper

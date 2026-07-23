@@ -17,6 +17,16 @@ func calendarAccessAuthorized() -> Bool {
     EKEventStore.authorizationStatus(for: .event) == .fullAccess
 }
 
+// The Calendars privacy pane lists an app only after its FIRST request —
+// there is no drag-in (+) for this pane, unlike Accessibility — so the
+// prompt is primed once at startup, same pattern (and reason) as the mic
+// warmup in runAgent. Bundle-guarded: prompting traps outside an .app.
+func primeCalendarPrompt() async {
+    guard Bundle.main.bundleIdentifier != nil,
+          EKEventStore.authorizationStatus(for: .event) == .notDetermined else { return }
+    _ = try? await EKEventStore().requestFullAccessToEvents()
+}
+
 func calendarStamp(startEpoch: Int, endEpoch: Int) async -> CalendarStamp? {
     let store = EKEventStore()
     switch EKEventStore.authorizationStatus(for: .event) {
