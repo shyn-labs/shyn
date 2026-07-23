@@ -86,6 +86,21 @@ button.wide { width: 100%; }
 footer { border-top: 1px solid var(--hairline); padding: 11px 16px; display: flex; flex-direction: column; gap: 9px; }
 .pauses { display: flex; gap: 6px; align-items: center; font-size: 11.5px; }
 .pauses .lab { color: var(--ink-dim); margin-right: 2px; }
+/* segmented control (meeting language) — one selected, macOS-style */
+.seg {
+  display: flex; gap: 2px; margin: 4px 16px 3px; padding: 2px;
+  border-radius: 999px; background: var(--lift);
+}
+.seg button { flex: 1; background: transparent; color: var(--ink-dim); padding: 4px 10px; }
+.seg button:hover { background: var(--lift); }
+.seg button.selected {
+  background: var(--lift-hover); color: var(--ink);
+  border: 1px solid var(--hairline); padding: 3px 9px;
+  box-shadow: inset 0 1px 0 var(--top-sheen);
+}
+.seg button:disabled { opacity: .55; cursor: default; transform: none; }
+.seg-hint { font-size: 11px; color: var(--ink-dim); padding: 2px 18px 4px; }
+.seg-hint.model-note { font-style: italic; }
 #root { animation: pop .12s ease-out; }
 @keyframes pop { from { opacity: 0; transform: scale(.98) } to { opacity: 1; transform: none } }
 /* ---- onboarding window ---- */

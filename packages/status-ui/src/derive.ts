@@ -151,7 +151,8 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
         // Calendar access is optional (stamping only) — informational, never
         // a warning. Older agents don't report the key: say nothing.
         if (m.tcc.calendar === false)
-          rows.push({ label: "Calendar", value: "no access — meetings won't be titled", tone: "muted" });
+          rows.push({ label: "Calendar", value: "not granted", tone: "muted",
+            hint: "optional — without it, meetings won't be titled from your calendar" });
       }
     } else {
       rows.push({ label: "Meeting agent", value: "not reporting", tone: "warn", hint: SILENT_HINT });

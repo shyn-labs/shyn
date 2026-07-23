@@ -49,14 +49,14 @@ export function render(vm: ViewModel, nowSec: number): string {
   const mc = vm.modelChoice;
   const modelSection = mc ? `
   <section class="stats"><h2 class="section-lab">Meeting language</h2>
-    <div class="pauses">
+    <div class="seg">
       <button data-action="meeting-model" data-arg="small"
         class="${mc.selected === "standard" ? "selected" : ""}" ${mc.busy ? "disabled" : ""}>Standard</button>
       <button data-action="meeting-model" data-arg="large-v3"
         class="${mc.selected === "multilingual" ? "selected" : ""}" ${mc.busy ? "disabled" : ""}>Multilingual</button>
     </div>
-    <div class="hint">Standard: English, fast. Multilingual: best for Hindi, Spanish &amp; other languages — one-time ~3GB download.</div>
-    ${mc.note ? `<div class="hint model-note">${esc(mc.note)}</div>` : ""}
+    <div class="seg-hint">Multilingual: Hindi, Spanish &amp; more · ~3GB one-time download</div>
+    ${mc.note ? `<div class="seg-hint model-note">${esc(mc.note)}</div>` : ""}
   </section>` : "";
 
   // Always reachable: a friend's problem ("search feels wrong") often has

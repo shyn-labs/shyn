@@ -366,13 +366,13 @@ describe("calendar access (meeting stamping)", () => {
       meeting: { ...healthyStatus().capture.meeting!, ...m } },
   });
 
-  it("calendar false → muted informational row, never a warning", () => {
+  it("calendar false → muted informational row, short value, explainer in hint", () => {
     const vm = deriveView({ ok: true,
       status: withMeeting({ tcc: { mic: true, audio: true, calendar: false } }) }, baseCtx());
     expect(vm.tray).toBe("healthy");
     const row = vm.rows.find((r) => r.label === "Calendar")!;
-    expect(row).toMatchObject({ tone: "muted" });
-    expect(row.value).toContain("meetings won't be titled");
+    expect(row).toMatchObject({ tone: "muted", value: "not granted" });
+    expect(row.hint).toContain("meetings won't be titled");
   });
 
   it("calendar true → no row; older agent without the key → no row", () => {
