@@ -1,6 +1,6 @@
 {
   "name": "@shyn/cli",
-  "version": "0.4.11-alpha",
+  "version": "0.4.12-alpha",
   "license": "Elastic-2.0",
   "type": "module",
   "bin": {

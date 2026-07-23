@@ -37,7 +37,10 @@ chose to ask it.
 - 🎙️ **Meetings, remembered.** Shyn detects your calls, records both sides
   locally, transcribes on-device with Whisper, and files a speaker-labeled
   transcript into your memory. Audio never crosses a socket and is purged
-  the moment the transcript lands — text in, bytes gone.
+  the moment the transcript lands — text in, bytes gone. Grant Calendar
+  access and transcripts get titled from the event they belong to
+  ("Sprint standup", attendees included) — read from your Mac's own
+  calendar store, no Google API, nothing leaves the machine.
 - 🌐 **Your digital trail, connected.** Chrome and Safari history and Apple
   Notes flow in automatically; files and PDFs on demand.
 - ☀️ **Glanceable peace of mind.** A frosted-glass menu bar companion shows
@@ -183,11 +186,16 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
   byte-purged on ingest. Transcription defaults to Whisper `small`; at that
   size Hindi/Hinglish and other non-English speech often lands as an English
   gist (documented, not hidden). For markedly better multilingual
-  transcripts, set `"meeting": { "whisperModel": "large-v3" }` in
-  `~/Library/Application Support/shyn/capture.json` — a ~3GB one-time
-  download, slower per meeting; `medium` is the middle ground. Config
-  hot-reloads: the new model downloads and takes over at the next meeting,
-  no restart.
+  transcripts, click **Multilingual** under "Meeting language" in the menu
+  bar popover (a ~3GB one-time download that starts immediately; the
+  popover says plainly which model your next meeting will use). Same
+  switch by hand: `"meeting": { "whisperModel": "large-v3" }` in
+  `~/Library/Application Support/shyn/capture.json`; `medium` is the
+  middle ground. Config hot-reloads, no restart.
+- **Meeting titles are optional and layered**: the calendar event first
+  (needs Calendar access), the call window's title second (needs
+  Accessibility), plain "app · date" otherwise. Decline everything and
+  meetings still transcribe fine.
 - **Sources that need permissions report themselves unavailable with a
   plain-language reason** instead of silently capturing nothing.
 - The eval harness (`pnpm eval:keyword`, `eval:hybrid`) runs a synthetic
