@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { Embedder, quantizeInt8, QUERY_PREFIX, type EmbedBackend } from "../src/embedder.js";
+import {
+  Embedder, LlamaBackend, quantizeInt8, QUERY_PREFIX,
+  EMBED_MAX_INPUT_TOKENS, type EmbedBackend,
+} from "../src/embedder.js";
 
 const fakeBackend = () => {
   const calls: string[] = [];
@@ -14,6 +17,38 @@ describe("quantizeInt8", () => {
   it("scales by 127 and clamps", () => {
     expect(Array.from(quantizeInt8(Float32Array.from([0.5, -1.2, 0.009, 1.0]))))
       .toEqual([64, -127, 1, 127]);
+  });
+});
+
+describe("LlamaBackend input truncation", () => {
+  // one fake token per character, so token counts are easy to reason about
+  const fakeLlama = () => {
+    const received: number[][] = [];
+    const model = {
+      tokenize: (t: string) => Array.from({ length: t.length }, (_, i) => i),
+      dispose: vi.fn(async () => {}),
+    };
+    const ctx = {
+      getEmbeddingFor: async (tokens: number[]) => {
+        received.push(tokens);
+        return { vector: [0.5] };
+      },
+    };
+    return { model, ctx, received };
+  };
+
+  it("truncates input longer than the context budget instead of throwing", async () => {
+    const { model, ctx, received } = fakeLlama();
+    const b = new LlamaBackend(model, ctx);
+    await b.embed("x".repeat(EMBED_MAX_INPUT_TOKENS + 5000));
+    expect(received[0].length).toBe(EMBED_MAX_INPUT_TOKENS);
+  });
+
+  it("passes short input through untouched", async () => {
+    const { model, ctx, received } = fakeLlama();
+    const b = new LlamaBackend(model, ctx);
+    await b.embed("short chunk");
+    expect(received[0].length).toBe("short chunk".length);
   });
 });
 

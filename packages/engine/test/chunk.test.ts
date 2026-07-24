@@ -8,6 +8,16 @@ describe("chunkFor", () => {
     expect(chunkFor("conversation", "remember this fact")).toEqual(["remember this fact"]);
   });
 
+  it("splits an oversized conversation doc like any other source", () => {
+    // a large pasted remember must chunk — its vector would otherwise only
+    // cover the first EMBED_MAX_INPUT_TOKENS of the text
+    const para = "a remembered fact with plenty of words in it ".repeat(20).trim();
+    const doc = Array.from({ length: 12 }, () => para).join("\n\n"); // ~11k chars
+    const chunks = chunkFor("conversation", doc);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(1600);
+  });
+
   it("splits files on headings and size", () => {
     const para = "word ".repeat(100).trim(); // ~500 chars
     const doc = `# Section A\n\n${para}\n\n${para}\n\n${para}\n\n# Section B\n\n${para}`;

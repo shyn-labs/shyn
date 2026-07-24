@@ -18,10 +18,14 @@ function packParagraphs(paras: string[]): string[] {
   return out;
 }
 
+// All sources share one chunker. browser docs (title\nurl one-liners) come
+// out as a single chunk regardless; conversation docs usually do too, but an
+// oversized pasted `remember` must split — the embedder truncates input at
+// EMBED_MAX_INPUT_TOKENS, so a monolithic chunk would only be searchable
+// semantically by its head. Search dedups multi-chunk docs via PER_DOC_CAP.
 export function chunkFor(source: Source, text: string): string[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
-  if (source === "browser" || source === "conversation") return [trimmed];
   // split into heading-delimited sections, pack paragraphs within each
   const sections = trimmed.split(/^(?=#{1,6}\s)/m);
   return sections.flatMap((s) =>

@@ -50,17 +50,33 @@ export async function importEmbedBackendModule(): Promise<any> {
   }
 }
 
+// Without an explicit contextSize, node-llama-cpp's "auto" allocates the
+// model's full trained context — 32k for Qwen3-embedding, a ~3.7 GB KV cache
+// that stays resident for the daemon's lifetime because ambient capture keeps
+// the idle-unload timer from ever firing (lived on 2026-07-24: 4.2 GB daemon
+// footprint vs 1.25 GB at 2048). Chunked sources cap at ~400 tokens
+// (chunk.ts MAX=1600 chars); browser/conversation docs arrive unchunked, and
+// getEmbeddingFor THROWS on input longer than the context, so over-length
+// input must be truncated to the budget below.
+export const EMBED_CONTEXT_TOKENS = 2048;
+// headroom for the BOS token getEmbeddingFor may prepend
+export const EMBED_MAX_INPUT_TOKENS = EMBED_CONTEXT_TOKENS - 8;
+
 export class LlamaBackend implements EmbedBackend {
-  private constructor(private model: any, private ctx: any) {}
+  constructor(private model: any, private ctx: any) {}
   static async create(modelPath: string): Promise<LlamaBackend> {
     const { getLlama } = await importEmbedBackendModule();
     const llama = await getLlama();
     const model = await llama.loadModel({ modelPath });
-    const ctx = await model.createEmbeddingContext();
+    const ctx = await model.createEmbeddingContext({
+      contextSize: EMBED_CONTEXT_TOKENS,
+      batchSize: 512,
+    });
     return new LlamaBackend(model, ctx);
   }
   async embed(text: string): Promise<Float32Array> {
-    return Float32Array.from((await this.ctx.getEmbeddingFor(text)).vector);
+    const tokens = this.model.tokenize(text).slice(0, EMBED_MAX_INPUT_TOKENS);
+    return Float32Array.from((await this.ctx.getEmbeddingFor(tokens)).vector);
   }
   async dispose(): Promise<void> { await this.model.dispose(); }
 }
