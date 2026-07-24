@@ -196,6 +196,11 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
   (needs Calendar access), the call window's title second (needs
   Accessibility), plain "app · date" otherwise. Decline everything and
   meetings still transcribe fine.
+- **The menu bar app checks GitHub once a day for a newer release** — a
+  plain unauthenticated request for the latest version number; nothing
+  about you or your machine rides along. Turn it off with
+  `"updateCheck": false` in capture.json. The capture agents and the
+  daemon make no network requests, ever.
 - **Sources that need permissions report themselves unavailable with a
   plain-language reason** instead of silently capturing nothing.
 - The eval harness (`pnpm eval:keyword`, `eval:hybrid`) runs a synthetic
@@ -207,7 +212,10 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
 ## What shyn never does
 
 - **Phones home.** No telemetry, no analytics endpoint, no crash reporter.
-  There is no server to send anything to.
+  There is no server to send anything to. The one outbound request in the
+  whole system is the menu bar app's daily version check against GitHub
+  (see the fine print) — it carries nothing and turns off with one config
+  key.
 - **Stores what you searched for.** Usage stats are counts in your local
   database (searches per day as a number — never the query).
 - **Ships your content anywhere.** When something breaks, run `shyn diagnose`:
