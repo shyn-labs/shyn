@@ -1,5 +1,5 @@
 import type { Row, ViewModel } from "../src/derive.js";
-import { UPGRADE_COMMAND } from "../src/update.js";
+import { UPGRADE_COMMAND } from "../src/update-core.js";
 
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");

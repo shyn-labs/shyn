@@ -1,4 +1,4 @@
-import { compareShynVersions } from "./update.js";
+import { compareShynVersions } from "./update-core.js";
 
 export type DaemonStatus = {
   documents: number; chunks: number; vectors: number;
