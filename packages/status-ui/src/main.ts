@@ -18,11 +18,26 @@ import {
 import {
   shouldAutoOpen, readThrottle, writeThrottle, readCompletedOnce, writeCompletedOnce,
 } from "./throttle.js";
+import {
+  checkLatest, consumeUpdateFailed, findBrew, readUpdateCheckEnabled, upgradeShell,
+} from "./update.js";
+import { spawn } from "node:child_process";
 import type { SettingsPane } from "./derive.js";
 
 const DIST = dirname(fileURLToPath(import.meta.url));   // dist/
 const home = shynHome();
 const sock = join(home, "shyn.sock");
+
+// In-app update state (spec 2026-07-24). The check lives HERE, in the
+// status app — the daemon and agents make no network requests, ever.
+let updLatest: string | null = null;
+let updUpdating = false;
+let updFailed = false;
+
+async function updateCheck() {
+  if (!readUpdateCheckEnabled(home)) { updLatest = null; return; }
+  updLatest = await checkLatest(fetch);
+}
 const WIN = { width: 320, height: 440 };
 
 if (!app.requestSingleInstanceLock()) {
@@ -79,10 +94,13 @@ if (!app.requestSingleInstanceLock()) {
   }
 
   async function tick() {
+    if (consumeUpdateFailed(home)) { updFailed = true; updUpdating = false; }
     const vm = deriveView(await poll(sock), {
       installed: installedAgents(),
       pausedUntil: readPausedUntil(home),
       meetingModel: readMeetingModel(home),
+      update: { latest: updLatest, updating: updUpdating, failed: updFailed,
+                brewFound: findBrew() !== null },
       now: Math.floor(Date.now() / 1000),
       claudeCommand: existsSync(join(home, "bin", "shyn-mcp"))
         ? `claude mcp add shyn -- "${join(home, "bin", "shyn-mcp")}"`
@@ -173,6 +191,14 @@ if (!app.requestSingleInstanceLock()) {
           if (arg === "small" || arg === "large-v3") setMeetingModel(home, arg as MeetingModel);
           else console.error("unknown meeting model:", arg);
         }
+        else if (name === "run-update") {
+          updUpdating = true; updFailed = false;
+          // Detached: `shyn setup` restarts THIS app mid-pipeline; a normal
+          // child would die with its parent and strand the upgrade half-done.
+          const child = spawn("/bin/bash", ["-lc", upgradeShell(home)],
+            { detached: true, stdio: "ignore" });
+          child.unref();
+        }
         else if (name === "open-onboarding") showOnboarding();
         else if (name === "open-settings") {
           const url = Object.hasOwn(SETTINGS_URLS, arg as string) ? SETTINGS_URLS[arg as SettingsPane] : undefined;
@@ -208,6 +234,8 @@ if (!app.requestSingleInstanceLock()) {
 
     tick().catch((e) => console.error("tick failed:", e));
     setInterval(() => { tick().catch((e) => console.error("tick failed:", e)); }, 3000);
+    void updateCheck();
+    setInterval(() => void updateCheck(), 24 * 3600 * 1000);
 
     setTimeout(() => {
       const now = Math.floor(Date.now() / 1000);

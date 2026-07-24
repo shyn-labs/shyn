@@ -1,3 +1,5 @@
+import { compareShynVersions } from "./update.js";
+
 export type DaemonStatus = {
   documents: number; chunks: number; vectors: number;
   pendingEmbeds: number; failedEmbeds: number;
@@ -62,6 +64,9 @@ export type ViewModel = {
   week: Row[];
   paused: boolean;
   modelChoice: ModelChoice | null;
+  // In-app update row (spec 2026-07-24): null = nothing to show (current,
+  // opted out, offline, or daemon down). canRun=false → copy-command fallback.
+  update: { version: string; state: "available" | "updating" | "failed"; canRun: boolean } | null;
   setup: SetupView;
   diagnostics: boolean;
 };
@@ -72,6 +77,8 @@ export type DeriveContext = {
   now: number;                 // epoch seconds
   claudeCommand: string;       // claude mcp add command, shim-aware
   meetingModel: string;        // capture.json meeting.whisperModel ("small" default)
+  // main.ts owns the update-check timer + in-flight state; derive stays pure.
+  update: { latest: string | null; updating: boolean; failed: boolean; brewFound: boolean };
 };
 
 const READER_DISPLAY_NAMES: Record<string, string> = {
@@ -93,7 +100,7 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
     return {
       tray: "warning", verdict: "daemon not running", meeting: null,
       rows: [{ label: "Daemon", value: "unreachable", tone: "err", hint: START_HINT }],
-      stats: [], week: [], paused: false, modelChoice: null,
+      stats: [], week: [], paused: false, modelChoice: null, update: null,
       setup: { kind: "unavailable" },
       diagnostics: true,
     };
@@ -211,6 +218,19 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
     modelChoice = { selected, busy, ...(note !== undefined ? { note } : {}) };
   }
 
+  // Update row: updating/failed outrank available so a mid-upgrade check
+  // can't flip the row back; anything ambiguous (bad tag, no check yet)
+  // stays null — silence over noise.
+  let update: ViewModel["update"] = null;
+  const u = ctx.update;
+  if (u.updating || u.failed) {
+    update = { version: u.latest ?? "", state: u.updating ? "updating" : "failed", canRun: u.brewFound };
+  } else if (u.latest !== null) {
+    const cmp = compareShynVersions(u.latest, s.daemonVersion);
+    if (cmp !== null && cmp > 0)
+      update = { version: u.latest, state: "available", canRun: u.brewFound };
+  }
+
   const tray: TrayState =
     m?.state === "recording" ? "recording"
     : m?.state === "transcribing" ? "transcribing"
@@ -294,7 +314,7 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
   const setup: SetupView = complete ? { kind: "complete" }
     : { kind: "steps", steps, done, total: steps.length };
 
-  return { tray, verdict, meeting, rows, stats, week, paused, modelChoice, setup, diagnostics };
+  return { tray, verdict, meeting, rows, stats, week, paused, modelChoice, update, setup, diagnostics };
 }
 
 function agoText(sec: number): string {

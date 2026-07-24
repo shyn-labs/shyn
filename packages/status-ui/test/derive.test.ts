@@ -9,6 +9,7 @@ export const baseCtx = (over: Partial<DeriveContext> = {}): DeriveContext => ({
   now: NOW,
   claudeCommand: CLAUDE_ADD_COMMAND,
   meetingModel: "small",
+  update: { latest: null, updating: false, failed: false, brewFound: true },
   ...over,
 });
 
@@ -381,5 +382,36 @@ describe("calendar access (meeting stamping)", () => {
     expect(withCal.rows.find((r) => r.label === "Calendar")).toBeUndefined();
     const oldAgent = deriveView({ ok: true, status: healthyStatus() }, baseCtx());
     expect(oldAgent.rows.find((r) => r.label === "Calendar")).toBeUndefined();
+  });
+});
+
+describe("in-app update states", () => {
+  const upd = (over: object) => baseCtx({
+    update: { latest: null, updating: false, failed: false, brewFound: true, ...over },
+  });
+
+  it("newer release → available with version and canRun", () => {
+    const vm = deriveView({ ok: true, status: healthyStatus() }, upd({ latest: "0.4.99-alpha" }));
+    expect(vm.update).toEqual({ version: "0.4.99-alpha", state: "available", canRun: true });
+  });
+
+  it("same, older, malformed, or no latest → null", () => {
+    expect(deriveView({ ok: true, status: healthyStatus() }, upd({ latest: "0.2.0" })).update).toBeNull();
+    expect(deriveView({ ok: true, status: healthyStatus() }, upd({ latest: "0.1.9" })).update).toBeNull();
+    expect(deriveView({ ok: true, status: healthyStatus() }, upd({ latest: "weird" })).update).toBeNull();
+    expect(deriveView({ ok: true, status: healthyStatus() }, upd({})).update).toBeNull();
+  });
+
+  it("updating and failed outrank available; no brew → canRun false", () => {
+    expect(deriveView({ ok: true, status: healthyStatus() }, upd({ latest: "0.4.99", updating: true })).update)
+      .toMatchObject({ state: "updating" });
+    expect(deriveView({ ok: true, status: healthyStatus() }, upd({ latest: "0.4.99", failed: true })).update)
+      .toMatchObject({ state: "failed" });
+    expect(deriveView({ ok: true, status: healthyStatus() }, upd({ latest: "0.4.99", brewFound: false })).update)
+      .toMatchObject({ state: "available", canRun: false });
+  });
+
+  it("daemon down → null", () => {
+    expect(deriveView({ ok: false }, upd({ latest: "9.9.9" })).update).toBeNull();
   });
 });

@@ -1,4 +1,5 @@
 import type { Row, ViewModel } from "../src/derive.js";
+import { UPGRADE_COMMAND } from "../src/update.js";
 
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -73,9 +74,28 @@ export function render(vm: ViewModel, nowSec: number): string {
     <span class="val">→</span>
   </div>` : "";
 
+  // In-app update (spec 2026-07-24). Quiet by design: no red, no badge —
+  // an update is an offer, not a problem.
+  const u = vm.update;
+  const updateRow = u ? `
+  <div class="row update-row">
+    ${u.state === "updating"
+      ? `<span class="lab">updating to v${esc(u.version)}…</span><span class="val">☀️</span>
+         <div class="hint">the ☀️ will blink and come back on the new version</div>`
+      : u.state === "failed"
+      ? `<span class="lab">update failed</span>
+         <button data-action="copy" data-arg="${esc(UPGRADE_COMMAND)}">Copy command</button>
+         <div class="hint">paste the copied command into Terminal — details in ~/Library/Logs/shyn/update.log</div>`
+      : `<span class="lab">v${esc(u.version)} available</span>
+         ${u.canRun
+           ? `<button data-action="run-update">Update</button>`
+           : `<button data-action="copy" data-arg="${esc(UPGRADE_COMMAND)}">Copy command</button>`}`}
+  </div>` : "";
+
   return `
   <header><b>shyn</b><span class="verdict pill ${verdictTone(vm.tray)}">${esc(vm.verdict)}</span></header>
   ${setupRow}
+  ${updateRow}
   ${live}
   <section class="rows"><h2 class="section-lab">Health</h2>${vm.rows.map(rowHtml).join("")}</section>
   <section class="stats"><h2 class="section-lab">Index</h2>${vm.stats.map(rowHtml).join("")}</section>

@@ -11,6 +11,7 @@ const vm = (over: Partial<ViewModel> = {}): ViewModel => ({
   stats: [{ label: "Index", value: "16,951 docs · 41,000 vectors", tone: "muted" }],
   week: [],
   paused: false, modelChoice: { selected: "standard", busy: false },
+  update: null,
   setup: { kind: "complete" }, diagnostics: false, ...over,
 });
 
@@ -124,5 +125,29 @@ describe("meeting language section", () => {
   it("no meeting agent → section absent", () => {
     const el = mount(render(vm({ modelChoice: null }), NOW));
     expect(el.querySelector('[data-action="meeting-model"]')).toBeNull();
+  });
+});
+
+describe("update row", () => {
+  it("available: version + Update button", () => {
+    const el = mount(render(vm({ update: { version: "0.4.99-alpha", state: "available", canRun: true } }), NOW));
+    expect(el.querySelector(".update-row")!.textContent).toContain("0.4.99-alpha");
+    expect(el.querySelector('[data-action="run-update"]')).toBeTruthy();
+  });
+
+  it("updating: no button, blink copy; failed: copy-command fallback", () => {
+    const busy = mount(render(vm({ update: { version: "0.4.99", state: "updating", canRun: true } }), NOW));
+    expect(busy.querySelector('[data-action="run-update"]')).toBeNull();
+    expect(busy.textContent).toContain("will blink and come back");
+    const failed = mount(render(vm({ update: { version: "0.4.99", state: "failed", canRun: true } }), NOW));
+    expect(failed.querySelector('[data-action="copy"]')).toBeTruthy();
+    expect(failed.textContent).toContain("update failed");
+  });
+
+  it("no brew: copy button instead of run; null: no row", () => {
+    const noBrew = mount(render(vm({ update: { version: "0.4.99", state: "available", canRun: false } }), NOW));
+    expect(noBrew.querySelector('[data-action="run-update"]')).toBeNull();
+    expect(noBrew.querySelector('[data-action="copy"]')).toBeTruthy();
+    expect(mount(render(vm({ update: null }), NOW)).querySelector(".update-row")).toBeNull();
   });
 });
