@@ -18,12 +18,11 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
         // downloadBase keeps CoreML models out of ~/Documents (WhisperKit's
         // default), which is TCC-protected for a headless agent.
         let pipe = try await WhisperKit(WhisperKitConfig(model: model, downloadBase: modelDir))
-        // VAD chunking skips the long silent stretches every channel carries
-        // (the mic is silent while others talk, and vice-versa) — proportionally
-        // less ANE inference and no temperature-fallback thrashing on
-        // [BLANK_AUDIO] windows, which is what stretched long meetings to hours.
-        var opts = DecodingOptions(task: .transcribe, skipSpecialTokens: true)
-        opts.chunkingStrategy = .vad
+        // No chunking. WhisperKit's `.vad` chunking returned ZERO segments for
+        // our two-channel WAVs (verified 2026-07-28: turbo+VAD = 0 segments vs
+        // 30 clean segments without it on the same audio), so the whole channel
+        // is transcribed. The speed win comes from the turbo model, not VAD.
+        let opts = DecodingOptions(task: .transcribe, skipSpecialTokens: true)
         // Only the channels that actually recorded; drives the progress denominator.
         let channels = [(mic, Speaker.me), (system, Speaker.others)]
             .filter { FileManager.default.fileExists(atPath: $0.0.path) }
