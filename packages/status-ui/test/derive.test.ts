@@ -87,11 +87,19 @@ describe("deriveView state matrix", () => {
     expect(vm.rows.find((r) => r.label === "Meeting agent")?.value).toBe("transcribing · 68%");
   });
 
-  it("transcribing progress of exactly 0 still renders · 0% (not dropped as falsy)", () => {
+  it("transcribing at 0 (WhisperKit model load) → 'loading model…', not a frozen 0%", () => {
     const vm = deriveView({ ok: true,
       status: withMeeting({ state: "transcribing", transcribeProgress: 0 }) },
       baseCtx());
-    expect(vm.verdict).toBe("transcribing meeting · 0%");
+    expect(vm.verdict).toBe("loading model…");
+    expect(vm.rows.find((r) => r.label === "Meeting agent")?.value).toBe("loading model…");
+  });
+
+  it("transcribing at sub-1% (rounds to 0) → still 'loading model…'", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ state: "transcribing", transcribeProgress: 0.004 }) },
+      baseCtx());
+    expect(vm.verdict).toBe("loading model…");
   });
 
   it("transcribing progress clamps to 100% if the fraction overshoots", () => {
@@ -101,12 +109,12 @@ describe("deriveView state matrix", () => {
     expect(vm.verdict).toBe("transcribing meeting · 100%");
   });
 
-  it("transcribing without progress (older agent) → plain verdict, no percent", () => {
+  it("transcribing without progress (older agent) → 'loading model…'", () => {
     const vm = deriveView({ ok: true,
       status: withMeeting({ state: "transcribing" }) },
       baseCtx());
-    expect(vm.verdict).toBe("transcribing meeting");
-    expect(vm.rows.find((r) => r.label === "Meeting agent")?.value).toBe("transcribing");
+    expect(vm.verdict).toBe("loading model…");
+    expect(vm.rows.find((r) => r.label === "Meeting agent")?.value).toBe("loading model…");
   });
 
   it("recording without sessionStartedAt (older agent) → tray still recording, no card", () => {

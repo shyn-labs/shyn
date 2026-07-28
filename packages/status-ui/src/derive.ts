@@ -89,11 +89,15 @@ const READER_DISPLAY_NAMES: Record<string, string> = {
 };
 const readerDisplayName = (name: string): string => READER_DISPLAY_NAMES[name] ?? name;
 
-// " · NN%" while transcribing; "" when the agent reports no progress (older
-// build). Handles the falsy-zero trap (0 must still render) and clamps a
-// fractionCompleted that momentarily overshoots 1.
-const transcribePctSuffix = (p: number | undefined): string =>
-  p == null ? "" : ` · ${Math.round(Math.min(1, Math.max(0, p)) * 100)}%`;
+// Transcribing label. WhisperKit's model load + first window sit at 0 for a
+// while, so a bare "0%" reads as frozen — show "loading model…" until there's
+// at least 1% real progress, then "· NN%". Clamps an overshooting fraction.
+const transcribeLabel = (p: number | undefined): { verdict: string; row: string } => {
+  const pct = p == null ? 0 : Math.round(Math.min(1, Math.max(0, p)) * 100);
+  return pct >= 1
+    ? { verdict: `transcribing meeting · ${pct}%`, row: `transcribing · ${pct}%` }
+    : { verdict: "loading model…", row: "loading model…" };
+};
 
 export const RECALL_PROMPT = "what was I reading in the last hour?";
 export const CLAUDE_ADD_COMMAND =
@@ -149,7 +153,7 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
       } else if (m.state === "recording" || m.state === "transcribing") {
         rows.push({
           label: "Meeting agent",
-          value: m.state === "transcribing" ? `transcribing${transcribePctSuffix(m.transcribeProgress)}` : m.state,
+          value: m.state === "transcribing" ? transcribeLabel(m.transcribeProgress).row : m.state,
           tone: m.state === "recording" ? "err" : "ok",
         });
         // Live card is recording-only: the Swift agent clears sessionStartedAt/
@@ -255,7 +259,7 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
 
   const verdict =
     tray === "recording" ? "recording meeting"
-    : tray === "transcribing" ? `transcribing meeting${transcribePctSuffix(m?.transcribeProgress)}`
+    : tray === "transcribing" ? transcribeLabel(m?.transcribeProgress).verdict
     : problems.length > 0 ? problems[0]
     : paused ? "capture paused" : "all systems go";
 
