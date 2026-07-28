@@ -94,7 +94,7 @@ describe("meeting language section", () => {
   it("renders two language-framed buttons, selected marked, no note by default", () => {
     const el = mount(render(vm(), NOW));
     const btns = [...el.querySelectorAll('[data-action="meeting-model"]')];
-    expect(btns.map((b) => (b as HTMLElement).dataset.arg)).toEqual(["small", "large-v3"]);
+    expect(btns.map((b) => (b as HTMLElement).dataset.arg)).toEqual(["small", "large-v3_turbo"]);
     expect(btns[0].classList.contains("selected")).toBe(true);
     expect(btns[1].classList.contains("selected")).toBe(false);
     expect(el.textContent).toContain("Standard");

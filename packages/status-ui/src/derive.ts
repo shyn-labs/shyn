@@ -21,6 +21,9 @@ export type MeetingBlock = {
   tcc: { mic: boolean; audio: boolean; calendar?: boolean };  // calendar: agents ≥ stamping
   sessionStartedAt?: number; sessionApp?: string;
   whisperDownloading?: boolean;
+  // 0..1 fraction, present only while state === "transcribing"; absent from
+  // older agents. Drives the "· NN%" suffix on the transcribing verdict/row.
+  transcribeProgress?: number;
 };
 
 export type WeekStats = {
@@ -47,7 +50,7 @@ export type SetupView =
   | { kind: "unavailable" };
 
 // Meeting transcription model, framed by language, not model jargon
-// (spec 2026-07-23): "standard" = whisper small, "multilingual" = large-v3,
+// (spec 2026-07-23): "standard" = whisper small, "multilingual" = large-v3_turbo,
 // "custom" = any other value a power user set in capture.json by hand.
 export type ModelChoice = {
   selected: "standard" | "multilingual" | "custom";
@@ -85,6 +88,12 @@ const READER_DISPLAY_NAMES: Record<string, string> = {
   chrome: "Chrome", safari: "Safari", notes: "Apple Notes",
 };
 const readerDisplayName = (name: string): string => READER_DISPLAY_NAMES[name] ?? name;
+
+// " · NN%" while transcribing; "" when the agent reports no progress (older
+// build). Handles the falsy-zero trap (0 must still render) and clamps a
+// fractionCompleted that momentarily overshoots 1.
+const transcribePctSuffix = (p: number | undefined): string =>
+  p == null ? "" : ` · ${Math.round(Math.min(1, Math.max(0, p)) * 100)}%`;
 
 export const RECALL_PROMPT = "what was I reading in the last hour?";
 export const CLAUDE_ADD_COMMAND =
@@ -138,7 +147,11 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
         rows.push({ label: "Meeting agent", value: "mic permission missing", tone: "warn", hint: MIC_HINT });
         problems.push("microphone permission");
       } else if (m.state === "recording" || m.state === "transcribing") {
-        rows.push({ label: "Meeting agent", value: m.state, tone: m.state === "recording" ? "err" : "ok" });
+        rows.push({
+          label: "Meeting agent",
+          value: m.state === "transcribing" ? `transcribing${transcribePctSuffix(m.transcribeProgress)}` : m.state,
+          tone: m.state === "recording" ? "err" : "ok",
+        });
         // Live card is recording-only: the Swift agent clears sessionStartedAt/
         // sessionApp in endSession BEFORE posting state "transcribing", so a
         // transcribing status never carries session fields — asserting a card
@@ -203,7 +216,10 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
   let modelChoice: ModelChoice | null = null;
   if (ctx.installed.meeting && m) {
     const selected: ModelChoice["selected"] =
-      ctx.meetingModel === "large-v3" ? "multilingual"
+      // large-v3_turbo is the multilingual model; plain large-v3 is the
+      // pre-turbo string, still recognized so existing configs don't read
+      // as "custom".
+      (ctx.meetingModel === "large-v3_turbo" || ctx.meetingModel === "large-v3") ? "multilingual"
       : ctx.meetingModel === "small" ? "standard" : "custom";
     const busy = m.whisperDownloading === true;
     let note: string | undefined;
@@ -239,7 +255,7 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
 
   const verdict =
     tray === "recording" ? "recording meeting"
-    : tray === "transcribing" ? "transcribing meeting"
+    : tray === "transcribing" ? `transcribing meeting${transcribePctSuffix(m?.transcribeProgress)}`
     : problems.length > 0 ? problems[0]
     : paused ? "capture paused" : "all systems go";
 

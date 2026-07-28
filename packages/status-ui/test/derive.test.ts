@@ -79,6 +79,36 @@ describe("deriveView state matrix", () => {
     expect(vm.meeting).toBeNull();
   });
 
+  it("transcribing with progress → verdict and agent row show rounded percent", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ state: "transcribing", transcribeProgress: 0.678 }) },
+      baseCtx());
+    expect(vm.verdict).toBe("transcribing meeting · 68%");
+    expect(vm.rows.find((r) => r.label === "Meeting agent")?.value).toBe("transcribing · 68%");
+  });
+
+  it("transcribing progress of exactly 0 still renders · 0% (not dropped as falsy)", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ state: "transcribing", transcribeProgress: 0 }) },
+      baseCtx());
+    expect(vm.verdict).toBe("transcribing meeting · 0%");
+  });
+
+  it("transcribing progress clamps to 100% if the fraction overshoots", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ state: "transcribing", transcribeProgress: 1.5 }) },
+      baseCtx());
+    expect(vm.verdict).toBe("transcribing meeting · 100%");
+  });
+
+  it("transcribing without progress (older agent) → plain verdict, no percent", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ state: "transcribing" }) },
+      baseCtx());
+    expect(vm.verdict).toBe("transcribing meeting");
+    expect(vm.rows.find((r) => r.label === "Meeting agent")?.value).toBe("transcribing");
+  });
+
   it("recording without sessionStartedAt (older agent) → tray still recording, no card", () => {
     const vm = deriveView({ ok: true, status: withMeeting({ state: "recording" }) }, baseCtx());
     expect(vm.tray).toBe("recording");
@@ -323,7 +353,7 @@ describe("meeting model choice (language-framed setting)", () => {
   it("multilingual selected + downloading → busy with honest interim note", () => {
     const vm = deriveView(
       { ok: true, status: withMeeting({ modelReady: false, whisperDownloading: true }) },
-      baseCtx({ meetingModel: "large-v3" }));
+      baseCtx({ meetingModel: "large-v3_turbo" }));
     expect(vm.modelChoice).toMatchObject({ selected: "multilingual", busy: true });
     expect(vm.modelChoice!.note).toContain("Standard");
   });
@@ -331,7 +361,7 @@ describe("meeting model choice (language-framed setting)", () => {
   it("multilingual selected, not ready, not downloading → next-meeting note", () => {
     const vm = deriveView(
       { ok: true, status: withMeeting({ modelReady: false }) },
-      baseCtx({ meetingModel: "large-v3" }));
+      baseCtx({ meetingModel: "large-v3_turbo" }));
     expect(vm.modelChoice).toMatchObject({ selected: "multilingual", busy: false });
     expect(vm.modelChoice!.note).toContain("next meeting");
   });
@@ -339,8 +369,15 @@ describe("meeting model choice (language-framed setting)", () => {
   it("multilingual selected and ready → no note", () => {
     const vm = deriveView(
       { ok: true, status: withMeeting({ modelReady: true }) },
-      baseCtx({ meetingModel: "large-v3" }));
+      baseCtx({ meetingModel: "large-v3_turbo" }));
     expect(vm.modelChoice).toEqual({ selected: "multilingual", busy: false });
+  });
+
+  it("legacy large-v3 config still maps to multilingual (pre-turbo installs)", () => {
+    const vm = deriveView(
+      { ok: true, status: withMeeting({ modelReady: true }) },
+      baseCtx({ meetingModel: "large-v3" }));
+    expect(vm.modelChoice).toMatchObject({ selected: "multilingual" });
   });
 
   it("power-user custom model → custom, named in note, both buttons unselected", () => {

@@ -12,17 +12,35 @@ import CaptureCore
 //
 // Returns [] on ANY failure — a meeting with no transcript is dropped, never
 // thrown out of the agent loop.
-func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL) async -> [TranscriptSegment] {
+func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
+                       onProgress: @escaping @Sendable (Double) async -> Void = { _ in }) async -> [TranscriptSegment] {
     do {
         // downloadBase keeps CoreML models out of ~/Documents (WhisperKit's
         // default), which is TCC-protected for a headless agent.
         let pipe = try await WhisperKit(WhisperKitConfig(model: model, downloadBase: modelDir))
-        let opts = DecodingOptions(task: .transcribe, skipSpecialTokens: true)
+        // VAD chunking skips the long silent stretches every channel carries
+        // (the mic is silent while others talk, and vice-versa) — proportionally
+        // less ANE inference and no temperature-fallback thrashing on
+        // [BLANK_AUDIO] windows, which is what stretched long meetings to hours.
+        var opts = DecodingOptions(task: .transcribe, skipSpecialTokens: true)
+        opts.chunkingStrategy = .vad
+        // Only the channels that actually recorded; drives the progress denominator.
+        let channels = [(mic, Speaker.me), (system, Speaker.others)]
+            .filter { FileManager.default.fileExists(atPath: $0.0.path) }
+        let total = channels.count
         var segs: [TranscriptSegment] = []
-        for (url, speaker) in [(mic, Speaker.me), (system, Speaker.others)] {
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+        for (idx, (url, speaker)) in channels.enumerated() {
+            // WhisperKit fires this per decode window; read its Progress into a
+            // single 0…1 fraction and hand only the Double (Sendable) to the
+            // actor — the non-Sendable pipe never crosses an isolation boundary.
+            let onWindow: TranscriptionCallback = { _ in
+                let f = overallTranscribeProgress(
+                    channelsDone: idx, channelFraction: pipe.progress.fractionCompleted, totalChannels: total)
+                Task { await onProgress(f) }
+                return nil
+            }
             let results: [TranscriptionResult] =
-                (try? await pipe.transcribe(audioPath: url.path, decodeOptions: opts)) ?? []
+                (try? await pipe.transcribe(audioPath: url.path, decodeOptions: opts, callback: onWindow)) ?? []
             for r in results {
                 for s in r.segments {
                     let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -31,6 +49,7 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL) asyn
                 }
             }
         }
+        await onProgress(1.0)
         return segs
     } catch {
         FileHandle.standardError.write(Data("[transcriber] failed: \(error)\n".utf8))

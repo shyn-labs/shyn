@@ -188,7 +188,7 @@ if (!app.requestSingleInstanceLock()) {
         else if (name === "meeting-stop") meetingStop(home);
         else if (name === "meeting-cancel") meetingCancel(home);
         else if (name === "meeting-model") {
-          if (arg === "small" || arg === "large-v3") setMeetingModel(home, arg as MeetingModel);
+          if (arg === "small" || arg === "large-v3_turbo") setMeetingModel(home, arg as MeetingModel);
           else console.error("unknown meeting model:", arg);
         }
         else if (name === "run-update") {

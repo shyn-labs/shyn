@@ -53,7 +53,7 @@ export function render(vm: ViewModel, nowSec: number): string {
     <div class="seg">
       <button data-action="meeting-model" data-arg="small"
         class="${mc.selected === "standard" ? "selected" : ""}" ${mc.busy ? "disabled" : ""}>Standard</button>
-      <button data-action="meeting-model" data-arg="large-v3"
+      <button data-action="meeting-model" data-arg="large-v3_turbo"
         class="${mc.selected === "multilingual" ? "selected" : ""}" ${mc.busy ? "disabled" : ""}>Multilingual</button>
     </div>
     <div class="seg-hint">Multilingual: Hindi, Spanish &amp; more · ~3GB one-time download</div>

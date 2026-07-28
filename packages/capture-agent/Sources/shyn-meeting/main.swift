@@ -69,7 +69,12 @@ actor MeetingAgent {
     private let recorder = AudioRecorder()
     private var buffer = RingBuffer<IngestPayload>(capacity: 20)
     private var stats = MeetingStats()
-    private var transcribing = false
+    // Transcription runs OFF the tick path: a long meeting takes minutes to
+    // hours, and running it inline froze detection and `shyn meeting stop`.
+    // These track the in-flight, serialized transcription(s).
+    private var pendingTranscriptions = 0
+    private var transcribeTask: Task<Void, Never>? = nil
+    private var transcribeProgress: Double? = nil
 
     // active session
     private var sessionDir: URL?
@@ -97,7 +102,9 @@ actor MeetingAgent {
             case .stop:   await endSession(transcribe: committed, cfg: cfg); detector.cancel()
             case .cancel: await endSession(transcribe: false, cfg: cfg); detector.cancel()
             }
-            await postStats(state: "idle")
+            // `stop` hands transcription off to the background; reflect that
+            // rather than flashing idle for a tick.
+            await postStats(state: pendingTranscriptions > 0 ? "transcribing" : "idle")
             return
         }
 
@@ -180,7 +187,7 @@ actor MeetingAgent {
             detector.cancel()
         }
 
-        await postStats(state: transcribing ? "transcribing" : state.rawValue)
+        await postStats(state: pendingTranscriptions > 0 ? "transcribing" : state.rawValue)
     }
 
     // Starts recording at candidate time (grace audio is part of the meeting
@@ -216,6 +223,12 @@ actor MeetingAgent {
         dbg("committed (voice verified on both channels)")
     }
 
+    // Tears the session down synchronously (fast: stop recorder, capture
+    // metadata, clear session state) and — if keeping it — hands transcription
+    // off to a background task so tick() returns immediately and detection /
+    // `shyn meeting stop` stay responsive. Session fields are cleared BEFORE
+    // the caller posts "transcribing" (derive.ts relies on a transcribing
+    // status never carrying session fields).
     private func endSession(transcribe: Bool, cfg: MeetingConfig) async {
         guard let dir = sessionDir, let urls = await recorder.stop() else { return }
         let start = sessionStart
@@ -229,15 +242,38 @@ actor MeetingAgent {
         stats.sessionStartedAt = nil
         stats.sessionApp = nil
         guard transcribe else { purgeAudio(sessionDir: dir); dbg("canceled — audio purged"); return }
+        startTranscription(dir: dir, urls: urls, start: start, end: end,
+                           bundleId: bundleId, appName: appName, windowTitle: windowTitle, cfg: cfg)
+    }
 
-        transcribing = true
-        defer { transcribing = false }
-        // Post the honest state up front: transcription (incl. first-run
-        // model download) can take minutes, and ticks queue behind it.
-        await postStats(state: "transcribing")
+    // Kicks off a transcription, chained onto any in-flight one so only a
+    // single job contends for the ANE at a time (two meetings can end close
+    // together). pendingTranscriptions keeps the status "transcribing" across
+    // the whole chain.
+    private func startTranscription(dir: URL, urls: (mic: URL, system: URL),
+                                    start: Int, end: Int, bundleId: String?, appName: String,
+                                    windowTitle: String?, cfg: MeetingConfig) {
+        if pendingTranscriptions == 0 { transcribeProgress = 0 }   // don't snap a running % back to 0
+        pendingTranscriptions += 1
+        let prev = transcribeTask
+        transcribeTask = Task {
+            await prev?.value
+            await self.runTranscription(dir: dir, urls: urls, start: start, end: end,
+                                        bundleId: bundleId, appName: appName, windowTitle: windowTitle, cfg: cfg)
+        }
+    }
+
+    // The heavy work: `await transcribeMeeting` runs off-actor (it is a
+    // nonisolated free function), so the actor stays free for tick() while the
+    // ANE grinds. finishTranscription always runs, even on an empty drop.
+    private func runTranscription(dir: URL, urls: (mic: URL, system: URL),
+                                  start: Int, end: Int, bundleId: String?, appName: String,
+                                  windowTitle: String?, cfg: MeetingConfig) async {
+        defer { finishTranscription() }
         let segs = await transcribeMeeting(mic: urls.mic, system: urls.system,
                                            model: cfg.whisperModel,
-                                           modelDir: URL(fileURLWithPath: home + "/models/whisperkit"))
+                                           modelDir: URL(fileURLWithPath: home + "/models/whisperkit"),
+                                           onProgress: { p in await self.updateTranscribeProgress(p) })
         let transcript = assembleTranscript(segs)
         guard !transcript.isEmpty else {
             // Nothing recognizable — drop the session, still purge the audio.
@@ -262,6 +298,13 @@ actor MeetingAgent {
         }
     }
 
+    private func updateTranscribeProgress(_ p: Double) { transcribeProgress = p }
+
+    private func finishTranscription() {
+        pendingTranscriptions = max(0, pendingTranscriptions - 1)
+        if pendingTranscriptions == 0 { transcribeProgress = nil }
+    }
+
     // Drains the ring buffer plus the new payload; false if the new payload
     // could not be delivered (it is then buffered for the next attempt).
     private func ship(_ payload: IngestPayload? = nil) async -> Bool {
@@ -278,6 +321,7 @@ actor MeetingAgent {
 
     private func postStats(state: String) async {
         stats.state = state
+        stats.transcribeProgress = transcribeProgress
         stats.modelReady = whisperModelPresent(
             model: MeetingConfig.load(from: configPath).whisperModel,
             modelDir: URL(fileURLWithPath: home + "/models/whisperkit"))

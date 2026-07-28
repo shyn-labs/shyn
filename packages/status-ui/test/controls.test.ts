@@ -59,13 +59,13 @@ describe("controls: meeting.whisperModel contract (matches MeetingConfig.load)",
       pausedUntil: NOW,
       meeting: { excludeApps: ["com.a.b"], endSilenceSeconds: 90 },
     }));
-    setMeetingModel(h, "large-v3");
+    setMeetingModel(h, "large-v3_turbo");
     const cfg = JSON.parse(readFileSync(join(h, "capture.json"), "utf8"));
-    expect(cfg.meeting.whisperModel).toBe("large-v3");
+    expect(cfg.meeting.whisperModel).toBe("large-v3_turbo");
     expect(cfg.meeting.excludeApps).toEqual(["com.a.b"]);      // preserved
     expect(cfg.meeting.endSilenceSeconds).toBe(90);             // preserved
     expect(cfg.pausedUntil).toBe(NOW);                          // preserved
-    expect(readMeetingModel(h)).toBe("large-v3");
+    expect(readMeetingModel(h)).toBe("large-v3_turbo");
     setMeetingModel(h, "small");
     expect(readMeetingModel(h)).toBe("small");
   });
@@ -74,8 +74,8 @@ describe("controls: meeting.whisperModel contract (matches MeetingConfig.load)",
     const h = home();
     writeFileSync(join(h, "capture.json"), "{not json");
     expect(readMeetingModel(h)).toBe("small");
-    setMeetingModel(h, "large-v3");
-    expect(readMeetingModel(h)).toBe("large-v3");
+    setMeetingModel(h, "large-v3_turbo");
+    expect(readMeetingModel(h)).toBe("large-v3_turbo");
   });
 });
 

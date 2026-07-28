@@ -42,7 +42,10 @@ export function readPausedUntil(home: string): number | null {
 
 // Meeting transcription model (capture.json meeting.whisperModel — the
 // Swift agent hot-reloads it; MeetingConfig defaults to "small").
-export type MeetingModel = "small" | "large-v3";
+// "large-v3_turbo": full large-v3 multilingual encoder with a pruned decoder —
+// ~2x faster than large-v3, near-identical accuracy. Replaced plain large-v3 as
+// the Multilingual option (2026-07-28).
+export type MeetingModel = "small" | "large-v3_turbo";
 
 export function readMeetingModel(home: string): string {
   const meeting = readCfg(home).meeting;
