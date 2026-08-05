@@ -1,6 +1,6 @@
 {
   "name": "@shyn/daemon",
-  "version": "0.4.16-alpha",
+  "version": "0.4.17-alpha",
   "license": "Elastic-2.0",
   "type": "module",
   "exports": {
