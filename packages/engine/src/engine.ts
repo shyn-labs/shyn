@@ -7,6 +7,7 @@ import { search as runSearch } from "./search.js";
 import { forget as runForget, type ForgetSelector } from "./forget.js";
 import { sweepScreenRetention, sweepMeetingRetention } from "./retention.js";
 import { recordBeat, coverageReport, sweepCoverage } from "./coverage.js";
+import { joinChunks, type DocumentResult } from "./document.js";
 import { drainEmbedQueue } from "./embed-worker.js";
 import { getWatermark, setWatermark } from "./readers/watermark.js";
 import type { Reader } from "./readers/types.js";
@@ -102,6 +103,35 @@ export class Engine {
        WHERE ${conds.join(" AND ")} ORDER BY ts ${dir}, id ${dir} LIMIT ? OFFSET ?`
     ).all(...params, limit, offset) as
       { docId: number; source: string; uri: string; title: string; ts: number }[];
+  }
+
+  // Whole-document read. Chunks are the only place text lives (documents has
+  // no text column), so the rows are reassembled with joinChunks.
+  // (source, uri) is the unique pair — a bare uri can legitimately match two
+  // sources, and silently picking one would hand back the wrong document.
+  document(p: { docId?: number; uri?: string; source?: string }): DocumentResult | null {
+    const cols = "SELECT id docId, source, uri, title, ts FROM documents";
+    type Row = { docId: number; source: string; uri: string; title: string; ts: number };
+    let row: Row | undefined;
+    if (p.docId !== undefined) {
+      row = this.db.prepare(`${cols} WHERE id = ?`).get(p.docId) as Row | undefined;
+    } else if (p.uri !== undefined) {
+      const rows = (p.source !== undefined
+        ? this.db.prepare(`${cols} WHERE uri = ? AND source = ?`).all(p.uri, p.source)
+        : this.db.prepare(`${cols} WHERE uri = ?`).all(p.uri)) as Row[];
+      if (rows.length > 1) {
+        const sources = rows.map((r) => r.source).sort().join(", ");
+        throw new Error(
+          `uri "${p.uri}" matches ${rows.length} documents across sources: ${sources} — pass source to disambiguate`);
+      }
+      row = rows[0];
+    } else {
+      throw new Error("document requires docId or uri");
+    }
+    if (!row) return null;
+    const texts = this.db.prepare(
+      "SELECT text FROM chunks WHERE doc_id = ? ORDER BY pos").all(row.docId) as { text: string }[];
+    return { ...row, text: joinChunks(texts.map((t) => t.text)), chunkCount: texts.length };
   }
 
   async syncReaders(readers: Reader[]): Promise<SyncResult[]> {

@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { chunkFor } from "../src/chunk.js";
 import { joinChunks } from "../src/document.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Engine } from "../src/engine.js";
+import { StaticKeyProvider } from "../src/keys.js";
+import { Embedder, type EmbedBackend } from "../src/embedder.js";
+import { EMBEDDING_DIM } from "../src/storage.js";
 
 describe("joinChunks", () => {
   it("returns empty string for no chunks", () => {
@@ -47,5 +54,65 @@ describe("joinChunks", () => {
     const chunks = chunkFor("meeting", doc);
     expect(chunks.length).toBeGreaterThan(1);
     expect(joinChunks(chunks)).toBe(doc);
+  });
+});
+
+function newEngine() {
+  const embedder = new Embedder(async () => (<EmbedBackend>{
+    embed: async () => { const v = new Float32Array(EMBEDDING_DIM); v[0] = 1; return v; },
+    dispose: async () => {},
+  }));
+  return new Engine({
+    dbPath: join(mkdtempSync(join(tmpdir(), "shyn-")), "t.db"),
+    keyProvider: new StaticKeyProvider(null),
+    embedder,
+  });
+}
+
+describe("Engine.document", () => {
+  it("returns the full reassembled text for a multi-chunk document", async () => {
+    const e = newEngine();
+    const doc = Array.from({ length: 400 }, (_, i) => `Me: line number ${i} of the transcript`).join("\n\n");
+    e.ingest({ source: "meeting", uri: "meeting://test/1", title: "Standup", ts: 1000, text: doc });
+    await e.drain();
+    const got = e.document({ uri: "meeting://test/1" });
+    expect(got).not.toBeNull();
+    expect(got!.text).toBe(doc);
+    expect(got!.chunkCount).toBeGreaterThan(1);
+    expect(got!.source).toBe("meeting");
+    expect(got!.title).toBe("Standup");
+    expect(got!.ts).toBe(1000);
+    await e.close();
+  });
+
+  it("resolves by docId", async () => {
+    const e = newEngine();
+    e.ingest({ source: "file", uri: "/a.md", title: "a", ts: 1000, text: "hello world" });
+    await e.drain();
+    const byUri = e.document({ uri: "/a.md" })!;
+    expect(e.document({ docId: byUri.docId })!.text).toBe("hello world");
+    await e.close();
+  });
+
+  it("returns null for a uri that does not exist", async () => {
+    const e = newEngine();
+    expect(e.document({ uri: "/nope.md" })).toBeNull();
+    await e.close();
+  });
+
+  it("throws when neither docId nor uri is given", async () => {
+    const e = newEngine();
+    expect(() => e.document({})).toThrow(/docId or uri/);
+    await e.close();
+  });
+
+  it("throws naming the sources when a uri is ambiguous, and resolves with source", async () => {
+    const e = newEngine();
+    e.ingest({ source: "file", uri: "same", title: "f", ts: 1000, text: "from the file" });
+    e.ingest({ source: "notes", uri: "same", title: "n", ts: 1001, text: "from the note" });
+    await e.drain();
+    expect(() => e.document({ uri: "same" })).toThrow(/file, notes/);
+    expect(e.document({ uri: "same", source: "notes" })!.text).toBe("from the note");
+    await e.close();
   });
 });
