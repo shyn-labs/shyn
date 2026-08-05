@@ -411,3 +411,26 @@ it("sync {full:true} resets reader watermarks so history re-walks", async () => 
   const total = (r: any) => r.reduce((a: number, x: any) => a + (x.ingested ?? 0) + (x.deduped ?? 0), 0);
   expect(total(again)).toBeGreaterThanOrEqual(total(before));
 });
+
+describe("document rpc", () => {
+  it("returns the reassembled document", async () => {
+    engine.ingest({ source: "meeting", uri: "meeting://d/1", title: "Sync", ts: 1000,
+      text: "Me: hello\n\nOthers: hi there" });
+    await engine.drain();
+    const hit: any = await rpcCall(sock, "document", { uri: "meeting://d/1" });
+    expect(hit.text).toBe("Me: hello\n\nOthers: hi there");
+    expect(hit.source).toBe("meeting");
+    expect(hit.chunkCount).toBe(1);
+  });
+
+  it("returns null for a uri that does not exist", async () => {
+    expect(await rpcCall(sock, "document", { uri: "meeting://d/nope" })).toBeNull();
+  });
+
+  it("surfaces an ambiguous uri as an rpc error naming the sources", async () => {
+    engine.ingest({ source: "file", uri: "same", title: "f", ts: 1000, text: "from the file" });
+    engine.ingest({ source: "notes", uri: "same", title: "n", ts: 1001, text: "from the note" });
+    await engine.drain();
+    await expect(rpcCall(sock, "document", { uri: "same" })).rejects.toThrow(/file, notes/);
+  });
+});

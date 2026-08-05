@@ -54,6 +54,7 @@ export async function startServer(opts: {
       return engine.search(p);
     },
     recent: (p) => engine.recent(p),
+    document: (p) => engine.document(p),
     forget: (p) => {
       if (p?.confirm !== true)
         throw Object.assign(new Error("forget requires confirm: true"), { code: -32001 });
