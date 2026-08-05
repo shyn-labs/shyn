@@ -6,6 +6,7 @@ import { ingestDocument } from "./ingest.js";
 import { search as runSearch } from "./search.js";
 import { forget as runForget, type ForgetSelector } from "./forget.js";
 import { sweepScreenRetention, sweepMeetingRetention } from "./retention.js";
+import { recordBeat, coverageReport, sweepCoverage } from "./coverage.js";
 import { drainEmbedQueue } from "./embed-worker.js";
 import { getWatermark, setWatermark } from "./readers/watermark.js";
 import type { Reader } from "./readers/types.js";
@@ -53,6 +54,16 @@ export class Engine {
   countSearch(now?: number): void { bumpCounter(this.db, `search:${dayKey(now ?? Math.floor(Date.now() / 1000))}`); }
   sweepScreen(retentionDays: number) { return sweepScreenRetention(this.db, retentionDays); }
   sweepMeeting(retentionDays: number) { return sweepMeetingRetention(this.db, retentionDays); }
+  sweepCoverage(retentionDays: number) { return sweepCoverage(this.db, retentionDays); }
+
+  // Observation heartbeat + the gap report derived from it. See coverage.ts:
+  // without this, an empty window is indistinguishable from an unwatched one.
+  beat(agents: string[], now?: number): void {
+    recordBeat(this.db, agents, now ?? Math.floor(Date.now() / 1000));
+  }
+  coverage(p: { timeFrom: number; timeTo: number; expectAgents?: string[]; now?: number }) {
+    return coverageReport(this.db, p);
+  }
 
   // Enumerate documents in a time window. `hours` is the lookback-from-now
   // shorthand; timeFrom/timeTo express an explicit past window, which is what

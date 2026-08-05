@@ -72,6 +72,38 @@ export function buildMcpServer(socketPath: string): McpServer {
     }
   });
 
+  // Human-readable coverage footnote for a window. Returns "" when the window
+  // was fully observed, when the daemon predates the coverage method, or on any
+  // failure: this annotates an answer, it must never replace one.
+  const fmtDuration = (s: number) =>
+    s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.round((s % 3600) / 60)).padStart(2, "0")}m`
+      : `${Math.max(1, Math.round(s / 60))}m`;
+  const coverageNote = async (from: number, to: number): Promise<string> => {
+    if (!(to > from)) return "";
+    try {
+      const c = await call("coverage", { timeFrom: from, timeTo: to });
+      const parts: string[] = [];
+      if (c?.unobservedSeconds > 0) {
+        const biggest = (c.gaps ?? []).reduce(
+          (m: any, g: any) => (!m || g.seconds > m.seconds ? g : m), null);
+        parts.push(
+          `shyn was not observing for ${fmtDuration(c.unobservedSeconds)} of this window` +
+          (biggest
+            ? ` (largest gap ${new Date(biggest.from * 1000).toISOString()} → ` +
+              `${new Date(biggest.to * 1000).toISOString()})`
+            : "") +
+          " — machine asleep, powered off, or daemon down");
+      }
+      for (const [agent, secs] of Object.entries(c?.agentDownSeconds ?? {})) {
+        parts.push(`the ${agent} agent was not reporting for ${fmtDuration(secs as number)} ` +
+          "while the daemon was up — nothing was captured then");
+      }
+      return parts.length ? `\n\ncoverage: ${parts.join("; ")}.` : "";
+    } catch {
+      return "";   // older daemon, or coverage unavailable: stay silent
+    }
+  };
+
   server.registerTool("recent_activity", {
     description:
       "Enumerate documents in a time window, in timestamp order. Call this FIRST for vague or broad " +
@@ -99,7 +131,14 @@ export function buildMcpServer(socketPath: string): McpServer {
         hours: a.hours, sources: a.sources, timeFrom, timeTo,
         limit, offset: a.offset, order: a.order,
       });
-      if (!docs.length) return reply("nothing ingested in that window");
+      // Why a window is thin matters as much as what is in it: an empty hour
+      // because you were asleep is a different fact from an empty hour you
+      // worked through with a dead agent. Best-effort — an older daemon has no
+      // coverage method, and a missing note must not fail the listing.
+      const now = Math.floor(Date.now() / 1000);
+      const from = timeFrom ?? now - (a.hours ?? 24) * 3600;
+      const note = await coverageNote(from, Math.min(timeTo ?? now, now));
+      if (!docs.length) return reply("nothing ingested in that window" + note);
       const lines = docs.map((d: any) =>
         `- [${new Date(d.ts * 1000).toISOString()}] ${d.title || d.uri} (${d.source}) ${d.uri}`
       ).join("\n");
@@ -108,7 +147,7 @@ export function buildMcpServer(socketPath: string): McpServer {
       const more = docs.length === limit
         ? `\n(page full at ${limit}; more rows may remain — repeat with offset: ${(a.offset ?? 0) + limit})`
         : "";
-      return reply(lines + more);
+      return reply(lines + more + note);
     } catch (e: any) {
       return reply(`error: ${e.message}`);
     }

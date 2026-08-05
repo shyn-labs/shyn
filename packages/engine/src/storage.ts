@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS embed_queue (
   attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, value TEXT NOT NULL);
-INSERT OR IGNORE INTO meta(k, value) VALUES ('schema_version', '4');
+INSERT OR IGNORE INTO meta(k, value) VALUES ('schema_version', '5');
 INSERT OR IGNORE INTO meta(k, value)
   VALUES ('embedding_model', 'qwen3-embedding-0.6b-q8_0');
 
@@ -68,7 +68,24 @@ CREATE TABLE IF NOT EXISTS counters (
   key TEXT PRIMARY KEY,
   value INTEGER NOT NULL DEFAULT 0
 );
+
+-- Observation heartbeat. One row per daemon tick, so an ABSENCE of rows is
+-- itself evidence: the machine was asleep, off, or the daemon was down. Without
+-- this, recall cannot tell "nothing happened" from "nothing was watching", and
+-- reports a 14-hour hole as silence (live finding 2026-08-05).
+-- The agents column lists which capture agents were reporting at that instant,
+-- so a live daemon with a dead screen agent is distinguishable from a live one.
+-- (No backticks in this block: SCHEMA is a JS template literal.)
+CREATE TABLE IF NOT EXISTS coverage (
+  ts INTEGER PRIMARY KEY,
+  agents TEXT NOT NULL DEFAULT ''
+);
 `;
+
+// Versions this build can open: older ones are migrated forward by migrate(),
+// the newest is what SCHEMA writes. Add the new value here in the same commit
+// that bumps SCHEMA, or a reopen of a freshly created DB is refused.
+export const KNOWN_SCHEMA_VERSIONS = ["1", "2", "3", "4", "5"];
 
 const VEC_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
@@ -142,6 +159,14 @@ function migrate(db: Database.Database): void {
       continue;
     }
 
+    if (version === "4") {
+      // v5 adds the coverage heartbeat table (created idempotently by SCHEMA
+      // above). Nothing to transform: an upgraded DB simply has no coverage
+      // history before this point, which reads correctly as "not observed".
+      db.prepare("UPDATE meta SET value='5' WHERE k='schema_version'").run();
+      continue;
+    }
+
     return;
   }
 }
@@ -176,7 +201,10 @@ export function openDatabase(opts: { dbPath: string; key: string | null }): Data
       : undefined;
     if (v === undefined)
       throw new Error("database has no schema_version — refusing to open (corrupt meta?)");
-    if (v !== "1" && v !== "2" && v !== "3" && v !== "4")
+    // Every version this build knows how to open, current one included: the
+    // current version reaches here on any reopen of a DB this build created, so
+    // forgetting to add it locks the user out of their own database.
+    if (!KNOWN_SCHEMA_VERSIONS.includes(v))
       throw new Error(`unsupported schema_version ${v}`);
   }
 

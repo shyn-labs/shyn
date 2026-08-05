@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3-multiple-ciphers";
-import { openDatabase } from "../src/storage.js";
+import { openDatabase, KNOWN_SCHEMA_VERSIONS } from "../src/storage.js";
 
 const tmpDb = () => join(mkdtempSync(join(tmpdir(), "shyn-")), "t.db");
 
@@ -38,7 +38,7 @@ describe("openDatabase", () => {
   it("supports keyless mode for tests", () => {
     const db = openDatabase({ dbPath: tmpDb(), key: null });
     expect(db.prepare("SELECT value FROM meta WHERE k='schema_version'").get())
-      .toEqual({ value: "4" });
+      .toEqual({ value: "5" });
     db.close();
   });
 
@@ -63,7 +63,7 @@ describe("openDatabase", () => {
     db.close();
 
     const db2 = openDatabase({ dbPath, key: null });
-    expect((db2.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("4");
+    expect((db2.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("5");
     const hit = db2.prepare("SELECT count(*) c FROM chunks_fts WHERE chunks_fts MATCH 'legacy'").get() as any;
     expect(hit.c).toBe(1);
     db2.close();
@@ -96,7 +96,7 @@ describe("openDatabase", () => {
     ins.run("(1) Inbox", 1000, "h1"); ins.run("(2) Inbox", 2000, "h2"); ins.run("(3) Inbox", 3000, "h3");
     db.close();
     const db2 = openDatabase({ dbPath, key: null });
-    expect((db2.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("4");
+    expect((db2.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("5");
     const rows = db2.prepare("SELECT title FROM documents WHERE uri='https://d.example'").all() as any[];
     expect(rows).toEqual([{ title: "(3) Inbox" }]); // newest kept
     // unique index enforced
@@ -120,10 +120,45 @@ describe("openDatabase", () => {
 
     db = openDatabase({ dbPath, key: null });
     const v = db.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as { value: string };
-    expect(v.value).toBe("4");
+    expect(v.value).toBe("5");
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='counters'").get()).toBeTruthy();
     expect((db.prepare("SELECT COUNT(*) c FROM documents").get() as { c: number }).c).toBe(1);
     db.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("migrates v4 to v5: coverage table exists, version bumped, data intact", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shyn-mig5-"));
+    const dbPath = join(dir, "t.db");
+    let db = openDatabase({ dbPath, key: null });
+    db.prepare(
+      "INSERT INTO documents (source, uri, title, ts, content_hash, meta_json) VALUES ('file','/a','',1,'h','{}')"
+    ).run();
+    // Force the marker back to a v4 DB that has never seen coverage.
+    db.prepare("DROP TABLE IF EXISTS coverage").run();
+    db.prepare("UPDATE meta SET value='4' WHERE k='schema_version'").run();
+    db.close();
+
+    db = openDatabase({ dbPath, key: null });
+    expect((db.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("5");
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='coverage'").get()).toBeTruthy();
+    // An upgraded DB has no coverage history, which reads correctly as
+    // "not observed" rather than as an error.
+    expect((db.prepare("SELECT COUNT(*) c FROM coverage").get() as any).c).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) c FROM documents").get() as any).c).toBe(1);
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Regression: the known-version guard is a hardcoded list, and a bump that
+  // forgets to extend it refuses to reopen a DB this very build just created —
+  // i.e. it locks the user out of their own memory. Caught live on the v5 bump.
+  it("reopens a database it just created at the current version", () => {
+    const dbPath = tmpDb();
+    const first = openDatabase({ dbPath, key: null });
+    const version = (first.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value;
+    first.close();
+    expect(() => openDatabase({ dbPath, key: null }).close()).not.toThrow();
+    expect(KNOWN_SCHEMA_VERSIONS).toContain(version);
   });
 });

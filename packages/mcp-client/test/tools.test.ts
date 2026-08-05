@@ -15,6 +15,8 @@ const mcpClientPkgVersion: string = JSON.parse(
 ).version;
 
 let dir: string, daemon: { close(): Promise<void> }, client: Client, sock: string;
+// Kept for coverage tests, which need to stamp heartbeats at synthetic times.
+let engineRef: Engine;
 
 const fakeReader = {
   name: "fake",
@@ -32,6 +34,7 @@ beforeEach(async () => {
   const engine = new Engine({
     dbPath: join(dir, "e.db"), keyProvider: new StaticKeyProvider(null), embedder,
   });
+  engineRef = engine;
   daemon = await startServer({
     socketPath: sock, engine, version: "t",
     readers: [fakeReader], readerIntervalMs: 60_000,
@@ -115,6 +118,40 @@ describe("mcp tools", () => {
     const empty = await client.callTool({ name: "recent_activity",
       arguments: { time_from: "2001-01-01", time_to: "2001-01-02" } });
     expect(text(empty)).toMatch(/nothing ingested/);
+  });
+
+  // The failure this whole feature exists for: on 2026-08-05 a day replay found
+  // 14 empty hours and reported them as silence, with no way to say whether the
+  // machine was asleep or the agent was dead.
+  it("recent_activity explains an empty window instead of just reporting silence", async () => {
+    const r = await client.callTool({ name: "recent_activity",
+      arguments: { time_from: "2026-01-01T00:00:00Z", time_to: "2026-01-01T06:00:00Z" } });
+    const t = text(r);
+    expect(t).toMatch(/nothing ingested/);
+    expect(t).toMatch(/coverage: shyn was not observing for 6h00m/);
+    expect(t).toMatch(/asleep, powered off, or daemon down/);
+  });
+
+  it("recent_activity stays quiet about coverage when the window was fully watched", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    for (let t = now - 3600; t <= now; t += 60) engineRef.beat(["screen"], t);
+    await client.callTool({ name: "remember", arguments: { content: "watched-window fact" } });
+    const r = await client.callTool({ name: "recent_activity", arguments: { hours: 1 } });
+    const t = text(r);
+    expect(t).toMatch(/conversation:\/\//);
+    expect(t).not.toMatch(/coverage:/);
+  });
+
+  it("recent_activity distinguishes a dead agent from a sleeping machine", async () => {
+    // Daemon up and beating the whole window, but the screen agent never
+    // appears in those beats — the case a 0-byte capture.log could not report.
+    await rpcCall(sock, "captureStats", { screen: { state: "idle" } });
+    const now = Math.floor(Date.now() / 1000);
+    for (let t = now - 1800; t <= now; t += 60) engineRef.beat([], t);
+    const r = await client.callTool({ name: "recent_activity", arguments: { hours: 1 } });
+    const t = text(r);
+    expect(t).toMatch(/the screen agent was not reporting/);
+    expect(t).toMatch(/nothing was captured then/);
   });
 
   it("recent_activity rejects an unparseable timestamp with guidance", async () => {

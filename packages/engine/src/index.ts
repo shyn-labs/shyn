@@ -13,6 +13,11 @@ export { drainEmbedQueue } from "./embed-worker.js";
 export { ensureModel, MODEL_FILE } from "./model-download.js";
 export { forget, type ForgetSelector } from "./forget.js";
 export { sweepScreenRetention, sweepMeetingRetention } from "./retention.js";
+export {
+  recordBeat, coverageReport, sweepCoverage,
+  HEARTBEAT_SECONDS, GAP_FACTOR,
+  type CoverageGap, type CoverageReport,
+} from "./coverage.js";
 export { Engine, type EngineStatus, type SyncResult } from "./engine.js";
 export { bumpCounter, sumCounters, dayKey } from "./counters.js";
 export { getStats, type StatsResult } from "./stats.js";

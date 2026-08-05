@@ -3,6 +3,7 @@ import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import { chmodSync, rmSync , readFileSync, writeFileSync} from "node:fs";
 import type { Engine, Reader, SyncResult } from "@shyn/engine";
+import { HEARTBEAT_SECONDS } from "@shyn/engine";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -12,12 +13,16 @@ export async function startServer(opts: {
   backfillIntervalMs?: number;
   readers?: Reader[]; readerIntervalMs?: number; initialSyncDelayMs?: number;
   screenRetentionDays?: number; retentionIntervalMs?: number;
-  meetingRetentionDays?: number;
+  meetingRetentionDays?: number; coverageRetentionDays?: number;
+  heartbeatIntervalMs?: number;
   onDrainError?: (err: unknown) => void;
 }): Promise<{ close(): Promise<void>; scheduleDrain(): void }> {
   const { engine } = opts;
   let draining = Promise.resolve();
   let lastCaptureStats: Record<string, unknown> | null = null;
+  // agent name -> epoch seconds of its last captureStats post. Memory-only,
+  // like lastCaptureStats: a restart legitimately means "unknown until they post".
+  const lastAgentPost: Record<string, number> = {};
   const helloPath = join(dirname(opts.socketPath), "mcp-hello.json");
   let lastMcpHelloTs: number | null = null;
   try {
@@ -64,7 +69,21 @@ export async function startServer(opts: {
     // (full Stats shape) and the meeting agent (posts only { meeting: … })
     // don't clobber each other — each owns its own keys. Not persisted — a
     // restart resets to "not-reporting" until the agents' next posts.
-    captureStats: (p) => { lastCaptureStats = { ...lastCaptureStats, ...p }; return { ok: true }; },
+    captureStats: (p) => {
+      lastCaptureStats = { ...lastCaptureStats, ...p };
+      // Per-agent last-seen, so the coverage heartbeat can record WHICH agents
+      // were alive at each beat. A live daemon with a dead screen agent used to
+      // be invisible (capture.log sat at 0 bytes for weeks).
+      const seen = Math.floor(Date.now() / 1000);
+      for (const k of Object.keys(p ?? {})) lastAgentPost[k] = seen;
+      return { ok: true };
+    },
+    // Which agents count as reporting right now: posted within two heartbeat
+    // intervals. One missed post is jitter, not an outage.
+    coverage: (p) => engine.coverage({
+      timeFrom: p.timeFrom, timeTo: p.timeTo,
+      expectAgents: p.expectAgents ?? Object.keys(lastAgentPost),
+    }),
     // Ground-truth "an MCP client actually connected" for onboarding
     // (spec SP6): config-file detection is unreliable (CLAUDE_CONFIG_DIR,
     // per-project scopes, Claude Desktop). Memory-only, like captureStats.
@@ -162,8 +181,26 @@ export async function startServer(opts: {
   const retention = setInterval(() => {
     try { engine.sweepScreen(opts.screenRetentionDays ?? 30); } catch { /* next tick retries */ }
     try { engine.sweepMeeting(opts.meetingRetentionDays ?? 0); } catch { /* next tick retries */ }
+    // Beats are tiny (two integers) but unbounded growth is still growth; a
+    // year of coverage is ~525k rows. Ride the same hourly tick.
+    try { engine.sweepCoverage(opts.coverageRetentionDays ?? 400); } catch { /* next tick retries */ }
   }, opts.retentionIntervalMs ?? 3_600_000);
   retention.unref();
+
+  // The observation heartbeat (coverage.ts). Absence of these rows is the only
+  // way recall can distinguish "quiet hour" from "asleep / daemon down", which
+  // is what made a 14-hour hole read as silence on 2026-08-05. Cheap enough to
+  // run unconditionally: one INSERT OR REPLACE per minute.
+  const beat = () => {
+    const now = Math.floor(Date.now() / 1000);
+    const alive = Object.entries(lastAgentPost)
+      .filter(([, ts]) => now - ts <= HEARTBEAT_SECONDS * 2)
+      .map(([name]) => name);
+    try { engine.beat(alive, now); } catch { /* next beat retries */ }
+  };
+  beat();   // stamp the moment the daemon came up, don't wait a full interval
+  const heartbeat = setInterval(beat, opts.heartbeatIntervalMs ?? HEARTBEAT_SECONDS * 1000);
+  heartbeat.unref();
 
   return {
     scheduleDrain,
@@ -172,6 +209,7 @@ export async function startServer(opts: {
       clearInterval(readerTimer);
       clearTimeout(initialSync);
       clearInterval(retention);
+      clearInterval(heartbeat);
       await syncing.catch(() => {});
       await draining;
       await new Promise<void>((res) => server.close(() => res()));
