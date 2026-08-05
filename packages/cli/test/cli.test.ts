@@ -152,3 +152,33 @@ describe("shyn cli", () => {
     expect(out.join("\n")).toMatch(/--days requires a positive integer/);
   });
 });
+
+describe("shyn show", () => {
+  it("prints the whole document, not a truncated excerpt", async () => {
+    const docs = join(dir, "showdocs");
+    mkdirSync(docs);
+    // Long enough to span several chunks, so this also proves joinChunks is
+    // wired all the way through: 300 paragraphs well past MAX = 1600.
+    const body = Array.from({ length: 300 }, (_, i) => `line ${i} of the document`).join("\n\n");
+    writeFileSync(join(docs, "long.md"), body);
+    await runCli(["ingest", docs], print);
+    out = [];
+    await runCli(["show", join(docs, "long.md")], print);
+    const printed = out.join("\n");
+    expect(printed).toContain("line 0 of the document");
+    expect(printed).toContain("line 299 of the document");
+  });
+
+  it("prints usage when no uri is given", async () => {
+    await runCli(["show"], print);
+    expect(out.join("\n")).toContain("usage: shyn show");
+  });
+
+  it("sets a non-zero exit code on a miss", async () => {
+    process.exitCode = 0;
+    await runCli(["show", "/no/such/file.md"], print);
+    expect(out.join("\n")).toContain("no document");
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+});

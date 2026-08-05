@@ -69,6 +69,25 @@ async function cmdSearch(query: string, print: (s: string) => void) {
     print(`[${h.score.toFixed(4)}] ${h.uri} (${h.source}) — ${h.text.slice(0, 80)}`);
 }
 
+async function cmdShow(args: string[], print: (s: string) => void) {
+  const uri = args[0];
+  if (!uri) return print("usage: shyn show <uri> [--source <source>]");
+  const si = args.indexOf("--source");
+  const source = si >= 0 ? args[si + 1] : undefined;
+  if (si >= 0 && !source) { print("error: --source requires a value"); process.exitCode = 1; return; }
+  let d: any;
+  try {
+    d = await rpcCall(sock(), "document", { uri, source });
+  } catch (e: any) {
+    // An ambiguous uri arrives as a plain RPC error naming the sources.
+    print(`error: ${e.message}`); process.exitCode = 1; return;
+  }
+  if (!d) { print(`no document with uri "${uri}"`); process.exitCode = 1; return; }
+  // No truncation: paging exists to protect an MCP context window, not a
+  // terminal. `shyn show <uri> > transcript.md` is the export path.
+  print(d.text);
+}
+
 async function cmdStats(args: string[], print: (s: string) => void) {
   let days = 7;
   const di = args.indexOf("--days");
@@ -211,6 +230,7 @@ export async function runCli(argv: string[], print: (s: string) => void = consol
     if (cmd === "ingest" && rest[0]) return await cmdIngest(rest[0], print);
     if (cmd === "status") return await cmdStatus(print);
     if (cmd === "search" && rest[0]) return await cmdSearch(rest.join(" "), print);
+    if (cmd === "show") return await cmdShow(rest, print);
     if (cmd === "stats") return await cmdStats(rest, print);
     if (cmd === "diagnose") {
       // diagnose handles daemon-down itself — that's its whole point.
@@ -282,7 +302,7 @@ export async function runCli(argv: string[], print: (s: string) => void = consol
       if (!rest[0]) return print("usage: shyn exclude <bundle-id|title-regex>");
       addExclude(cfgPath(), rest[0]); return print(`excluded: ${rest[0]}`);
     }
-    print("usage: shyn <ingest <path> | status | search <query> | stats [--days N] | diagnose [--mail] | forget [--source|--doc|--from|--to] | sync [--full] | install | uninstall [--purge] | setup | pause [30m|2h|until-tomorrow] | resume | exclude <bundle-id|title-regex> | meeting <status|stop|cancel>>");
+    print("usage: shyn <ingest <path> | status | search <query> | show <uri> [--source <source>] | stats [--days N] | diagnose [--mail] | forget [--source|--doc|--from|--to] | sync [--full] | install | uninstall [--purge] | setup | pause [30m|2h|until-tomorrow] | resume | exclude <bundle-id|title-regex> | meeting <status|stop|cancel>>");
   } catch (err) {
     if (isDaemonDownError(err)) print(DAEMON_DOWN_MESSAGE);
     else print(`error: ${(err as Error).message}`);
