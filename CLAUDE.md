@@ -63,6 +63,24 @@ Sources that need macOS permissions (Safari history, Notes → Full Disk Access)
 - CI (`.github/workflows/ci.yml`, macos-14): typecheck, `pnpm -r test`, e2e (with `SHYN_SKIP_MODEL_DOWNLOAD=1`), `eval:keyword`. `eval:hybrid` and `eval:latency` run only locally before a release; their bars are pre-committed — if one fails, fix the code or hold the release, never raise the bar.
 - Published packages (`engine`, `daemon`, `cli`, `mcp-client`) version in lockstep — exactly one client/daemon version pair is in play at a time.
 
+### Identity hygiene (this repo is public)
+
+Everything here ships under the project identity, not a personal one. Commits
+are authored as `shynbot <hello@shyn.day>`; **never** `git add -A` (it sweeps up
+local scratch), and never commit as anyone else.
+
+Test fixtures, sample data, and code comments use placeholders — `Acme`,
+`Globex`, `Sam`, `example.com`. Never a real person, employer, customer,
+domain, meeting title, or file path from the machine you happen to be on. This
+matters most for capture-agent work, where the natural move is to paste in
+whatever the agent just recorded: that is exactly how a real company name
+reached a public commit once (scrubbed 2026-08-05).
+
+`scripts/check-identity-leak.mjs` enforces it — wired as a pre-commit and
+commit-msg hook via `git config core.hooksPath .githooks`, and again in CI. It
+reads a private denylist from `~/.config/shyn/leak-denylist.txt` (deliberately
+not in the repo). If it fires, rename the fixture; do not weaken the guard.
+
 ---
 
 ## Workflow Orchestration

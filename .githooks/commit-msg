@@ -1,0 +1,4 @@
+#!/bin/sh
+# Commit messages leak too — a subject line naming the meeting that prompted
+# the fix is exactly as public as the code.
+exec node "$(git rev-parse --show-toplevel)/scripts/check-identity-leak.mjs" --file "$1"

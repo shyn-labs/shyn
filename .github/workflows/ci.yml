@@ -5,6 +5,22 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # identity-leak check needs the pushed range
+      # Shape checks only: the name denylist is private and absent here, so the
+      # local pre-commit hook remains the primary guard (--ci tolerates that).
+      # Refs come in via env, never interpolated into the shell, and a new
+      # branch's all-zero "before" SHA falls back to the last commit.
+      - name: identity-leak check
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base="${BASE_SHA:-$BEFORE_SHA}"
+          case "$base" in
+            ""|0000000000000000000000000000000000000000)
+              base="$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)" ;;
+          esac
+          node scripts/check-identity-leak.mjs --range "$base..HEAD" --ci
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }

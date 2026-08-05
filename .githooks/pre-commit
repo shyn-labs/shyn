@@ -1,0 +1,6 @@
+#!/bin/sh
+# Enabled by: git config core.hooksPath .githooks
+# Blocks identity leaks in staged changes (see scripts/check-identity-leak.mjs).
+# --no-verify skips this, which is why the same check also runs in CI and in
+# the agent's own tool hook.
+exec node "$(git rev-parse --show-toplevel)/scripts/check-identity-leak.mjs" --staged
