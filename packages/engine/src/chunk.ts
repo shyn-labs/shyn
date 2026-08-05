@@ -1,6 +1,6 @@
 export type Source = "file" | "browser" | "notes" | "conversation" | "screen" | "meeting";
 
-const MAX = 1600, OVERLAP = 200;
+export const MAX = 1600, OVERLAP = 200;
 
 function packParagraphs(paras: string[]): string[] {
   const out: string[] = [];
