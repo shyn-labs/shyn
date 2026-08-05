@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { UPGRADE_COMMAND } from "./update-core.js";
@@ -13,6 +13,32 @@ export function readUpdateCheckEnabled(home: string): boolean {
     const cfg = JSON.parse(readFileSync(join(home, "capture.json"), "utf8"));
     return cfg.updateCheck !== false;
   } catch { return true; }
+}
+
+// Applying an update restarts the daemon and both capture agents, so unlike the
+// CHECK (on by default) it is opt-in: `"autoUpdate": true` in capture.json.
+// Checking without applying stays the default for anyone who wants to decide.
+export function readAutoUpdateEnabled(home: string): boolean {
+  try {
+    const cfg = JSON.parse(readFileSync(join(home, "capture.json"), "utf8"));
+    return cfg.autoUpdate === true;
+  } catch { return false; }
+}
+
+// Last auto-update attempt, persisted because the upgrade restarts this very
+// app: in-memory state would reset and re-fire on every relaunch.
+export type UpdateAttempt = { version: string; at: number };
+
+export function readUpdateAttempt(home: string): UpdateAttempt | null {
+  try {
+    const a = JSON.parse(readFileSync(join(home, "update-attempt.json"), "utf8"));
+    return typeof a?.version === "string" && typeof a?.at === "number" ? a : null;
+  } catch { return null; }
+}
+
+export function writeUpdateAttempt(home: string, a: UpdateAttempt): void {
+  try { writeFileSync(join(home, "update-attempt.json"), JSON.stringify(a) + "\n"); }
+  catch { /* best-effort: a lost record only risks one extra attempt */ }
 }
 
 // One-shot marker written by the detached upgrade shell on failure —

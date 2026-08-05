@@ -1,4 +1,6 @@
-import { app, BrowserWindow, Tray, nativeImage, ipcMain, screen, clipboard, shell } from "electron";
+import {
+  app, BrowserWindow, Tray, nativeImage, ipcMain, screen, clipboard, shell, Notification,
+} from "electron";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -20,6 +22,7 @@ import {
 } from "./throttle.js";
 import {
   checkLatest, consumeUpdateFailed, findBrew, readUpdateCheckEnabled, upgradeShell,
+  readAutoUpdateEnabled, readUpdateAttempt, writeUpdateAttempt, shouldAutoUpdate,
 } from "./update.js";
 import { spawn } from "node:child_process";
 import type { SettingsPane } from "./derive.js";
@@ -33,6 +36,9 @@ const sock = join(home, "shyn.sock");
 let updLatest: string | null = null;
 let updUpdating = false;
 let updFailed = false;
+// Epoch of the last observed failure marker, for auto-update backoff. Not
+// persisted: the marker itself survives restarts and re-sets this on read.
+let updFailedAt: number | null = null;
 
 async function updateCheck() {
   if (!readUpdateCheckEnabled(home)) { updLatest = null; return; }
@@ -93,9 +99,54 @@ if (!app.requestSingleInstanceLock()) {
     };
   }
 
+  // Single path for starting an upgrade, whether a human clicked it or
+  // shouldAutoUpdate decided. Detached because `shyn setup` restarts THIS app
+  // mid-pipeline; a normal child would die with its parent and strand the
+  // upgrade half-done. Records the attempt so the auto path cannot re-fire in a
+  // loop when an upgrade does not change the reported version.
+  function startUpgrade(version: string | null, auto: boolean) {
+    updUpdating = true; updFailed = false;
+    if (version) writeUpdateAttempt(home, { version, at: Math.floor(Date.now() / 1000) });
+    if (auto && Notification.isSupported()) {
+      new Notification({
+        title: "shyn is updating",
+        body: `Installing ${version ?? "a new version"}. Capture pauses for a moment while services restart.`,
+      }).show();
+    }
+    const child = spawn("/bin/bash", ["-lc", upgradeShell(home)],
+      { detached: true, stdio: "ignore" });
+    child.unref();
+  }
+
   async function tick() {
-    if (consumeUpdateFailed(home)) { updFailed = true; updUpdating = false; }
-    const vm = deriveView(await poll(sock), {
+    if (consumeUpdateFailed(home)) {
+      updFailed = true; updUpdating = false;
+      updFailedAt = Math.floor(Date.now() / 1000);
+    }
+    const status = await poll(sock);
+    // Auto-update is evaluated here rather than on the 24h check timer so the
+    // meeting guard reads LIVE state: a decision made an hour ago could land
+    // in the middle of a call.
+    // Daemon down (ok: false) leaves `current` empty, which shouldAutoUpdate
+    // reads as unparseable and refuses — upgrading blind is not an improvement.
+    // NB: not named `live` — that is the window/tray liveness helper.
+    const daemonStatus = status.ok ? status.status : undefined;
+    const decision = shouldAutoUpdate({
+      enabled: readAutoUpdateEnabled(home),
+      current: daemonStatus?.daemonVersion ?? "",
+      latest: updLatest,
+      updating: updUpdating,
+      meetingState: daemonStatus?.capture?.meeting?.state ?? null,
+      lastAttempt: readUpdateAttempt(home),
+      lastFailureAt: updFailedAt,
+      brewFound: findBrew() !== null,
+      now: Math.floor(Date.now() / 1000),
+    });
+    if (decision.run) {
+      console.log("auto-update:", decision.reason);
+      startUpgrade(updLatest, true);
+    }
+    const vm = deriveView(status, {
       installed: installedAgents(),
       pausedUntil: readPausedUntil(home),
       meetingModel: readMeetingModel(home),
@@ -191,14 +242,7 @@ if (!app.requestSingleInstanceLock()) {
           if (arg === "small" || arg === "large-v3_turbo") setMeetingModel(home, arg as MeetingModel);
           else console.error("unknown meeting model:", arg);
         }
-        else if (name === "run-update") {
-          updUpdating = true; updFailed = false;
-          // Detached: `shyn setup` restarts THIS app mid-pipeline; a normal
-          // child would die with its parent and strand the upgrade half-done.
-          const child = spawn("/bin/bash", ["-lc", upgradeShell(home)],
-            { detached: true, stdio: "ignore" });
-          child.unref();
-        }
+        else if (name === "run-update") startUpgrade(updLatest, false);
         else if (name === "open-onboarding") showOnboarding();
         else if (name === "open-settings") {
           const url = Object.hasOwn(SETTINGS_URLS, arg as string) ? SETTINGS_URLS[arg as SettingsPane] : undefined;
