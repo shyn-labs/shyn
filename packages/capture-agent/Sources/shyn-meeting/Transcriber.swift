@@ -27,6 +27,7 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
         let channels = [(mic, Speaker.me), (system, Speaker.others)]
             .filter { FileManager.default.fileExists(atPath: $0.0.path) }
         let total = channels.count
+        var dropped = (annotation: 0, silence: 0, lowConfidence: 0, degenerate: 0, repeated: 0)
         var segs: [TranscriptSegment] = []
         for (idx, (url, speaker)) in channels.enumerated() {
             // WhisperKit fires this per decode window; read its Progress into a
@@ -43,27 +44,48 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
             for r in results {
                 for s in r.segments {
                     let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !text.isEmpty, !isNonSpeechAnnotation(text) else { continue }
+                    if text.isEmpty { continue }
+                    if isNonSpeechAnnotation(text) { dropped.annotation += 1; continue }
+                    let q = SegmentQuality(noSpeechProb: s.noSpeechProb,
+                                           avgLogprob: s.avgLogprob,
+                                           compressionRatio: s.compressionRatio)
+                    if !passesQualityGates(q) {
+                        if q.noSpeechProb > TranscriptFilterLimits.maxNoSpeechProb { dropped.silence += 1 }
+                        else if q.avgLogprob < TranscriptFilterLimits.minAvgLogprob { dropped.lowConfidence += 1 }
+                        else { dropped.degenerate += 1 }
+                        continue
+                    }
                     segs.append(TranscriptSegment(start: Double(s.start), speaker: speaker, text: text))
                 }
             }
         }
+        let kept = collapseRepeats(segs)
+        dropped.repeated = segs.count - kept.count
+        // Never silent: an over-aggressive threshold must be diagnosable from
+        // the log rather than showing up as a mysteriously empty transcript.
+        // Built as an array rather than a long `+` chain — the concatenated
+        // form defeated the Swift type-checker ("unable to type-check this
+        // expression in reasonable time").
+        let reasons = [
+            "\(dropped.annotation) annotation",
+            "\(dropped.silence) silence",
+            "\(dropped.lowConfidence) low-confidence",
+            "\(dropped.degenerate) degenerate",
+            "\(dropped.repeated) repeated",
+        ].joined(separator: ", ")
+        let summary = "[transcriber] kept \(kept.count) segments; dropped \(reasons)\n"
+        FileHandle.standardError.write(Data(summary.utf8))
         await onProgress(1.0)
-        return segs
+        return kept
     } catch {
         FileHandle.standardError.write(Data("[transcriber] failed: \(error)\n".utf8))
         return []
     }
 }
 
-// Whisper marks non-speech stretches with bracketed/parenthesized
-// annotations — "[BLANK_AUDIO]", "[Pause]", "[ Silence ]", "(music)" etc.
-// (live-verification finding: silent meeting tails produced dozens of
-// them). They carry no content; drop whole-annotation segments.
-func isNonSpeechAnnotation(_ text: String) -> Bool {
-    (text.hasPrefix("[") && text.hasSuffix("]")) ||
-    (text.hasPrefix("(") && text.hasSuffix(")"))
-}
+// isNonSpeechAnnotation moved to CaptureCore/TranscriptFilter.swift, where it
+// also catches *asterisk* forms. Leaving a local copy here would shadow the
+// CaptureCore one and silently keep the asterisk bug.
 
 // True once the CoreML model files exist locally (status reporting; the
 // first transcription triggers the download otherwise).
