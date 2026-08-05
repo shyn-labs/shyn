@@ -153,6 +153,45 @@ export function buildMcpServer(socketPath: string): McpServer {
     }
   });
 
+  server.registerTool("get_document", {
+    description:
+      "Read a whole document from memory by uri or doc_id — search_memory returns only matching " +
+      "excerpts, so use this when you need the complete text (a full meeting transcript, a whole note). " +
+      "Both uri and doc_id come from search_memory and recent_activity results. Long documents are " +
+      "truncated with an offset footer; call again with that offset to page through the rest.",
+    inputSchema: {
+      uri: z.string().optional(),
+      doc_id: z.number().int().optional(),
+      source: z.enum(["file", "browser", "notes", "conversation", "screen", "meeting"])
+        .describe("disambiguates a uri that exists under more than one source").optional(),
+      offset: z.number().int().min(0).describe("character offset into the document").optional(),
+      max_chars: z.number().int().min(1).max(200_000).optional(),
+    },
+  }, async (a) => {
+    try {
+      if (a.uri === undefined && a.doc_id === undefined)
+        return reply("error: get_document requires uri or doc_id");
+      const d = await call("document", { uri: a.uri, docId: a.doc_id, source: a.source });
+      if (d === null)
+        return reply(a.uri !== undefined
+          ? `no document with uri "${a.uri}"`
+          : `no document with doc_id ${a.doc_id}`);
+      const offset = a.offset ?? 0;
+      const max = a.max_chars ?? 50_000;
+      const slice = d.text.slice(offset, offset + max);
+      const rest = d.text.length - (offset + slice.length);
+      const header =
+        `[${new Date(d.ts * 1000).toISOString()}] ${d.title || d.uri}\n` +
+        `source: ${d.source} | uri: ${d.uri} | doc: ${d.docId} | ${d.text.length} chars, ${d.chunkCount} chunks\n\n`;
+      const footer = rest > 0
+        ? `\n\n…truncated, ${rest} characters remaining, call again with offset=${offset + slice.length}`
+        : "";
+      return reply(header + slice + footer);
+    } catch (e: any) {
+      return reply(`error: ${e.message}`);
+    }
+  });
+
   server.registerTool("remember", {
     description: "Save an explicit fact or note to the user's local memory for future recall.",
     inputSchema: { content: z.string(), tags: z.array(z.string()).optional() },

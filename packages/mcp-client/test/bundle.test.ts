@@ -64,7 +64,7 @@ describe("mcpb bundle (real subprocess, real daemon)", () => {
 
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["forget", "memory_status", "recent_activity", "remember", "search_memory"]);
+      ["forget", "get_document", "memory_status", "recent_activity", "remember", "search_memory"]);
 
     await client.callTool({ name: "remember",
       arguments: { content: "Sam ships the shyn mcpb bundle" } });

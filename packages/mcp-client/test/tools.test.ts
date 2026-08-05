@@ -49,10 +49,10 @@ afterEach(async () => { await client.close(); await daemon.close(); });
 const text = (r: any) => r.content.map((c: any) => c.text).join("\n");
 
 describe("mcp tools", () => {
-  it("exposes exactly the 5 spec tools", async () => {
+  it("exposes exactly the 6 spec tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["forget", "memory_status", "recent_activity", "remember", "search_memory"]);
+      ["forget", "get_document", "memory_status", "recent_activity", "remember", "search_memory"]);
   });
 
   it("remember → search_memory round-trip with provenance and mode", async () => {
@@ -217,5 +217,58 @@ describe("mcp tools", () => {
     expect(classifyRpcError(Object.assign(new Error("no keyword here"), { code: -32001 })))
       .toBe("refused");
     expect(classifyRpcError(new Error("please confirm your request"))).toBe("error");
+  });
+});
+
+describe("get_document", () => {
+  it("returns the whole document, not a 400-char excerpt", async () => {
+    const body = Array.from({ length: 300 }, (_, i) => `Me: line ${i}`).join("\n\n");
+    engineRef.ingest({ source: "meeting", uri: "meeting://g/1", title: "Sync", ts: 1000, text: body });
+    await engineRef.drain();
+    const t = text(await client.callTool({ name: "get_document",
+      arguments: { uri: "meeting://g/1" } }));
+    expect(t).toContain("Me: line 0");
+    expect(t).toContain("Me: line 299");        // the whole thing, not the head
+    expect(t).toContain("source: meeting");
+    expect(t).not.toContain("truncated");
+  });
+
+  it("truncates with an offset footer when longer than max_chars", async () => {
+    engineRef.ingest({ source: "file", uri: "/long.md", title: "long", ts: 1000,
+      text: "x".repeat(120) });
+    await engineRef.drain();
+    const t = text(await client.callTool({ name: "get_document",
+      arguments: { uri: "/long.md", max_chars: 50 } }));
+    expect(t).toContain("truncated, 70 characters remaining, call again with offset=50");
+  });
+
+  it("pages with offset", async () => {
+    engineRef.ingest({ source: "file", uri: "/page.md", title: "page", ts: 1000,
+      text: "ABCDEFGHIJ" });
+    await engineRef.drain();
+    const t = text(await client.callTool({ name: "get_document",
+      arguments: { uri: "/page.md", offset: 5 } }));
+    expect(t).toContain("FGHIJ");
+    expect(t).not.toContain("ABCDE\n");
+  });
+
+  it("reports a miss without throwing", async () => {
+    const t = text(await client.callTool({ name: "get_document", arguments: { uri: "gone" } }));
+    expect(t).toBe('no document with uri "gone"');
+  });
+
+  it("requires uri or doc_id", async () => {
+    const t = text(await client.callTool({ name: "get_document", arguments: {} }));
+    expect(t).toContain("requires uri or doc_id");
+  });
+
+  it("surfaces an ambiguous uri as an error naming the sources", async () => {
+    engineRef.ingest({ source: "file", uri: "dup", title: "f", ts: 1000, text: "file body" });
+    engineRef.ingest({ source: "notes", uri: "dup", title: "n", ts: 1001, text: "note body" });
+    await engineRef.drain();
+    expect(text(await client.callTool({ name: "get_document", arguments: { uri: "dup" } })))
+      .toMatch(/file, notes/);
+    expect(text(await client.callTool({ name: "get_document",
+      arguments: { uri: "dup", source: "notes" } }))).toContain("note body");
   });
 });
