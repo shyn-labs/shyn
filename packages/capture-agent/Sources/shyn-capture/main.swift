@@ -13,7 +13,7 @@ let client = DaemonClient(socketPath: home + "/shyn.sock")
 let debugEnabled = ProcessInfo.processInfo.environment["SHYN_CAPTURE_DEBUG"] == "1"
 func dbg(_ s: @autoclosure () -> String) {
     guard debugEnabled else { return }
-    FileHandle.standardError.write(Data((s() + "\n").utf8))
+    FileHandle.standardError.write(Data(logLine(s()).utf8))
 }
 
 actor Agent {

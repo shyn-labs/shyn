@@ -10,10 +10,13 @@ import CaptureCore
 // English gist — recorded spike decision, more searchable than mangled
 // Devanagari (spikes/meeting-probe/README.md §Accuracy).
 //
-// Returns [] on ANY failure — a meeting with no transcript is dropped, never
-// thrown out of the agent loop.
+// Never throws out of the agent loop. Returns .failure for infra problems
+// (model missing, download offline, every channel erroring) and .segments for
+// a decode that actually ran — including .segments([]) for a silent meeting.
+// The caller purges audio on silence and keeps it for retry on failure, so
+// collapsing the two (as this did until 2026-08-05) destroys recordings.
 func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
-                       onProgress: @escaping @Sendable (Double) async -> Void = { _ in }) async -> [TranscriptSegment] {
+                       onProgress: @escaping @Sendable (Double) async -> Void = { _ in }) async -> TranscriptionOutcome {
     do {
         // downloadBase keeps CoreML models out of ~/Documents (WhisperKit's
         // default), which is TCC-protected for a headless agent.
@@ -29,6 +32,7 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
         let total = channels.count
         var dropped = (annotation: 0, silence: 0, lowConfidence: 0, degenerate: 0, repeated: 0)
         var segs: [TranscriptSegment] = []
+        var channelErrors: [String] = []
         for (idx, (url, speaker)) in channels.enumerated() {
             // WhisperKit fires this per decode window; read its Progress into a
             // single 0…1 fraction and hand only the Double (Sendable) to the
@@ -39,8 +43,9 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
                 Task { await onProgress(f) }
                 return nil
             }
-            let results: [TranscriptionResult] =
-                (try? await pipe.transcribe(audioPath: url.path, decodeOptions: opts, callback: onWindow)) ?? []
+            var results: [TranscriptionResult] = []
+            do { results = try await pipe.transcribe(audioPath: url.path, decodeOptions: opts, callback: onWindow) }
+            catch { channelErrors.append("\(speaker.rawValue): \(error)") }
             for r in results {
                 for s in r.segments {
                     let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -73,13 +78,26 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
             "\(dropped.degenerate) degenerate",
             "\(dropped.repeated) repeated",
         ].joined(separator: ", ")
-        let summary = "[transcriber] kept \(kept.count) segments; dropped \(reasons)\n"
-        FileHandle.standardError.write(Data(summary.utf8))
+        // One stderr mechanism for the whole file: logLine timestamps it, which
+        // is the entire reason it exists (an undatable failure line is what
+        // made the 15 Jul model outage impossible to place).
+        FileHandle.standardError.write(Data(
+            logLine("[transcriber] kept \(kept.count) segments; dropped \(reasons)").utf8))
         await onProgress(1.0)
-        return kept
+        // Nothing DECODED and every channel errored: infra, not silence. The
+        // test is on `segs`, not `kept`, on purpose — a decode that produced
+        // segments which the filters then removed is a genuinely empty meeting
+        // (.segments([]), caller purges), not a failure to keep audio for.
+        if segs.isEmpty, !channelErrors.isEmpty, channelErrors.count == channels.count {
+            FileHandle.standardError.write(Data(
+                logLine("[transcriber] all channels failed: \(channelErrors.joined(separator: "; "))").utf8))
+            return .failure(channelErrors.joined(separator: "; "))
+        }
+        return .segments(kept)
     } catch {
-        FileHandle.standardError.write(Data("[transcriber] failed: \(error)\n".utf8))
-        return []
+        // WhisperKit init: model missing, download offline, unsupported device.
+        FileHandle.standardError.write(Data(logLine("[transcriber] failed: \(error)").utf8))
+        return .failure("\(error)")
     }
 }
 

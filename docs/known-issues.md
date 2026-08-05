@@ -331,6 +331,30 @@ public repo.
   phantom pre-roll via the listen-only booster (speaker→mic bleed can voice
   both channels). Slack removed from the booster list (89de722); the
   real-VAD revisit still stands for the remaining two-channel case.
+  UPDATE 2026-08-05: the same bleed was corrupting TRANSCRIPTS, not just
+  detection — see the SP8 entry below. AEC now cancels it at capture, which
+  should also shrink the phantom-preroll surface.
+
+## Logged (SP8 meeting transcript fidelity, 2026-08-05)
+
+- **Pending meeting audio is bounded by the 24h orphan sweep.** When
+  transcription fails for infra reasons (model absent, offline) the session
+  audio is kept with a `pending.json` sidecar and retried while idle, gated on
+  the model being present locally. `sweepOrphanAudio` runs at agent STARTUP
+  only, so a pending session is purged on the first launch after it turns 24h
+  old — a meeting whose model never arrives inside a day is still lost.
+  Accepted: keeping raw meeting audio around for days would undercut the
+  byte-honest purge promise. `maxPendingAttempts` (5) additionally caps a
+  present-but-unusable model from re-transcribing forever.
+- **Echo dedupe is threshold-based, tuned against one real transcript.**
+  `dropEchoDuplicates` drops a mic segment when a system segment within 2.5s
+  scores >= 0.6 token overlap, both sides >= 4 tokens. Short affirmations are
+  deliberately exempt, so a duplicated "yes, absolutely" pair still appears on
+  both channels. Retune when more bleed transcripts exist.
+- **AEC is unverified on non-M-series/external-device setups.** Voice
+  processing is enabled on the AVAudioEngine input node and falls back to
+  plain capture if macOS refuses; the fallback path has only been exercised by
+  code inspection, not on hardware that actually refuses.
 
 ## Logged (SP5 distribution, 2026-07-11)
 

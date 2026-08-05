@@ -58,22 +58,40 @@ func calendarStamp(startEpoch: Int, endEpoch: Int) async -> CalendarStamp? {
 }
 
 // Window-title fallback (spec phase 1b): when EventKit has nothing — the
-// Google-only-calendar user — the meeting app's focused-window title (Zoom
-// windows and Meet tabs usually carry the meeting name) is better than
-// "Zoom meeting · date". Opportunistic: reads only if the user granted
-// shyn-meeting Accessibility; never prompts, returns nil otherwise.
+// Google-only-calendar user — the meeting app's window title (Zoom windows and
+// Meet tabs usually carry the meeting name) is better than "Zoom meeting ·
+// date". Opportunistic: reads only if the user granted shyn-meeting
+// Accessibility; never prompts, returns nil otherwise.
+//
+// Live finding 2026-08-04: reading ONLY the focused window returned nil for a
+// real Meet call (the frontmost window at preroll was a different Chrome
+// window), so all windows are scanned, focused one first, and each candidate
+// goes through cleanMeetingWindowTitle — a title of "Meet" is worth nothing.
 @MainActor func meetingWindowTitle(bundleId: String?) -> String? {
     guard AXIsProcessTrusted(), let bid = bundleId,
           let app = NSRunningApplication.runningApplications(withBundleIdentifier: bid).first
     else { return nil }
     let ax = AXUIElementCreateApplication(app.processIdentifier)
-    var win: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(ax, kAXFocusedWindowAttribute as CFString, &win) == .success,
-          let w = win, CFGetTypeID(w) == AXUIElementGetTypeID()
-    else { return nil }
-    var title: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(w as! AXUIElement, kAXTitleAttribute as CFString, &title) == .success,
-          let t = title as? String, !t.isEmpty
-    else { return nil }
-    return t
+
+    var candidates: [AXUIElement] = []
+    var focused: CFTypeRef?
+    if AXUIElementCopyAttributeValue(ax, kAXFocusedWindowAttribute as CFString, &focused) == .success,
+       let f = focused, CFGetTypeID(f) == AXUIElementGetTypeID() {
+        candidates.append(f as! AXUIElement)
+    }
+    var windows: CFTypeRef?
+    if AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &windows) == .success,
+       let list = windows as? [AXUIElement] {
+        candidates.append(contentsOf: list)
+    }
+
+    for window in candidates {
+        var title: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success,
+              let raw = title as? String,
+              let cleaned = cleanMeetingWindowTitle(raw)
+        else { continue }
+        return cleaned
+    }
+    return nil
 }

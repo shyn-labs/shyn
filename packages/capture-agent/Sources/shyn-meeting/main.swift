@@ -13,12 +13,20 @@ let home = ProcessInfo.processInfo.environment["SHYN_HOME"]
     ?? (NSHomeDirectory() + "/Library/Application Support/shyn")
 let configPath = home + "/capture.json"
 let meetingTmp = URL(fileURLWithPath: home + "/meeting-tmp")
+let whisperModelDir = URL(fileURLWithPath: home + "/models/whisperkit")
 let client = DaemonClient(socketPath: home + "/shyn.sock")
 
 let debugEnabled = ProcessInfo.processInfo.environment["SHYN_MEETING_DEBUG"] == "1"
 func dbg(_ s: @autoclosure () -> String) {
     guard debugEnabled else { return }
-    FileHandle.standardError.write(Data((s() + "\n").utf8))
+    FileHandle.standardError.write(Data(logLine(s()).utf8))
+}
+
+// Operator-visible: failures a user may have to act on (a dropped meeting, a
+// refused permission) are NOT gated behind SHYN_MEETING_DEBUG. Verbose tracing
+// stays in dbg().
+func logErr(_ s: String) {
+    FileHandle.standardError.write(Data(logLine(s).utf8))
 }
 
 guard #available(macOS 14.2, *) else {
@@ -187,6 +195,10 @@ actor MeetingAgent {
             detector.cancel()
         }
 
+        // Idle window: pick up a session whose transcription failed earlier
+        // (model was still downloading, machine was offline).
+        if state != .recording { await retryPendingTranscription(cfg: cfg) }
+
         await postStats(state: pendingTranscriptions > 0 ? "transcribing" : state.rawValue)
     }
 
@@ -199,7 +211,7 @@ actor MeetingAgent {
         let info = await MainActor.run { frontmostAppInfo() }
         do {
             recorder.meter.reset()
-            try await recorder.start(sessionDir: dir)
+            try await recorder.start(sessionDir: dir, echoCancellation: cfg.echoCancellation)
             sessionDir = dir; sessionStart = start
             sessionBundleId = info.bundleId; sessionAppName = info.name
             // Grabbed at preroll while the call window is likely frontmost;
@@ -234,7 +246,13 @@ actor MeetingAgent {
         let start = sessionStart
         let end = Int(Date().timeIntervalSince1970)
         let bundleId = sessionBundleId, appName = sessionAppName
-        let windowTitle = sessionWindowTitle
+        // Preroll runs before the call is joined, so its title read can come
+        // back nil (live finding 2026-08-04) while the joined window carries the
+        // real name. The window is normally still open at end-of-meeting.
+        var windowTitle = sessionWindowTitle
+        if windowTitle == nil {
+            windowTitle = await MainActor.run { meetingWindowTitle(bundleId: bundleId) }
+        }
         sessionDir = nil
         sessionWindowTitle = nil
         prerollStart = nil
@@ -270,18 +288,36 @@ actor MeetingAgent {
                                   start: Int, end: Int, bundleId: String?, appName: String,
                                   windowTitle: String?, cfg: MeetingConfig) async {
         defer { finishTranscription() }
-        let segs = await transcribeMeeting(mic: urls.mic, system: urls.system,
-                                           model: cfg.whisperModel,
-                                           modelDir: URL(fileURLWithPath: home + "/models/whisperkit"),
-                                           onProgress: { p in await self.updateTranscribeProgress(p) })
+        let outcome = await transcribeMeeting(mic: urls.mic, system: urls.system,
+                                              model: cfg.whisperModel,
+                                              modelDir: whisperModelDir,
+                                              onProgress: { p in await self.updateTranscribeProgress(p) })
+        let segs: [TranscriptSegment]
+        switch outcome {
+        case .segments(let s):
+            segs = s
+        case .failure(let reason):
+            // Infra failure (model missing, offline, unusable): the recording is
+            // the only irreplaceable thing here, so keep it and retry once the
+            // model is present. Bounded by maxPendingAttempts and the 24h sweep.
+            keepForRetry(dir: dir, start: start, end: end, bundleId: bundleId,
+                         appName: appName, windowTitle: windowTitle, reason: reason)
+            return
+        }
         let transcript = assembleTranscript(segs)
         guard !transcript.isEmpty else {
-            // Nothing recognizable — drop the session, still purge the audio.
+            // Decode ran and heard nothing — genuine silence, drop the session.
             purgeAudio(sessionDir: dir); dbg("empty transcript — dropped"); return
         }
+        // A transcript exists from here on: never re-transcribe this session,
+        // even if the ship below only reaches the ring buffer.
+        clearPendingSession(in: dir)
         // Stamp precedence (spec 2026-07-23): EventKit match → preroll
         // window title → plain "appName meeting · date".
         let stamp = await calendarStamp(startEpoch: start, endEpoch: end)
+        // Which fallback won, so a generic doc title is diagnosable next time.
+        dbg("stamp: \(stamp != nil ? "eventkit" : (windowTitle != nil ? "window" : "none")) "
+            + "(calendar tcc=\(calendarAccessAuthorized()))")
         let payload = meetingPayload(bundleId: bundleId, appName: appName,
                                      startEpoch: start, endEpoch: end, transcript: transcript,
                                      eventTitle: stamp?.title ?? windowTitle,
@@ -296,6 +332,44 @@ actor MeetingAgent {
             // audio stays until ship succeeds or the 24h orphan sweep.
             dbg("daemon down — transcript buffered, audio kept")
         }
+    }
+
+    // Failure path for a transcription: audio stays on disk with a sidecar
+    // holding what the retry needs (the agent can restart in between). Attempts
+    // are counted so a present-but-unusable model cannot spin the ANE forever.
+    private func keepForRetry(dir: URL, start: Int, end: Int, bundleId: String?,
+                              appName: String, windowTitle: String?, reason: String) {
+        let attempts = (readPendingSession(in: dir)?.attempts ?? 0) + 1
+        guard attempts <= maxPendingAttempts else {
+            logErr("[meeting] transcription failed \(attempts)x — giving up, purging \(dir.lastPathComponent)")
+            purgeAudio(sessionDir: dir)
+            return
+        }
+        let pending = PendingSession(start: start, end: end, bundleId: bundleId, appName: appName,
+                                     windowTitle: windowTitle, reason: reason, attempts: attempts)
+        if writePendingSession(pending, in: dir) {
+            logErr("[meeting] transcription failed (attempt \(attempts)): \(reason) — audio kept for retry")
+        } else {
+            // Cannot record the retry intent, so the audio would linger unowned.
+            logErr("[meeting] transcription failed and sidecar unwritable — purging \(dir.lastPathComponent)")
+            purgeAudio(sessionDir: dir)
+        }
+    }
+
+    // Retries one pending session per tick while idle. Gated on the model being
+    // present locally: retrying without it just reproduces the same failure and
+    // burns an attempt (the offline case that started this).
+    private func retryPendingTranscription(cfg: MeetingConfig) async {
+        guard pendingTranscriptions == 0, sessionDir == nil, !(await recorder.recording) else { return }
+        guard whisperModelPresent(model: cfg.whisperModel, modelDir: whisperModelDir) else { return }
+        guard let dir = pendingSessions(root: meetingTmp).first,
+              let p = readPendingSession(in: dir) else { return }
+        dbg("retrying \(dir.lastPathComponent) (attempt \(p.attempts) failed: \(p.reason))")
+        startTranscription(dir: dir,
+                           urls: (mic: dir.appendingPathComponent("mic.wav"),
+                                  system: dir.appendingPathComponent("system.wav")),
+                           start: p.start, end: p.end, bundleId: p.bundleId,
+                           appName: p.appName, windowTitle: p.windowTitle, cfg: cfg)
     }
 
     private func updateTranscribeProgress(_ p: Double) { transcribeProgress = p }

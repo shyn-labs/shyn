@@ -101,3 +101,34 @@ Run 2026-07-10 (macOS 26.5.1, M-series, SentinelOne active):
 not yet observed live** — verify on the next natural meeting: after the
 call ends, `shyn meeting status` should go recording → transcribing →
 idle without a manual `stop`.
+
+## SP8 transcript fidelity — live checks (2026-08-05, PENDING)
+
+Prompted by reading back a real captured meeting (4 Aug 2026): the transcript
+double-transcribed the far end onto the mic channel and labeled half of it
+`Me`, the doc title fell back to `Google Meet meeting · 4 Aug 2026 at 16:03`
+(so it could not be found by searching the meeting name), and `meeting.log`
+held one undatable transcriber failure.
+
+Run these on the next real meeting, **on laptop speakers** (headphones hide
+the bleed this is meant to fix), with `SHYN_MEETING_DEBUG=1`:
+
+1. [ ] **AEC.** Before purge, transcribe `meeting-tmp/session-<ts>/mic.wav`
+   alone. Expect only the user's own voice. Far-end speech in mic.wav means
+   voice processing did not take — check the log for
+   `[recorder] voice processing refused`.
+2. [ ] **No duplicate pairs.** The shipped transcript must not contain
+   near-identical `Me:`/`Others:` lines seconds apart. (Short affirmations are
+   exempt by design.)
+3. [ ] **Title.** Doc title carries the real meeting name. The `stamp:` debug
+   line names which source won (eventkit / window / none) plus the Calendars
+   TCC state; `none` with a real meeting open is the case to chase.
+4. [ ] **Searchability.** `search_memory` on the meeting's own name returns
+   the meeting doc. This is the check that failed on 4 Aug.
+5. [ ] **Log lines** carry an ISO-8601 local timestamp, and a transcriber
+   failure appears without `SHYN_MEETING_DEBUG` set.
+6. [ ] **Offline-failure drill.** Move `~/Library/Application
+   Support/shyn/models/whisperkit` aside, go offline, record a 60s meeting,
+   stop it. Expect: audio KEPT in `meeting-tmp`, `pending.json` written,
+   failure logged. Restore the model, wait a tick, expect the retry to
+   transcribe and ship, and `meeting-tmp` to end up empty.
