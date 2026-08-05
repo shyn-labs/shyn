@@ -74,20 +74,41 @@ export function buildMcpServer(socketPath: string): McpServer {
 
   server.registerTool("recent_activity", {
     description:
-      "List documents recently added to memory. Call this FIRST for vague or broad questions " +
-      "('what was I working on') to orient, then drill in with search_memory.",
+      "Enumerate documents in a time window, in timestamp order. Call this FIRST for vague or broad " +
+      "questions ('what was I working on') to orient, then drill in with search_memory. " +
+      "Unlike search_memory this is NOT ranked by relevance — it returns everything in the window, " +
+      "so it is the right tool for reconstructing a specific period ('what did I do between 13:00 " +
+      "and 16:00 yesterday'). Use time_from/time_to for an explicit past window (ISO 8601, offsets " +
+      "allowed) and order:'asc' to replay a day forwards; `hours` is a lookback-from-now shorthand. " +
+      "Page with limit/offset — the reply says so when more rows remain.",
     inputSchema: {
       hours: z.number().int().min(1).max(720).optional(),
       sources: z.array(z.enum(["file", "browser", "notes", "conversation", "screen", "meeting"])).optional(),
+      time_from: z.string().describe("ISO 8601 date or datetime, offsets allowed").optional(),
+      time_to: z.string().describe("ISO 8601 date or datetime, offsets allowed").optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+      offset: z.number().int().min(0).optional(),
+      order: z.enum(["asc", "desc"]).describe("asc replays a window forwards; default desc").optional(),
     },
   }, async (a) => {
     try {
-      const docs = await call("recent", { hours: a.hours, sources: a.sources });
-      return reply(docs.length
-        ? docs.map((d: any) =>
-            `- [${new Date(d.ts * 1000).toISOString()}] ${d.title || d.uri} (${d.source}) ${d.uri}`
-          ).join("\n")
-        : "nothing ingested in that window");
+      const timeFrom = parseWhen(a.time_from, "time_from");
+      const timeTo = parseWhen(a.time_to, "time_to");
+      const limit = a.limit ?? 50;
+      const docs = await call("recent", {
+        hours: a.hours, sources: a.sources, timeFrom, timeTo,
+        limit, offset: a.offset, order: a.order,
+      });
+      if (!docs.length) return reply("nothing ingested in that window");
+      const lines = docs.map((d: any) =>
+        `- [${new Date(d.ts * 1000).toISOString()}] ${d.title || d.uri} (${d.source}) ${d.uri}`
+      ).join("\n");
+      // Never let a page cap masquerade as "that was everything" — a silent
+      // truncation reads as complete coverage when it is not.
+      const more = docs.length === limit
+        ? `\n(page full at ${limit}; more rows may remain — repeat with offset: ${(a.offset ?? 0) + limit})`
+        : "";
+      return reply(lines + more);
     } catch (e: any) {
       return reply(`error: ${e.message}`);
     }

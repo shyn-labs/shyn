@@ -94,6 +94,35 @@ describe("mcp tools", () => {
     expect(text(r)).toMatch(/conversation:\/\//);
   });
 
+  it("recent_activity enumerates an explicit window and flags a full page", async () => {
+    for (const c of ["window fact one", "window fact two", "window fact three"]) {
+      await client.callTool({ name: "remember", arguments: { content: c } });
+    }
+    // An explicit window around now, replayed forwards.
+    const from = new Date(Date.now() - 3600_000).toISOString();
+    const to = new Date(Date.now() + 3600_000).toISOString();
+    const asc = await client.callTool({ name: "recent_activity",
+      arguments: { time_from: from, time_to: to, order: "asc", sources: ["conversation"] } });
+    expect(text(asc)).toMatch(/conversation:\/\//);
+
+    // A page filled exactly to the limit must announce that more may remain,
+    // rather than reading as complete coverage.
+    const capped = await client.callTool({ name: "recent_activity",
+      arguments: { time_from: from, time_to: to, limit: 1, sources: ["conversation"] } });
+    expect(text(capped)).toMatch(/page full at 1.*offset: 1/s);
+
+    // A window in the distant past is empty, not an error.
+    const empty = await client.callTool({ name: "recent_activity",
+      arguments: { time_from: "2001-01-01", time_to: "2001-01-02" } });
+    expect(text(empty)).toMatch(/nothing ingested/);
+  });
+
+  it("recent_activity rejects an unparseable timestamp with guidance", async () => {
+    const r = await client.callTool({ name: "recent_activity",
+      arguments: { time_from: "last tuesday" } });
+    expect(text(r)).toMatch(/invalid time_from.*ISO 8601/s);
+  });
+
   it("memory_status reports counts", async () => {
     const r = await client.callTool({ name: "memory_status", arguments: {} });
     expect(text(r)).toMatch(/documents/);

@@ -10,6 +10,11 @@ import { drainEmbedQueue } from "./embed-worker.js";
 import { getWatermark, setWatermark } from "./readers/watermark.js";
 import type { Reader } from "./readers/types.js";
 import type { IngestDoc, SearchQuery, SearchResult } from "./types.js";
+
+// Ceiling on a single recent() page. High enough that an hour of dense screen
+// capture fits in one call, low enough that a runaway query cannot try to push
+// the whole corpus through the JSON-RPC socket.
+export const RECENT_MAX_LIMIT = 500;
 import { getStats, type StatsResult } from "./stats.js";
 import { bumpCounter, dayKey } from "./counters.js";
 
@@ -49,17 +54,43 @@ export class Engine {
   sweepScreen(retentionDays: number) { return sweepScreenRetention(this.db, retentionDays); }
   sweepMeeting(retentionDays: number) { return sweepMeetingRetention(this.db, retentionDays); }
 
-  recent(p: { hours?: number; sources?: string[] }) {
-    const since = Math.floor(Date.now() / 1000) - (p.hours ?? 24) * 3600;
-    const conds = ["ts >= ?"]; const params: unknown[] = [since];
+  // Enumerate documents in a time window. `hours` is the lookback-from-now
+  // shorthand; timeFrom/timeTo express an explicit past window, which is what
+  // reconstructing a specific day needs. Without those, "what did I do between
+  // 13:00 and 16:00 yesterday" can only be approximated by ranked search, and a
+  // ranked sample is not an enumeration (live finding 2026-08-05: reconstructing
+  // one day this way returned whatever the query happened to favour).
+  //
+  // Paging exists because the old hardcoded LIMIT 50 silently truncated: a busy
+  // hour of screen capture exceeds it on its own, so a caller had no way to know
+  // whether it had seen the window or just the top of it.
+  recent(p: {
+    hours?: number; sources?: string[];
+    timeFrom?: number; timeTo?: number;
+    limit?: number; offset?: number;
+    order?: "asc" | "desc";
+  }) {
+    const conds: string[] = []; const params: unknown[] = [];
+    // An explicit window wins; `hours` only applies when timeFrom is absent.
+    if (p.timeFrom !== undefined) { conds.push("ts >= ?"); params.push(p.timeFrom); }
+    else { conds.push("ts >= ?"); params.push(Math.floor(Date.now() / 1000) - (p.hours ?? 24) * 3600); }
+    if (p.timeTo !== undefined) { conds.push("ts <= ?"); params.push(p.timeTo); }
     if (p.sources?.length) {
       conds.push(`source IN (${p.sources.map(() => "?").join(",")})`);
       params.push(...p.sources);
     }
+    // Cap rather than trust the caller: an unbounded query on a screen-capture
+    // corpus can return six figures of rows through a JSON-RPC socket.
+    const limit = Math.min(Math.max(p.limit ?? 50, 1), RECENT_MAX_LIMIT);
+    const offset = Math.max(p.offset ?? 0, 0);
+    // Chronological ascending is the natural order for replaying a day; desc
+    // stays the default so existing callers are unaffected.
+    const dir = p.order === "asc" ? "ASC" : "DESC";
     return this.db.prepare(
       `SELECT id docId, source, uri, title, ts FROM documents
-       WHERE ${conds.join(" AND ")} ORDER BY ts DESC LIMIT 50`
-    ).all(...params) as { docId: number; source: string; uri: string; title: string; ts: number }[];
+       WHERE ${conds.join(" AND ")} ORDER BY ts ${dir}, id ${dir} LIMIT ? OFFSET ?`
+    ).all(...params, limit, offset) as
+      { docId: number; source: string; uri: string; title: string; ts: number }[];
   }
 
   async syncReaders(readers: Reader[]): Promise<SyncResult[]> {

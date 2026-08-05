@@ -73,6 +73,60 @@ describe("Engine facade", () => {
     await e.close();
   });
 
+  // Reconstructing a specific past window (live finding 2026-08-05: a day
+  // replay could only sample it via ranked search) needs an explicit window,
+  // chronological order, and paging that does not silently truncate.
+  it("enumerates an explicit past window, in order, with paging", async () => {
+    const embedder = new Embedder(async () => (<EmbedBackend>{
+      embed: async () => new Float32Array(EMBEDDING_DIM), dispose: async () => {},
+    }));
+    const e = new Engine({
+      dbPath: join(mkdtempSync(join(tmpdir(), "shyn-")), "t.db"),
+      keyProvider: new StaticKeyProvider(null), embedder,
+    });
+    const day = 1_754_000_000;            // fixed epoch: no now() in assertions
+    for (let i = 0; i < 5; i++) {
+      e.ingest({ source: "screen", uri: `/h${i}`, title: `h${i}`, ts: day + i * 3600, text: `hour ${i}` });
+    }
+    e.ingest({ source: "screen", uri: "/outside", title: "outside", ts: day + 99 * 3600, text: "later" });
+
+    // Window is inclusive on both ends and excludes anything outside it.
+    const win = e.recent({ timeFrom: day + 3600, timeTo: day + 3 * 3600, order: "asc" });
+    expect(win.map((d) => d.uri)).toEqual(["/h1", "/h2", "/h3"]);
+
+    // asc/desc are mirror images of the same window.
+    expect(e.recent({ timeFrom: day, timeTo: day + 4 * 3600, order: "desc" }).map((d) => d.uri))
+      .toEqual(["/h4", "/h3", "/h2", "/h1", "/h0"]);
+
+    // Paging covers the window exactly once, with no overlap or hole.
+    const p1 = e.recent({ timeFrom: day, timeTo: day + 4 * 3600, order: "asc", limit: 2 });
+    const p2 = e.recent({ timeFrom: day, timeTo: day + 4 * 3600, order: "asc", limit: 2, offset: 2 });
+    const p3 = e.recent({ timeFrom: day, timeTo: day + 4 * 3600, order: "asc", limit: 2, offset: 4 });
+    expect([...p1, ...p2, ...p3].map((d) => d.uri)).toEqual(["/h0", "/h1", "/h2", "/h3", "/h4"]);
+
+    // timeFrom wins over the `hours` shorthand rather than intersecting with it:
+    // `hours` is relative to now, and these fixtures are not.
+    expect(e.recent({ hours: 1, timeFrom: day, timeTo: day + 4 * 3600 }).length).toBe(5);
+    await e.close();
+  });
+
+  it("clamps recent() paging to sane bounds", async () => {
+    const embedder = new Embedder(async () => (<EmbedBackend>{
+      embed: async () => new Float32Array(EMBEDDING_DIM), dispose: async () => {},
+    }));
+    const e = new Engine({
+      dbPath: join(mkdtempSync(join(tmpdir(), "shyn-")), "t.db"),
+      keyProvider: new StaticKeyProvider(null), embedder,
+    });
+    const day = 1_754_000_000;
+    e.ingest({ source: "file", uri: "/a", title: "a", ts: day, text: "a" });
+    // Absurd/invalid paging must not throw or return an unbounded result.
+    expect(e.recent({ timeFrom: day - 10, limit: 10_000 }).length).toBe(1);
+    expect(e.recent({ timeFrom: day - 10, limit: 0 }).length).toBe(1);       // clamped to >= 1
+    expect(e.recent({ timeFrom: day - 10, offset: -5 }).length).toBe(1);     // clamped to >= 0
+    await e.close();
+  });
+
   it("syncReaders ingests, advances watermark, and reports unavailable readers", async () => {
     const embedder = new Embedder(async () => (<EmbedBackend>{
       embed: async () => new Float32Array(EMBEDDING_DIM), dispose: async () => {},
