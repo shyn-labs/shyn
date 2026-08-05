@@ -113,10 +113,14 @@ held one undatable transcriber failure.
 Run these on the next real meeting, **on laptop speakers** (headphones hide
 the bleed this is meant to fix), with `SHYN_MEETING_DEBUG=1`:
 
-1. [ ] **AEC.** Before purge, transcribe `meeting-tmp/session-<ts>/mic.wav`
-   alone. Expect only the user's own voice. Far-end speech in mic.wav means
-   voice processing did not take — check the log for
-   `[recorder] voice processing refused`.
+1. [x] **AEC — FAILED, REVERTED in 0.4.19 (2026-08-05).** Verified on hardware
+   the hard way: during a real call on the laptop mic the user heard a persistent
+   tone rising and falling. AUVoiceProcessingIO reconfigures the SHARED input
+   device, so its AGC and a tone reached the live call, not just our recording.
+   Voice processing, the `start(echoCancellation:)` parameter and the config flag
+   are all removed. Speaker→mic bleed stays handled by `dropEchoDuplicates`.
+   Full post-mortem in `docs/known-issues.md`. **Never test an audio-path change
+   on real work again — build a `say`-through-speakers harness first.**
 2. [ ] **No duplicate pairs.** The shipped transcript must not contain
    near-identical `Me:`/`Others:` lines seconds apart. (Short affirmations are
    exempt by design.)

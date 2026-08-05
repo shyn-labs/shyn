@@ -10,8 +10,13 @@ import CaptureCore
 //   - no AVAudioConverter inside the tap callback (CoreAudio abort)
 //   - AVAudioFile at the tap's NATIVE rate (no SRC on write; WhisperKit
 //     resamples on load)
-//   - voice processing is enabled BEFORE the format is read (it changes the
-//     node format), and never fatal: a refused AEC still records
+//   - DO NOT enable voice processing (AEC) here. Tried in 0.4.18, reverted in
+//     0.4.19 after it degraded a real call: AUVoiceProcessingIO reconfigures the
+//     shared input device, so its automatic gain control (audible as level
+//     pumping) and a persistent tone reached the meeting itself, not just our
+//     recording. Speaker→mic bleed is handled AFTER the fact by
+//     dropEchoDuplicates in CaptureCore, which cannot touch live audio.
+//     See docs/known-issues.md before attempting AEC again.
 @available(macOS 14.2, *)   // process tap floor; the agent requires 14.2+
 actor AudioRecorder {
     private var engine: AVAudioEngine?
@@ -26,7 +31,7 @@ actor AudioRecorder {
 
     struct RecorderError: Error { let message: String }
 
-    func start(sessionDir: URL, echoCancellation: Bool = true) async throws {
+    func start(sessionDir: URL) async throws {
         guard !recording else { return }
         try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
         let mic = sessionDir.appendingPathComponent("mic.wav")
@@ -43,23 +48,6 @@ actor AudioRecorder {
         let granted = await AVCaptureDevice.requestAccess(for: .audio)
         let eng = AVAudioEngine()
         let input = eng.inputNode
-        // AEC (live finding 2026-08-04): without voice processing the mic
-        // records the far end coming off the laptop speakers, so the same
-        // utterance is transcribed on both channels and half of it is labeled
-        // "Me". Voice processing hands CoreAudio the output as an echo
-        // reference and cancels it. Must be enabled BEFORE the format read
-        // below — it re-negotiates the node format (typically 48k mono) — and
-        // must never be fatal: a machine that refuses it still records, with
-        // dropEchoDuplicates cleaning up whatever bleeds through.
-        if echoCancellation {
-            _ = eng.outputNode   // instantiate the output side of the VPIO unit
-            do { try input.setVoiceProcessingEnabled(true) }
-            catch {
-                FileHandle.standardError.write(Data(
-                    logLine("[recorder] voice processing refused (\(error)) — recording without AEC").utf8))
-            }
-            try? eng.outputNode.setVoiceProcessingEnabled(true)
-        }
         let inFormat = input.outputFormat(forBus: 0)
         guard granted, inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
             t.stop()

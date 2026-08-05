@@ -211,7 +211,7 @@ actor MeetingAgent {
         let info = await MainActor.run { frontmostAppInfo() }
         do {
             recorder.meter.reset()
-            try await recorder.start(sessionDir: dir, echoCancellation: cfg.echoCancellation)
+            try await recorder.start(sessionDir: dir)
             sessionDir = dir; sessionStart = start
             sessionBundleId = info.bundleId; sessionAppName = info.name
             // Grabbed at preroll while the call window is likely frontmost;

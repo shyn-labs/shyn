@@ -332,8 +332,44 @@ public repo.
   both channels). Slack removed from the booster list (89de722); the
   real-VAD revisit still stands for the remaining two-channel case.
   UPDATE 2026-08-05: the same bleed was corrupting TRANSCRIPTS, not just
-  detection — see the SP8 entry below. AEC now cancels it at capture, which
-  should also shrink the phantom-preroll surface.
+  detection — see the SP8 entry below. AEC was tried as a capture-level fix and
+  REVERTED the same day (see the AEC entry above); the phantom-preroll surface is
+  therefore unchanged, and the real-VAD revisit still stands.
+
+## AEC (voice processing) degraded a LIVE call — shipped 0.4.18, reverted 0.4.19
+
+**Do not re-attempt AEC the way 0.4.18 did.** `AVAudioInputNode.setVoiceProcessingEnabled(true)`
+was added to cancel speaker→mic bleed at the source. On its first exposure to a real
+meeting the user reported a **persistent tone that rose and fell, audible to him during
+the call**, while using the laptop mic.
+
+Two mechanisms, both inherent to the API rather than to our wiring:
+
+1. **AUVoiceProcessingIO reconfigures the SHARED input device**, so its effects are not
+   confined to our capture. Meet/Zoom holding the same mic inherit the altered stream.
+   Our risk assessment said "worst case, that meeting's *recording* is degraded" — wrong.
+   The live call was degraded.
+2. **You cannot take just the echo canceller.** VPIO bundles AEC with automatic gain
+   control and noise suppression; AGC riding the level up and down is exactly the
+   "increasing and decreasing" the user heard. The tone most likely came from
+   `eng.outputNode.setVoiceProcessingEnabled(true)` — putting the OUTPUT node into
+   voice-processing mode, a speculative line that changed what he heard, not just what
+   was captured.
+
+What did work as designed: the `echoCancellation` config flag and the do/catch fallback.
+They covered the case where macOS **refuses** voice processing. Nobody considered the
+case where it **succeeds and is harmful** — that was the gap.
+
+Reverted in 0.4.19: the voice-processing calls, the `start(echoCancellation:)` parameter
+and the `MeetingConfig.echoCancellation` flag are all gone. Speaker→mic bleed remains
+handled after the fact by `dropEchoDuplicates` (CaptureCore), which is pure, tested, and
+structurally incapable of touching live audio.
+
+**If AEC is ever attempted again:** never on the output node; never with a real meeting
+as the test. Build a harness (`say` through the speakers, no human on the far end),
+measure mic-channel energy with and without, and confirm a concurrent call is unaffected
+before shipping. Process rule this cost us: **an audio-path change must not have its
+first live exposure be real work.**
 
 ## Logged (SP8 meeting transcript fidelity, 2026-08-05)
 
@@ -351,10 +387,9 @@ public repo.
   scores >= 0.6 token overlap, both sides >= 4 tokens. Short affirmations are
   deliberately exempt, so a duplicated "yes, absolutely" pair still appears on
   both channels. Retune when more bleed transcripts exist.
-- **AEC is unverified on non-M-series/external-device setups.** Voice
-  processing is enabled on the AVAudioEngine input node and falls back to
-  plain capture if macOS refuses; the fallback path has only been exercised by
-  code inspection, not on hardware that actually refuses.
+- ~~**AEC is unverified…**~~ RESOLVED THE HARD WAY 2026-08-05: it was verified
+  on hardware by degrading a live call, and reverted in 0.4.19. See the AEC entry
+  above. Left here as the trail from "unverified" to "reverted".
 
 ## Logged (SP5 distribution, 2026-07-11)
 

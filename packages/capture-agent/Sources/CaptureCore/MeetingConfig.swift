@@ -8,11 +8,11 @@ public struct MeetingConfig: Codable, Sendable {
     public var maxDurationMinutes = 180
     public var whisperModel = "small"
     public var excludeApps: [String] = []
-    // Mic echo cancellation (AVAudioEngine voice processing). On by default:
-    // without it the mic records the far end off the speakers, which both
-    // corrupts speaker labels and can voice both channels into a phantom
-    // pre-roll. Escape hatch in capture.json if it ever degrades mic capture.
-    public var echoCancellation = true
+    // NOTE: `echoCancellation` existed in 0.4.18 and was REMOVED in 0.4.19 along
+    // with the voice-processing code it gated. A live-degrading feature behind a
+    // default-on flag is worse than no feature; a dead flag that silently does
+    // nothing is worse still. An existing "echoCancellation" key in capture.json
+    // is simply ignored. See AudioRecorder.swift and docs/known-issues.md.
     public init() {}
     public init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
@@ -23,7 +23,6 @@ public struct MeetingConfig: Codable, Sendable {
         maxDurationMinutes = try c.decodeIfPresent(Int.self, forKey: .maxDurationMinutes) ?? 180
         whisperModel = try c.decodeIfPresent(String.self, forKey: .whisperModel) ?? "small"
         excludeApps = try c.decodeIfPresent([String].self, forKey: .excludeApps) ?? []
-        echoCancellation = try c.decodeIfPresent(Bool.self, forKey: .echoCancellation) ?? true
     }
     public static let defaults = MeetingConfig()
 
