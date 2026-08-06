@@ -1,5 +1,6 @@
 import { cpSync, chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { requestMeetingStop } from "./meeting-control.js";
 import {
   installDaemon, installCaptureAgent, installMeetingAgent, installStatusApp,
 } from "./launchd.js";
@@ -41,6 +42,18 @@ export async function runSetup(deps: SetupDeps): Promise<SetupResult> {
   deps.print("▶︎ re-signing the apps with your local identity…");
   for (const [dir, app] of APPS)
     deps.exec("codesign", ["--force", "--deep", "--sign", "Shyn Dev", join(p, "dist", dir, `${app}.app`)]);
+
+  // Ask a live meeting to stop BEFORE the agents are replaced. On 2026-08-06 an
+  // upgrade restarted the meeting agent mid-session and orphaned 70 minutes of
+  // audio. The commit-time sidecar now makes that recoverable, but a clean stop
+  // is better than a recovery: the agent hands the session to transcription
+  // itself. Best-effort and non-blocking — transcription takes minutes and setup
+  // must not wait for it; if the agent dies before consuming the control file,
+  // the sidecar is the safety net.
+  try {
+    requestMeetingStop(deps.shynHome);
+    deps.print("▶︎ asked any live meeting to stop cleanly…");
+  } catch { /* no live session, or unwritable home: the sidecar still covers it */ }
 
   deps.print("▶︎ installing launchd services (daemon + screen + meeting + status)…");
   const common = {

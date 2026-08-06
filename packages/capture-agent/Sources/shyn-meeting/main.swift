@@ -231,6 +231,19 @@ actor MeetingAgent {
         committed = true
         stats.sessionStartedAt = sessionStart
         stats.sessionApp = sessionAppName
+        // Recoverability starts HERE, not at transcription failure. A session
+        // killed while recording (crash, `shyn setup` during an upgrade, reboot)
+        // used to leave orphaned WAVs with no sidecar: nothing retried them and
+        // the 24h sweep deleted them. That cost a real 70-minute meeting on
+        // 2026-08-06. Written at commit rather than pre-roll on purpose — an
+        // unverified pre-roll is ambient noise and SHOULD be discarded.
+        // `end: 0` means "still recording"; the retry derives it from the WAVs.
+        if let dir = sessionDir {
+            _ = writePendingSession(PendingSession(
+                start: sessionStart, end: 0, bundleId: sessionBundleId,
+                appName: sessionAppName, windowTitle: sessionWindowTitle,
+                reason: "interrupted while recording", attempts: 0), in: dir)
+        }
         notify("Recording meeting", "\(sessionAppName) — `shyn meeting stop` to end early.")
         dbg("committed (voice verified on both channels)")
     }
@@ -364,11 +377,16 @@ actor MeetingAgent {
         guard whisperModelPresent(model: cfg.whisperModel, modelDir: whisperModelDir) else { return }
         guard let dir = pendingSessions(root: meetingTmp).first,
               let p = readPendingSession(in: dir) else { return }
-        dbg("retrying \(dir.lastPathComponent) (attempt \(p.attempts) failed: \(p.reason))")
+        // A commit-time sidecar has end == 0 ("was still recording"): the process
+        // that would have stamped the end is the one that died. Recover it from
+        // how far the WAVs got, so durationSec and the doc title are truthful.
+        let end = p.end > p.start ? p.end : inferredEnd(in: dir, start: p.start)
+        logErr("[meeting] recovering \(dir.lastPathComponent): \(p.reason)"
+               + " (attempt \(p.attempts), \(end - p.start)s of audio)")
         startTranscription(dir: dir,
                            urls: (mic: dir.appendingPathComponent("mic.wav"),
                                   system: dir.appendingPathComponent("system.wav")),
-                           start: p.start, end: p.end, bundleId: p.bundleId,
+                           start: p.start, end: end, bundleId: p.bundleId,
                            appName: p.appName, windowTitle: p.windowTitle, cfg: cfg)
     }
 

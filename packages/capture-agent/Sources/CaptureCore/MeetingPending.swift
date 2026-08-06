@@ -34,6 +34,29 @@ public struct PendingSession: Codable, Sendable {
     }
 }
 
+// A sidecar written at COMMIT time carries no end timestamp — the session is
+// still recording, and the process that would have written the end may be the
+// one that got killed. Derive it from how far the WAVs actually got.
+//
+// This exists because of a real loss on 2026-08-06: a 70-minute meeting was
+// interrupted by `shyn setup` during an upgrade, leaving orphaned WAVs with no
+// sidecar. Nothing retried them and the 24h sweep would have deleted them. The
+// retry machinery only covered transcription FAILURE, not interruption.
+public func inferredEnd(in dir: URL, start: Int) -> Int {
+    let fm = FileManager.default
+    let ends = ["mic.wav", "system.wav"].compactMap { name -> Int? in
+        let u = dir.appendingPathComponent(name)
+        guard let m = (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate else { return nil }
+        return Int(m.timeIntervalSince1970)
+    }
+    guard let latest = ends.max(), latest > start else {
+        _ = fm            // keep the reference explicit; nothing else to consult
+        return start + 1  // never return an end <= start: durationSec must be sane
+    }
+    return latest
+}
+
 public let pendingSidecarName = "pending.json"
 // A model that is present but unusable (corrupt download, unsupported device)
 // would otherwise retry every tick forever, pinning the ANE. Give up after

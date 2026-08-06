@@ -30,7 +30,7 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
         let channels = [(mic, Speaker.me), (system, Speaker.others)]
             .filter { FileManager.default.fileExists(atPath: $0.0.path) }
         let total = channels.count
-        var dropped = (annotation: 0, silence: 0, lowConfidence: 0, degenerate: 0, repeated: 0)
+        var dropped = (annotation: 0, repeated: 0)
         var segs: [TranscriptSegment] = []
         var channelErrors: [String] = []
         for (idx, (url, speaker)) in channels.enumerated() {
@@ -51,15 +51,6 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
                     let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if text.isEmpty { continue }
                     if isNonSpeechAnnotation(text) { dropped.annotation += 1; continue }
-                    let q = SegmentQuality(noSpeechProb: s.noSpeechProb,
-                                           avgLogprob: s.avgLogprob,
-                                           compressionRatio: s.compressionRatio)
-                    if !passesQualityGates(q) {
-                        if q.noSpeechProb > TranscriptFilterLimits.maxNoSpeechProb { dropped.silence += 1 }
-                        else if q.avgLogprob < TranscriptFilterLimits.minAvgLogprob { dropped.lowConfidence += 1 }
-                        else { dropped.degenerate += 1 }
-                        continue
-                    }
                     segs.append(TranscriptSegment(start: Double(s.start), speaker: speaker, text: text))
                 }
             }
@@ -73,9 +64,6 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
         // expression in reasonable time").
         let reasons = [
             "\(dropped.annotation) annotation",
-            "\(dropped.silence) silence",
-            "\(dropped.lowConfidence) low-confidence",
-            "\(dropped.degenerate) degenerate",
             "\(dropped.repeated) repeated",
         ].joined(separator: ", ")
         // One stderr mechanism for the whole file: logLine timestamps it, which

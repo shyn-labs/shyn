@@ -1,40 +1,32 @@
 import Foundation
 
-// Post-decode transcript filtering. Whisper hallucinates filler on silence
-// ("you", "Thank you.", "*Humming*") and we transcribe whole channels
-// including silence, because WhisperKit's .vad returned ZERO segments on our
-// two-channel WAVs (commit 0190c56). So the cleanup happens after decode.
+// Post-decode transcript filtering. Whisper hallucinates filler on near-silence
+// ("you", "Thank you.", "*Humming*") and we transcribe whole channels including
+// silence, because WhisperKit's .vad returned ZERO segments on our two-channel
+// WAVs (commit 0190c56). So the cleanup happens after decode.
 //
-// Thresholds are constants, not config: these are decoder-quality values, not
-// user preferences. noSpeechProb/avgLogprob/compressionRatio are OpenAI's
-// reference fallback signals; 2.4 is their published compression threshold.
-
-/// The decoder-confidence fields we care about, lifted out of WhisperKit's
-/// TranscriptionSegment so this file — and its tests — never link WhisperKit.
-public struct SegmentQuality: Sendable {
-    public let noSpeechProb: Float
-    public let avgLogprob: Float
-    public let compressionRatio: Float
-    public init(noSpeechProb: Float, avgLogprob: Float, compressionRatio: Float) {
-        self.noSpeechProb = noSpeechProb
-        self.avgLogprob = avgLogprob
-        self.compressionRatio = compressionRatio
-    }
-}
+// REMOVED in 0.4.22: three per-segment "quality gates" on noSpeechProb,
+// avgLogprob and compressionRatio, shipped in 0.4.18. They never rejected a
+// single segment across three real runs (a 3-min mock, a 70-min meeting, and a
+// 349-segment session), and probing WhisperKit 0.18.0 directly showed why:
+//
+//   noSpeech=0.0000  logprob=-0.1557  compression=2.0000  | The quarterly review starts now.
+//   noSpeech=0.0000  logprob=-0.1557  compression=2.0000  | Retention improved by four points.
+//
+// noSpeechProb is always 0, so `0 <= 0.6` passed everything. avgLogprob and
+// compressionRatio are IDENTICAL across every segment — they are result-level
+// values replicated onto segments, not per-segment measurements — so a
+// per-segment threshold on them is meaningless: all segments pass together or
+// all fail together. A gate that can only ever delete the entire channel is a
+// cliff, not a filter. Three gates implying protection they cannot provide are
+// worse than none, so they are gone.
+//
+// What actually works, and is kept: isNonSpeechAnnotation (wrapped annotations)
+// and collapseRepeats (114 runs collapsed on the 70-minute meeting), plus
+// dropEchoDuplicates in TranscriptAssembler (5 mic echoes dropped in the mock).
 
 public enum TranscriptFilterLimits {
-    public static let maxNoSpeechProb: Float = 0.6
-    public static let minAvgLogprob: Float = -1.0
-    public static let maxCompressionRatio: Float = 2.4
     public static let maxRepeatRun = 3
-}
-
-/// False for anything that looks like decoder noise rather than speech.
-/// Length is deliberately NOT a signal — "No." is a complete answer.
-public func passesQualityGates(_ q: SegmentQuality) -> Bool {
-    q.noSpeechProb <= TranscriptFilterLimits.maxNoSpeechProb
-        && q.avgLogprob >= TranscriptFilterLimits.minAvgLogprob
-        && q.compressionRatio <= TranscriptFilterLimits.maxCompressionRatio
 }
 
 // Whisper marks non-speech stretches with wrapped annotations — "[BLANK_AUDIO]",

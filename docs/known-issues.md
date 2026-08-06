@@ -336,6 +336,58 @@ public repo.
   REVERTED the same day (see the AEC entry above); the phantom-preroll surface is
   therefore unchanged, and the real-VAD revisit still stands.
 
+## Whisper "quality gates" were dead code — shipped 0.4.18, removed 0.4.22
+
+Three per-segment gates (`noSpeechProb > 0.6`, `avgLogprob < -1.0`,
+`compressionRatio > 2.4`) rejected **zero** segments across three real runs: a
+3-minute synthetic meeting, a 349-segment session, and a recovered 70-minute
+meeting. Probing WhisperKit 0.18.0 directly explains it:
+
+```
+noSpeech=0.0000  logprob=-0.1557  compression=2.0000  | The quarterly review starts now.
+noSpeech=0.0000  logprob=-0.1557  compression=2.0000  | Retention improved by four points.
+```
+
+`noSpeechProb` is always **0**, so `0 <= 0.6` passed everything. `avgLogprob` and
+`compressionRatio` are **identical across every segment** — result-level values
+replicated onto segments, not per-segment measurements — so a per-segment
+threshold on them can only pass everything or delete the entire channel. A gate
+whose only two outcomes are "no effect" and "total loss" is a cliff, not a filter.
+
+The plan that introduced them said the fields were "verified present on
+TranscriptionSegment". True of the type, false of the values — the same mistake
+class as the release-check bug: a unit test that proves the parser while the real
+input never has that shape.
+
+Removed. What survives is what measurably works: `isNonSpeechAnnotation`,
+`collapseRepeats` (114 runs collapsed on the 70-minute meeting) and
+`dropEchoDuplicates` (5 mic echoes dropped in the mock, proven by segment
+arithmetic: 11 kept → 6 lines).
+
+Also note: 20 seconds of **digital** silence produced no segments at all, so pure
+silence is not the hallucination source. The `you` / `Thank you.` filler comes
+from near-silence with room noise. Any future gate must be built against that,
+not against zeroed decoder fields.
+
+## Interrupted recordings were unrecoverable — fixed 0.4.22
+
+The retry sidecar was written only when *transcription* failed. A session killed
+while **recording** (crash, reboot, `shyn setup` during an upgrade) left orphaned
+WAVs with no sidecar: nothing retried them, and the startup 24h sweep deleted
+them silently.
+
+This cost a real 70-minute meeting on 2026-08-06 — an onboarding session for new
+joiners, interrupted by the 0.4.20 install at 13:49 and found only because the
+file sizes (404MB + 807MB) looked wrong for a mock. It was recovered by hand-
+writing a sidecar; the retry then transcribed and ingested it in ~15 minutes.
+
+Fixed two ways: the sidecar is now written at **commit** time (not pre-roll — an
+unverified pre-roll is ambient noise and should still be discarded), with
+`end: 0` meaning "still recording" and `inferredEnd` recovering the duration from
+the WAV mtimes. And `shyn setup` now asks a live meeting to stop cleanly before
+replacing the agents, best-effort and non-blocking, because a clean handoff beats
+a recovery.
+
 ## AEC (voice processing) degraded a LIVE call — shipped 0.4.18, reverted 0.4.19
 
 **Do not re-attempt AEC the way 0.4.18 did.** `AVAudioInputNode.setVoiceProcessingEnabled(true)`

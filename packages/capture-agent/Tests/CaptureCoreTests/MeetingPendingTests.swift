@@ -71,3 +71,34 @@ private func session(_ root: URL, _ name: String) throws -> URL {
     #expect(maxPendingAttempts >= 2)
     #expect(maxPendingAttempts <= 10)
 }
+
+@Test func inferredEndRecoversDurationFromTheRecordedAudio() throws {
+    // A commit-time sidecar has end == 0: the process that would have stamped the
+    // end is the one that died. Recover it from how far the WAVs actually got.
+    let root = try tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let dir = try session(root, "session-1000")
+    let start = 1_785_997_956
+    let stopped = start + 4204                       // the real 70-minute case
+    for name in ["mic.wav", "system.wav"] {
+        let u = dir.appendingPathComponent(name)
+        try Data("audio".utf8).write(to: u)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: Double(stopped))], ofItemAtPath: u.path)
+    }
+    #expect(inferredEnd(in: dir, start: start) == stopped)
+}
+
+@Test func inferredEndNeverReturnsAnEndAtOrBeforeStart() throws {
+    let root = try tempRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let dir = try session(root, "session-2000")
+    // No audio at all, and a start in the future relative to any mtime: the
+    // result must still be > start, or durationSec goes negative downstream.
+    #expect(inferredEnd(in: dir, start: 9_999_999_999) == 10_000_000_000)
+    let u = dir.appendingPathComponent("mic.wav")
+    try Data("a".utf8).write(to: u)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSince1970: 500)], ofItemAtPath: u.path)
+    #expect(inferredEnd(in: dir, start: 1000) == 1001)   // stale mtime ignored
+}
