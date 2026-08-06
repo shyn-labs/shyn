@@ -13,7 +13,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/shyn-labs/homebrew-tap/releases/download/v0.4.22-alpha/shyn.mcpb",
-      "fileSha256": "5155380a93e5b7a892691c879a7cc2c7090f8f9b24f1c0ef855bf692b5db5bfb",
+      "fileSha256": "1639887de03830af1d944ce8cee1be15560965a357e8ac0dff9dc570543eefff",
       "transport": {
         "type": "stdio"
       }
