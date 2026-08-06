@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   compareShynVersions, readUpdateCheckEnabled, consumeUpdateFailed,
-  upgradeShell, UPGRADE_COMMAND, checkLatest,
+  upgradeShell, UPGRADE_COMMAND, checkLatest, RELEASES_URL,
   readAutoUpdateEnabled, readUpdateAttempt, writeUpdateAttempt,
   shouldAutoUpdate, AUTO_UPDATE_RETRY_SECONDS, AUTO_UPDATE_SAME_VERSION_SECONDS,
   type AutoUpdateContext,
@@ -58,15 +58,44 @@ describe("upgradeShell", () => {
 
 describe("checkLatest", () => {
   const ok = (body: unknown) => (async () => ({ ok: true, status: 200, json: async () => body })) as unknown as typeof fetch;
-  it("returns the tag with v stripped", async () => {
-    expect(await checkLatest(ok({ tag_name: "v0.4.14-alpha" }))).toBe("0.4.14-alpha");
+
+  it("takes the newest tag from the release LIST, v stripped", async () => {
+    // Newest first, as GitHub returns it.
+    expect(await checkLatest(ok([
+      { tag_name: "v0.4.19-alpha", prerelease: true, draft: false },
+      { tag_name: "v0.4.18-alpha", prerelease: true, draft: false },
+    ]))).toBe("0.4.19-alpha");
   });
-  it("silent null on non-200, throw, or garbage", async () => {
+
+  it("KEEPS prereleases — every shyn release is one", async () => {
+    // The bug this replaces: /releases/latest excludes prereleases, so it 404'd
+    // on a repo where all releases are prereleases, and the check returned null
+    // from 0.4.14 to 0.4.20 while looking exactly like "you are up to date".
+    expect(await checkLatest(ok([{ tag_name: "v0.5.0-alpha", prerelease: true, draft: false }])))
+      .toBe("0.5.0-alpha");
+  });
+
+  it("skips drafts", async () => {
+    expect(await checkLatest(ok([
+      { tag_name: "v0.9.9-alpha", prerelease: true, draft: true },
+      { tag_name: "v0.4.19-alpha", prerelease: true, draft: false },
+    ]))).toBe("0.4.19-alpha");
+  });
+
+  it("null on non-200, throw, empty list, or a non-array body", async () => {
     const notFound = (async () => ({ ok: false, status: 404, json: async () => ({}) })) as unknown as typeof fetch;
     const boom = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
     expect(await checkLatest(notFound)).toBeNull();
     expect(await checkLatest(boom)).toBeNull();
-    expect(await checkLatest(ok({ nope: 1 }))).toBeNull();
+    expect(await checkLatest(ok([]))).toBeNull();
+    expect(await checkLatest(ok({ tag_name: "v1.0.0" }))).toBeNull();   // single object, not a list
+    expect(await checkLatest(ok([{ nope: 1 }]))).toBeNull();
+  });
+
+  it("polls the list endpoint, never /releases/latest", async () => {
+    // Guards the regression directly: /releases/latest cannot see prereleases.
+    expect(RELEASES_URL).toContain("/releases?");
+    expect(RELEASES_URL).not.toContain("/releases/latest");
   });
 });
 

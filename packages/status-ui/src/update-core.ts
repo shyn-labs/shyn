@@ -4,8 +4,14 @@
 
 export const UPGRADE_COMMAND = "brew update && brew upgrade --cask shyn && shyn setup";
 
+// MUST be the list endpoint, not /releases/latest. GitHub's "latest" excludes
+// prereleases, and every shyn release is cut with `gh release create
+// --prerelease` — so /releases/latest returned **404 Not Found** and the update
+// check silently returned null from 0.4.14 (when it was written) until 0.4.20.
+// Nobody noticed because a failed check is indistinguishable from "up to date".
+// The list endpoint includes prereleases, newest first.
 export const RELEASES_URL =
-  "https://api.github.com/repos/shyn-labs/homebrew-tap/releases/latest";
+  "https://api.github.com/repos/shyn-labs/homebrew-tap/releases?per_page=10";
 
 // "0.4.13-alpha" scheme: compare the numeric dotted prefix, ignore the
 // suffix. null on malformed input — a bad tag must never look like an update.
@@ -81,12 +87,35 @@ export function shouldAutoUpdate(c: AutoUpdateContext): AutoUpdateDecision {
   return { run: true, reason: `updating ${c.current} → ${c.latest}` };
 }
 
-// Silent on every failure: offline is a normal state, never a warning.
+// Returns null on every failure — offline is a normal state, not a warning — but
+// LOGS the reason. Silence is what let a permanently-broken check (see
+// RELEASES_URL) masquerade as "you are up to date" for six releases; the log line
+// costs nothing and makes the next such failure diagnosable from status.log.
 export async function checkLatest(fetchFn: typeof fetch): Promise<string | null> {
   try {
     const r = await fetchFn(RELEASES_URL, { headers: { accept: "application/vnd.github+json" } });
-    if (!r.ok) return null;
-    const tag = (await r.json() as { tag_name?: unknown })?.tag_name;
-    return typeof tag === "string" && tag.length > 0 ? tag.replace(/^v/, "") : null;
-  } catch { return null; }
+    if (!r.ok) {
+      console.error(`[update] release check failed: HTTP ${r.status}`);
+      return null;
+    }
+    const body = await r.json();
+    if (!Array.isArray(body)) {
+      console.error("[update] release check failed: expected an array of releases");
+      return null;
+    }
+    // Newest first, drafts excluded. Prereleases are KEPT — every shyn release
+    // is one, so filtering them out would leave nothing.
+    const rel = body.find((r: unknown) =>
+      typeof (r as { tag_name?: unknown })?.tag_name === "string"
+      && (r as { tag_name: string }).tag_name.length > 0
+      && (r as { draft?: unknown }).draft !== true);
+    if (!rel) {
+      console.error("[update] release check found no usable release");
+      return null;
+    }
+    return (rel as { tag_name: string }).tag_name.replace(/^v/, "");
+  } catch (e) {
+    console.error(`[update] release check failed: ${(e as Error)?.message ?? e}`);
+    return null;
+  }
 }
