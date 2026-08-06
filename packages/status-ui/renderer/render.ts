@@ -92,9 +92,18 @@ export function render(vm: ViewModel, nowSec: number): string {
            : `<button data-action="copy" data-arg="${esc(UPGRADE_COMMAND)}">Copy command</button>`}`}
   </div>` : "";
 
+  // Maintainer notice (see parseNotice). Above the update row: if both are
+  // present the notice is usually the reason the update matters.
+  const n = vm.notice;
+  const noticeRow = n ? `
+  <div class="row notice-row${n.severity === "warn" ? " notice-warn" : ""}">
+    <span class="lab">${esc(n.text)}</span>
+  </div>` : "";
+
   return `
   <header><b>shyn</b><span class="verdict pill ${verdictTone(vm.tray)}">${esc(vm.verdict)}</span></header>
   ${setupRow}
+  ${noticeRow}
   ${updateRow}
   ${live}
   <section class="rows"><h2 class="section-lab">Health</h2>${vm.rows.map(rowHtml).join("")}</section>

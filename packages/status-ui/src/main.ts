@@ -23,6 +23,7 @@ import {
 import {
   checkLatest, consumeUpdateFailed, findBrew, readUpdateCheckEnabled, upgradeShell,
   readAutoUpdateEnabled, readUpdateAttempt, writeUpdateAttempt, shouldAutoUpdate,
+  type Notice,
 } from "./update.js";
 import { spawn } from "node:child_process";
 import type { SettingsPane } from "./derive.js";
@@ -34,6 +35,7 @@ const sock = join(home, "shyn.sock");
 // In-app update state (spec 2026-07-24). The check lives HERE, in the
 // status app — the daemon and agents make no network requests, ever.
 let updLatest: string | null = null;
+let updNotice: Notice | null = null;
 let updUpdating = false;
 let updFailed = false;
 // Epoch of the last observed failure marker, for auto-update backoff. Not
@@ -41,8 +43,12 @@ let updFailed = false;
 let updFailedAt: number | null = null;
 
 async function updateCheck() {
-  if (!readUpdateCheckEnabled(home)) { updLatest = null; return; }
-  updLatest = await checkLatest(fetch);
+  if (!readUpdateCheckEnabled(home)) { updLatest = null; updNotice = null; return; }
+  // One request yields both the version and any maintainer notice riding in the
+  // release body — see parseNotice for why this is not a separate endpoint.
+  const r = await checkLatest(fetch);
+  updLatest = r?.version ?? null;
+  updNotice = r?.notice ?? null;
 }
 const WIN = { width: 320, height: 440 };
 
@@ -152,6 +158,7 @@ if (!app.requestSingleInstanceLock()) {
       meetingModel: readMeetingModel(home),
       update: { latest: updLatest, updating: updUpdating, failed: updFailed,
                 brewFound: findBrew() !== null },
+      notice: updNotice,
       now: Math.floor(Date.now() / 1000),
       claudeCommand: existsSync(join(home, "bin", "shyn-mcp"))
         ? `claude mcp add shyn -- "${join(home, "bin", "shyn-mcp")}"`

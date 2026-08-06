@@ -87,11 +87,58 @@ export function shouldAutoUpdate(c: AutoUpdateContext): AutoUpdateDecision {
   return { run: true, reason: `updating ${c.current} → ${c.latest}` };
 }
 
+// --- Notice channel (2026-08-06) -------------------------------------------
+//
+// A one-way message from the maintainer to installed copies, carried in the
+// release BODY of the newest release. Deliberately not a new endpoint: the app
+// already fetches the release list every 24h, so this adds no network call, no
+// new domain, and no privacy surface to a product whose daemon and agents never
+// touch the network. It also inherits the existing `updateCheck: false` opt-out.
+//
+// Hard limit worth stating: this can only reach builds that ALREADY poll. It
+// could not have rescued 0.4.14–0.4.19, whose release check was broken — you
+// cannot fix a client by pushing to it. For those, the package manager
+// (`brew upgrade`) is the only channel.
+//
+// Format, in the release body:
+//   <!-- shyn-notice: severity=warn
+//   Update required: builds before 0.4.20 cannot detect updates.
+//   Run: brew upgrade --cask shyn-labs/tap/shyn
+//   -->
+export type Notice = { severity: "info" | "warn"; text: string };
+
+/** Popover rows are one line; a maintainer pasting an essay gets truncated. */
+export const NOTICE_MAX_CHARS = 240;
+
+export function parseNotice(body: unknown): Notice | null {
+  if (typeof body !== "string") return null;
+  const m = body.match(/<!--\s*shyn-notice:([\s\S]*?)-->/);
+  if (!m) return null;
+  let inner = m[1];
+  // Optional leading `severity=info|warn` on the first line; anything else is text.
+  let severity: Notice["severity"] = "info";
+  const sev = inner.match(/^\s*severity\s*=\s*(info|warn)\b/);
+  if (sev) {
+    severity = sev[1] as Notice["severity"];
+    inner = inner.slice(sev[0].length);
+  }
+  // Collapse to a single line: the row is one line, and a stray newline in a
+  // comment should not become a layout bug.
+  const text = inner.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return {
+    severity,
+    text: text.length > NOTICE_MAX_CHARS ? `${text.slice(0, NOTICE_MAX_CHARS - 1)}…` : text,
+  };
+}
+
+export type LatestRelease = { version: string; notice: Notice | null };
+
 // Returns null on every failure — offline is a normal state, not a warning — but
 // LOGS the reason. Silence is what let a permanently-broken check (see
 // RELEASES_URL) masquerade as "you are up to date" for six releases; the log line
 // costs nothing and makes the next such failure diagnosable from status.log.
-export async function checkLatest(fetchFn: typeof fetch): Promise<string | null> {
+export async function checkLatest(fetchFn: typeof fetch): Promise<LatestRelease | null> {
   try {
     const r = await fetchFn(RELEASES_URL, { headers: { accept: "application/vnd.github+json" } });
     if (!r.ok) {
@@ -113,7 +160,10 @@ export async function checkLatest(fetchFn: typeof fetch): Promise<string | null>
       console.error("[update] release check found no usable release");
       return null;
     }
-    return (rel as { tag_name: string }).tag_name.replace(/^v/, "");
+    return {
+      version: (rel as { tag_name: string }).tag_name.replace(/^v/, ""),
+      notice: parseNotice((rel as { body?: unknown }).body),
+    };
   } catch (e) {
     console.error(`[update] release check failed: ${(e as Error)?.message ?? e}`);
     return null;

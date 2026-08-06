@@ -12,6 +12,7 @@ const vm = (over: Partial<ViewModel> = {}): ViewModel => ({
   week: [],
   paused: false, modelChoice: { selected: "standard", busy: false },
   update: null,
+  notice: null,
   setup: { kind: "complete" }, diagnostics: false, ...over,
 });
 
@@ -149,5 +150,26 @@ describe("update row", () => {
     expect(noBrew.querySelector('[data-action="run-update"]')).toBeNull();
     expect(noBrew.querySelector('[data-action="copy"]')).toBeTruthy();
     expect(mount(render(vm({ update: null }), NOW)).querySelector(".update-row")).toBeNull();
+  });
+});
+
+describe("maintainer notice row", () => {
+  it("renders the notice text, escaped, above the update row", () => {
+    const html = render(vm({
+      notice: { severity: "warn", text: "Upgrade by hand once: brew upgrade --cask <shyn>" },
+      update: { version: "0.4.20-alpha", state: "available", canRun: true },
+    }), NOW);
+    expect(html).toContain("notice-row");
+    expect(html).toContain("notice-warn");
+    expect(html).toContain("Upgrade by hand once");
+    expect(html).not.toContain("<shyn>");            // escaped, not injected
+    expect(html.indexOf("notice-row")).toBeLessThan(html.indexOf("update-row"));
+  });
+
+  it("info severity gets no warn rule, and no notice means no row", () => {
+    const info = render(vm({ notice: { severity: "info", text: "Docs moved to shyn.day/docs" } }), NOW);
+    expect(info).toContain("notice-row");
+    expect(info).not.toContain("notice-warn");
+    expect(render(vm({ notice: null }), NOW)).not.toContain("notice-row");
   });
 });

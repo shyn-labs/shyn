@@ -1,4 +1,4 @@
-import { compareShynVersions } from "./update-core.js";
+import { compareShynVersions, type Notice } from "./update-core.js";
 
 export type DaemonStatus = {
   documents: number; chunks: number; vectors: number;
@@ -70,6 +70,10 @@ export type ViewModel = {
   // In-app update row (spec 2026-07-24): null = nothing to show (current,
   // opted out, offline, or daemon down). canRun=false → copy-command fallback.
   update: { version: string; state: "available" | "updating" | "failed"; canRun: boolean } | null;
+  // One-way maintainer message carried in the newest release body (see
+  // parseNotice). Shown regardless of whether an update is on offer — the point
+  // is to say things that are not "a new version exists".
+  notice: Notice | null;
   setup: SetupView;
   diagnostics: boolean;
 };
@@ -82,6 +86,7 @@ export type DeriveContext = {
   meetingModel: string;        // capture.json meeting.whisperModel ("small" default)
   // main.ts owns the update-check timer + in-flight state; derive stays pure.
   update: { latest: string | null; updating: boolean; failed: boolean; brewFound: boolean };
+  notice?: Notice | null;
 };
 
 const READER_DISPLAY_NAMES: Record<string, string> = {
@@ -114,6 +119,9 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
       tray: "warning", verdict: "daemon not running", meeting: null,
       rows: [{ label: "Daemon", value: "unreachable", tone: "err", hint: START_HINT }],
       stats: [], week: [], paused: false, modelChoice: null, update: null,
+      // A notice still shows with the daemon down — "upgrade, your build is
+      // broken" is exactly the case where the daemon may not be running.
+      notice: ctx.notice ?? null,
       setup: { kind: "unavailable" },
       diagnostics: true,
     };
@@ -334,7 +342,8 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
   const setup: SetupView = complete ? { kind: "complete" }
     : { kind: "steps", steps, done, total: steps.length };
 
-  return { tray, verdict, meeting, rows, stats, week, paused, modelChoice, update, setup, diagnostics };
+  return { tray, verdict, meeting, rows, stats, week, paused, modelChoice, update,
+           notice: ctx.notice ?? null, setup, diagnostics };
 }
 
 function agoText(sec: number): string {
