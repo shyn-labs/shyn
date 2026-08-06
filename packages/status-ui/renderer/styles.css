@@ -92,6 +92,7 @@ footer { border-top: 1px solid var(--hairline); padding: 11px 16px; display: fle
    an error. `warn` earns a left rule and nothing louder, because the one thing
    worse than an unseen notice is a popover that cries wolf. */
 .notice-row { align-items: center; }
+.notice-row button { justify-self: end; }
 .notice-row .lab { white-space: normal; line-height: 1.35; opacity: 0.85; }
 .notice-warn { border-left: 2px solid var(--warn, #d98324); padding-left: 14px; }
 /* segmented control (meeting language) — one selected, macOS-style */

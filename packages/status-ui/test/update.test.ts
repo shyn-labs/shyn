@@ -8,7 +8,8 @@ import {
   readAutoUpdateEnabled, readUpdateAttempt, writeUpdateAttempt,
   shouldAutoUpdate, AUTO_UPDATE_RETRY_SECONDS, AUTO_UPDATE_SAME_VERSION_SECONDS,
   parseNotice, NOTICE_MAX_CHARS, UPDATE_CHECK_INTERVAL_MS,
-  type AutoUpdateContext,
+  noticeApplies, noticeKey, readDismissedNotices, dismissNotice,
+  type AutoUpdateContext, type Notice,
 } from "../src/update.js";
 
 const home = () => mkdtempSync(join(tmpdir(), "shyn-upd-"));
@@ -203,8 +204,10 @@ describe("auto-update config and attempt record", () => {
 
 describe("parseNotice", () => {
   it("extracts text and defaults to info severity", () => {
-    const n = parseNotice("Release notes here.\n<!-- shyn-notice: Coffee break, back in ten. -->\nMore notes.");
-    expect(n).toEqual({ severity: "info", text: "Coffee break, back in ten." });
+    const n = parseNotice("Release notes here.\n<!-- shyn-notice: Coffee break, back in ten. -->\nMore notes.")!;
+    expect(n.severity).toBe("info");
+    expect(n.text).toBe("Coffee break, back in ten.");
+    expect(n.key).toBeTruthy();
   });
 
   it("reads an explicit severity and collapses multi-line bodies to one line", () => {
@@ -247,10 +250,90 @@ describe("checkLatest notice plumbing", () => {
       { tag_name: "v0.4.19-alpha", draft: false, body: "<!-- shyn-notice: stale, must be ignored -->" },
     ]));
     expect(r!.version).toBe("0.4.20-alpha");
-    expect(r!.notice).toEqual({ severity: "warn", text: "upgrade by hand once" });
+    expect(r!.notice!.severity).toBe("warn");
+    expect(r!.notice!.text).toBe("upgrade by hand once");
   });
   it("null notice when the newest release has no marker", async () => {
     const r = await checkLatest(ok([{ tag_name: "v0.4.20-alpha", draft: false, body: "plain notes" }]));
     expect(r!.notice).toBeNull();
+  });
+});
+
+// --- notice targeting + dismissal (0.4.23) ----------------------------------
+// Both exist because the first notice shipped with neither: it was shown to
+// every build including ones it did not apply to, and could not be closed.
+
+describe("noticeApplies", () => {
+  const n = (over: Partial<Notice> = {}): Notice =>
+    ({ severity: "info", text: "t", key: "k", ...over }) as Notice;
+
+  it("shows a notice with no range to everyone", () => {
+    expect(noticeApplies(n(), "0.4.22-alpha")).toBe(true);
+  });
+
+  it("targets older builds with < — the case that was shipped wrong", () => {
+    const old = n({ appliesTo: { op: "<", version: "0.4.20" } });
+    expect(noticeApplies(old, "0.4.19-alpha")).toBe(true);    // needs to hear it
+    expect(noticeApplies(old, "0.4.20-alpha")).toBe(false);   // does not
+    expect(noticeApplies(old, "0.4.22-alpha")).toBe(false);   // the build that was wrongly nagged
+  });
+
+  it("handles the other operators", () => {
+    expect(noticeApplies(n({ appliesTo: { op: "<=", version: "0.4.20" } }), "0.4.20-alpha")).toBe(true);
+    expect(noticeApplies(n({ appliesTo: { op: ">", version: "0.4.20" } }), "0.4.22-alpha")).toBe(true);
+    expect(noticeApplies(n({ appliesTo: { op: ">=", version: "0.4.22" } }), "0.4.22-alpha")).toBe(true);
+    expect(noticeApplies(n({ appliesTo: { op: "=", version: "0.4.21" } }), "0.4.21-alpha")).toBe(true);
+    expect(noticeApplies(n({ appliesTo: { op: "=", version: "0.4.21" } }), "0.4.22-alpha")).toBe(false);
+  });
+
+  it("fails OPEN on an unusable version, rather than swallowing the message", () => {
+    // Hiding would fail silently: the message never lands and the maintainer
+    // never learns the expression was wrong.
+    expect(noticeApplies(n({ appliesTo: { op: "<", version: "0.4.20" } }), "nightly")).toBe(true);
+  });
+});
+
+describe("parseNotice appliesTo", () => {
+  it("parses severity and range together, and keeps the text clean", () => {
+    const n = parseNotice(`<!-- shyn-notice: severity=warn appliesTo=<0.4.20
+      Builds before 0.4.20 cannot detect updates. Run brew upgrade. -->`)!;
+    expect(n.severity).toBe("warn");
+    expect(n.appliesTo).toEqual({ op: "<", version: "0.4.20" });
+    expect(n.text).toBe("Builds before 0.4.20 cannot detect updates. Run brew upgrade.");
+  });
+
+  it("tolerates a v prefix and leaves appliesTo absent when not given", () => {
+    expect(parseNotice("<!-- shyn-notice: appliesTo=>=v0.5.0 new thing -->")!.appliesTo)
+      .toEqual({ op: ">=", version: "0.5.0" });
+    expect(parseNotice("<!-- shyn-notice: plain message -->")!.appliesTo).toBeUndefined();
+  });
+
+  it("gives every notice a stable key derived from its text", () => {
+    const a = parseNotice("<!-- shyn-notice: same words -->")!;
+    const b = parseNotice("<!-- shyn-notice: severity=warn same words -->")!;
+    expect(a.key).toBe(b.key);                       // key follows text, not severity
+    expect(a.key).toBe(noticeKey("same words"));
+    expect(parseNotice("<!-- shyn-notice: other words -->")!.key).not.toBe(a.key);
+  });
+});
+
+describe("notice dismissal", () => {
+  it("remembers a dismissal, ignores duplicates, and caps the log", () => {
+    const h = home();
+    expect(readDismissedNotices(h)).toEqual([]);
+    dismissNotice(h, "abc");
+    dismissNotice(h, "abc");
+    expect(readDismissedNotices(h)).toEqual(["abc"]);
+    for (let i = 0; i < 60; i++) dismissNotice(h, `k${i}`);
+    const keys = readDismissedNotices(h);
+    expect(keys.length).toBe(50);                    // capped, oldest dropped
+    expect(keys).toContain("k59");
+    expect(keys).not.toContain("abc");
+  });
+
+  it("treats a corrupt or absent file as nothing dismissed", () => {
+    const h = home();
+    writeFileSync(join(h, "dismissed-notices.json"), "{not an array}");
+    expect(readDismissedNotices(h)).toEqual([]);
   });
 });

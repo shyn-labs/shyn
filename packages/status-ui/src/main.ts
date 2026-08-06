@@ -23,7 +23,8 @@ import {
 import {
   checkLatest, consumeUpdateFailed, findBrew, readUpdateCheckEnabled, upgradeShell,
   readAutoUpdateEnabled, readUpdateAttempt, writeUpdateAttempt, shouldAutoUpdate,
-  type Notice, UPDATE_CHECK_INTERVAL_MS,
+  type Notice, UPDATE_CHECK_INTERVAL_MS, noticeApplies,
+  readDismissedNotices, dismissNotice,
 } from "./update.js";
 import { spawn } from "node:child_process";
 import type { SettingsPane } from "./derive.js";
@@ -124,6 +125,16 @@ if (!app.requestSingleInstanceLock()) {
     child.unref();
   }
 
+  // A notice is shown only if it targets this build AND has not been dismissed.
+  // Without the first check it reaches builds it does not apply to; without the
+  // second it cannot be closed until a later release drops the marker.
+  function visibleNotice(n: Notice | null, currentVersion: string): Notice | null {
+    if (!n) return null;
+    if (currentVersion && !noticeApplies(n, currentVersion)) return null;
+    if (readDismissedNotices(home).includes(n.key)) return null;
+    return n;
+  }
+
   async function tick() {
     if (consumeUpdateFailed(home)) {
       updFailed = true; updUpdating = false;
@@ -158,7 +169,9 @@ if (!app.requestSingleInstanceLock()) {
       meetingModel: readMeetingModel(home),
       update: { latest: updLatest, updating: updUpdating, failed: updFailed,
                 brewFound: findBrew() !== null },
-      notice: updNotice,
+      // Two suppressions, both learned from shipping a notice without them:
+      // it must target this build, and a dismissal must stick.
+      notice: visibleNotice(updNotice, daemonStatus?.daemonVersion ?? ""),
       now: Math.floor(Date.now() / 1000),
       claudeCommand: existsSync(join(home, "bin", "shyn-mcp"))
         ? `claude mcp add shyn -- "${join(home, "bin", "shyn-mcp")}"`
@@ -250,6 +263,7 @@ if (!app.requestSingleInstanceLock()) {
           else console.error("unknown meeting model:", arg);
         }
         else if (name === "run-update") startUpgrade(updLatest, false);
+        else if (name === "dismiss-notice") { if (typeof arg === "string") dismissNotice(home, arg); }
         else if (name === "open-onboarding") showOnboarding();
         else if (name === "open-settings") {
           const url = Object.hasOwn(SETTINGS_URLS, arg as string) ? SETTINGS_URLS[arg as SettingsPane] : undefined;

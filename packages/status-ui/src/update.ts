@@ -41,6 +41,26 @@ export function writeUpdateAttempt(home: string, a: UpdateAttempt): void {
   catch { /* best-effort: a lost record only risks one extra attempt */ }
 }
 
+// Dismissed notices, by key. A message the user has read and closed must stay
+// closed — the first notice shipped with no off-switch and sat in the popover
+// until a later release happened to drop the marker. Keys, not text, so the
+// file stays small and readable.
+export function readDismissedNotices(home: string): string[] {
+  try {
+    const a = JSON.parse(readFileSync(join(home, "dismissed-notices.json"), "utf8"));
+    return Array.isArray(a) ? a.filter((k): k is string => typeof k === "string") : [];
+  } catch { return []; }
+}
+
+export function dismissNotice(home: string, key: string): void {
+  const keys = readDismissedNotices(home);
+  if (keys.includes(key)) return;
+  // Cap it: this is a dismissal log, not history. Oldest out first.
+  const next = [...keys, key].slice(-50);
+  try { writeFileSync(join(home, "dismissed-notices.json"), JSON.stringify(next) + "\n"); }
+  catch { /* best-effort: worst case the notice reappears once */ }
+}
+
 // One-shot marker written by the detached upgrade shell on failure —
 // consumed (deleted) on read, same idiom as meeting-control.json.
 export function consumeUpdateFailed(home: string): boolean {

@@ -156,7 +156,7 @@ describe("update row", () => {
 describe("maintainer notice row", () => {
   it("renders the notice text, escaped, above the update row", () => {
     const html = render(vm({
-      notice: { severity: "warn", text: "Upgrade by hand once: brew upgrade --cask <shyn>" },
+      notice: { severity: "warn", text: "Upgrade by hand once: brew upgrade --cask <shyn>", key: "abc123" },
       update: { version: "0.4.20-alpha", state: "available", canRun: true },
     }), NOW);
     expect(html).toContain("notice-row");
@@ -167,7 +167,7 @@ describe("maintainer notice row", () => {
   });
 
   it("info severity gets no warn rule, and no notice means no row", () => {
-    const info = render(vm({ notice: { severity: "info", text: "Docs moved to shyn.day/docs" } }), NOW);
+    const info = render(vm({ notice: { severity: "info", text: "Docs moved to shyn.day/docs", key: "def456" } }), NOW);
     expect(info).toContain("notice-row");
     expect(info).not.toContain("notice-warn");
     expect(render(vm({ notice: null }), NOW)).not.toContain("notice-row");

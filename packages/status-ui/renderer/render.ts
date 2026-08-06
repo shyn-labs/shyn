@@ -98,6 +98,7 @@ export function render(vm: ViewModel, nowSec: number): string {
   const noticeRow = n ? `
   <div class="row notice-row${n.severity === "warn" ? " notice-warn" : ""}">
     <span class="lab">${esc(n.text)}</span>
+    <button data-action="dismiss-notice" data-arg="${esc(n.key)}" title="Dismiss">Dismiss</button>
   </div>` : "";
 
   return `

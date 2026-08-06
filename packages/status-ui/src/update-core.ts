@@ -110,11 +110,54 @@ export function shouldAutoUpdate(c: AutoUpdateContext): AutoUpdateDecision {
 // (`brew upgrade`) is the only channel.
 //
 // Format, in the release body:
-//   <!-- shyn-notice: severity=warn
+//   <!-- shyn-notice: severity=warn appliesTo=<0.4.20
 //   Update required: builds before 0.4.20 cannot detect updates.
 //   Run: brew upgrade --cask shyn-labs/tap/shyn
 //   -->
-export type Notice = { severity: "info" | "warn"; text: string };
+//
+// `appliesTo` (added 0.4.23) exists because the first notice shipped without it
+// and was therefore shown to EVERY build, including the ones it did not apply
+// to — the text said "if yours is older" while the code showed it regardless.
+// A message whose audience is not expressed in the marker is a nag by
+// construction, so state the range and let the app suppress it elsewhere.
+export type NoticeRange = { op: "<" | "<=" | ">" | ">=" | "="; version: string };
+export type Notice = {
+  severity: "info" | "warn";
+  text: string;
+  /** Which builds this is for. Absent = everyone. */
+  appliesTo?: NoticeRange;
+  /** Stable id for dismissal, derived from the text. */
+  key: string;
+};
+
+// Non-crypto, deliberately: this only has to be stable and agree between the
+// main process and the renderer, and update-core must stay browser-safe (no
+// node:crypto). Collisions are harmless — worst case one notice hides another.
+export function noticeKey(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = (((h << 5) + h) ^ text.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+// True when the notice targets this build. A MALFORMED range fails OPEN (shows
+// the notice) on purpose: hiding it would fail silently — the message never
+// lands and the maintainer never learns the expression was wrong — whereas
+// showing it is visible and self-correcting.
+export function noticeApplies(n: Notice, currentVersion: string): boolean {
+  if (!n.appliesTo) return true;
+  const cmp = compareShynVersions(currentVersion, n.appliesTo.version);
+  if (cmp === null) {
+    console.error(`[update] notice appliesTo unusable against "${currentVersion}" — showing anyway`);
+    return true;
+  }
+  switch (n.appliesTo.op) {
+    case "<":  return cmp < 0;
+    case "<=": return cmp <= 0;
+    case ">":  return cmp > 0;
+    case ">=": return cmp >= 0;
+    case "=":  return cmp === 0;
+  }
+}
 
 /** Popover rows are one line; a maintainer pasting an essay gets truncated. */
 export const NOTICE_MAX_CHARS = 240;
@@ -131,14 +174,20 @@ export function parseNotice(body: unknown): Notice | null {
     severity = sev[1] as Notice["severity"];
     inner = inner.slice(sev[0].length);
   }
+  // Optional `appliesTo=<0.4.20` (or <=, >, >=, =) after severity.
+  let appliesTo: NoticeRange | undefined;
+  const range = inner.match(/^\s*appliesTo\s*=\s*(<=|>=|<|>|=)\s*v?([0-9][^\s]*)/);
+  if (range) {
+    appliesTo = { op: range[1] as NoticeRange["op"], version: range[2] };
+    inner = inner.slice(range[0].length);
+  }
   // Collapse to a single line: the row is one line, and a stray newline in a
   // comment should not become a layout bug.
   const text = inner.replace(/\s+/g, " ").trim();
   if (!text) return null;
-  return {
-    severity,
-    text: text.length > NOTICE_MAX_CHARS ? `${text.slice(0, NOTICE_MAX_CHARS - 1)}…` : text,
-  };
+  const clipped = text.length > NOTICE_MAX_CHARS
+    ? `${text.slice(0, NOTICE_MAX_CHARS - 1)}…` : text;
+  return { severity, text: clipped, appliesTo, key: noticeKey(clipped) };
 }
 
 export type LatestRelease = { version: string; notice: Notice | null };
