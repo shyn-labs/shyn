@@ -7,7 +7,7 @@ import {
   upgradeShell, UPGRADE_COMMAND, checkLatest, RELEASES_URL,
   readAutoUpdateEnabled, readUpdateAttempt, writeUpdateAttempt,
   shouldAutoUpdate, AUTO_UPDATE_RETRY_SECONDS, AUTO_UPDATE_SAME_VERSION_SECONDS,
-  parseNotice, NOTICE_MAX_CHARS,
+  parseNotice, NOTICE_MAX_CHARS, UPDATE_CHECK_INTERVAL_MS,
   type AutoUpdateContext,
 } from "../src/update.js";
 
@@ -91,6 +91,14 @@ describe("checkLatest", () => {
     expect(await checkLatest(ok([]))).toBeNull();
     expect(await checkLatest(ok({ tag_name: "v1.0.0" }))).toBeNull();   // single object, not a list
     expect(await checkLatest(ok([{ nope: 1 }]))).toBeNull();
+  });
+
+  it("re-checks often enough for a hotfix, without hammering the API", () => {
+    const hours = UPDATE_CHECK_INTERVAL_MS / 3_600_000;
+    expect(hours).toBeLessThanOrEqual(6);       // a hotfix must not wait a day
+    expect(hours).toBeGreaterThanOrEqual(1);    // releases are cut by hand; polling faster buys nothing
+    // Unauthenticated GitHub allows 60 requests/hour. Stay far under it.
+    expect(24 / hours).toBeLessThan(30);
   });
 
   it("polls the list endpoint, never /releases/latest", async () => {

@@ -1,6 +1,6 @@
 {
   "name": "@shyn/mcp-client",
-  "version": "0.4.20-alpha",
+  "version": "0.4.21-alpha",
   "license": "Elastic-2.0",
   "type": "module",
   "bin": {

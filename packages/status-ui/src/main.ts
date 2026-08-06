@@ -23,7 +23,7 @@ import {
 import {
   checkLatest, consumeUpdateFailed, findBrew, readUpdateCheckEnabled, upgradeShell,
   readAutoUpdateEnabled, readUpdateAttempt, writeUpdateAttempt, shouldAutoUpdate,
-  type Notice,
+  type Notice, UPDATE_CHECK_INTERVAL_MS,
 } from "./update.js";
 import { spawn } from "node:child_process";
 import type { SettingsPane } from "./derive.js";
@@ -286,7 +286,7 @@ if (!app.requestSingleInstanceLock()) {
     tick().catch((e) => console.error("tick failed:", e));
     setInterval(() => { tick().catch((e) => console.error("tick failed:", e)); }, 3000);
     void updateCheck();
-    setInterval(() => void updateCheck(), 24 * 3600 * 1000);
+    setInterval(() => void updateCheck(), UPDATE_CHECK_INTERVAL_MS);
 
     setTimeout(() => {
       const now = Math.floor(Date.now() / 1000);

@@ -4,6 +4,15 @@
 
 export const UPGRADE_COMMAND = "brew update && brew upgrade --cask shyn && shyn setup";
 
+// How often the status app re-checks for a release. Was 24h until 0.4.21, which
+// meant a hotfix could sit unseen for a day — three releases shipped in one
+// afternoon on 2026-08-05 and any of them could have been urgent.
+//
+// 6h costs 4 unauthenticated GitHub API calls per day against a 60/hour limit,
+// so the budget is not the constraint; restraint is. Anything much shorter is
+// polling someone else's API for no benefit, since releases are cut by hand.
+export const UPDATE_CHECK_INTERVAL_MS = 6 * 3600 * 1000;
+
 // MUST be the list endpoint, not /releases/latest. GitHub's "latest" excludes
 // prereleases, and every shyn release is cut with `gh release create
 // --prerelease` — so /releases/latest returned **404 Not Found** and the update
