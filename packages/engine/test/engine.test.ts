@@ -152,8 +152,8 @@ describe("Engine facade", () => {
 
     const r1 = await e.syncReaders([fake, dead]);
     expect(r1).toEqual([
-      { name: "fake", ok: true, ingested: 1, deduped: 0 },
-      { name: "dead", ok: false, reason: "nope", ingested: 0, deduped: 0 },
+      { name: "fake", ok: true, ingested: 1, deduped: 0, rejected: 0 },
+      { name: "dead", ok: false, reason: "nope", ingested: 0, deduped: 0, rejected: 0 },
     ]);
     const r2 = await e.syncReaders([fake]);      // watermark advanced to now-5
     expect(lastSince).toBe(now - 5);
@@ -179,9 +179,9 @@ describe("Engine facade", () => {
       read: async () => [doc] };
 
     const r1 = await e.syncReaders([repeating]);
-    expect(r1).toEqual([{ name: "repeating", ok: true, ingested: 1, deduped: 0 }]);
+    expect(r1).toEqual([{ name: "repeating", ok: true, ingested: 1, deduped: 0, rejected: 0 }]);
     const r2 = await e.syncReaders([repeating]);
-    expect(r2).toEqual([{ name: "repeating", ok: true, ingested: 0, deduped: 1 }]);
+    expect(r2).toEqual([{ name: "repeating", ok: true, ingested: 0, deduped: 1, rejected: 0 }]);
     const count = (e as any).db.prepare("SELECT count(*) c FROM documents").get().c;
     expect(count).toBe(1);
     await e.close();

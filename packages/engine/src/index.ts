@@ -1,4 +1,5 @@
 export { openDatabase, EMBEDDING_DIM } from "./storage.js";
+export { isPlumbingUri, canonicalUri, stripScreenFurniture, metaHeader } from "./hygiene.js";
 export { StaticKeyProvider, KeychainKeyProvider, type KeyProvider } from "./keys.js";
 export { shynHome } from "./paths.js";
 export { chunkFor, type Source } from "./chunk.js";

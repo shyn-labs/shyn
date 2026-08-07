@@ -173,7 +173,7 @@ describe("mcp tools", () => {
     const readersLine = t.split("\n").find((l: string) => l.startsWith("readers:"));
     expect(readersLine).toBeDefined();
     const parsed = JSON.parse(readersLine!.slice("readers: ".length));
-    expect(parsed).toEqual([{ name: "fake", ok: true, ingested: 0, deduped: 0 }]);
+    expect(parsed).toEqual([{ name: "fake", ok: true, ingested: 0, deduped: 0, rejected: 0 }]);
   });
 
   it("memory_status returns a friendly message when the daemon socket is missing", async () => {

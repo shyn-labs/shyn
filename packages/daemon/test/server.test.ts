@@ -157,7 +157,7 @@ describe("daemon rpc", () => {
     const s0 = await rpcCall(sock, "status", {});
     expect(s0.readers).toEqual([]);
     const r = await rpcCall(sock, "sync", {});
-    expect(r).toEqual([{ name: "fake", ok: true, ingested: 1, deduped: 0 }]);
+    expect(r).toEqual([{ name: "fake", ok: true, ingested: 1, deduped: 0, rejected: 0 }]);
     const s1 = await rpcCall(sock, "status", {});
     expect(s1.readers).toEqual(r);
     // reader-fed content is searchable
@@ -186,7 +186,7 @@ describe("daemon rpc", () => {
         await new Promise((res) => setTimeout(res, 20));
         s = await rpcCall(localSock, "status", {});
       }
-      expect(s.readers).toEqual([{ name: "fake", ok: true, ingested: 1, deduped: 0 }]);
+      expect(s.readers).toEqual([{ name: "fake", ok: true, ingested: 1, deduped: 0, rejected: 0 }]);
     } finally {
       await localServer.close();
     }

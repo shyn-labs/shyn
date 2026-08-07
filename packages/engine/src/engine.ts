@@ -28,6 +28,9 @@ export type EngineStatus = {
 
 export type SyncResult = {
   name: string; ok: boolean; reason?: string; ingested: number; deduped: number;
+  /** Dropped by ingest hygiene (auth/redirect plumbing). Counted separately so
+   *  "ingested" never claims credit for a document that was thrown away. */
+  rejected: number;
 };
 
 export class Engine {
@@ -140,21 +143,21 @@ export class Engine {
       try {
         const a = await reader.available();
         if (!a.ok) {
-          results.push({ name: reader.name, ok: false, reason: a.reason, ingested: 0, deduped: 0 });
+          results.push({ name: reader.name, ok: false, reason: a.reason, ingested: 0, deduped: 0, rejected: 0 });
           continue;
         }
         const docs = await reader.read(getWatermark(this.db, reader.name));
-        let ingested = 0, deduped = 0, maxTs = 0;
+        let ingested = 0, deduped = 0, rejected = 0, maxTs = 0;
         for (const doc of docs) {
           const r = this.ingest(doc);
-          if (r.deduped) deduped++; else ingested++;
+          if (r.rejected) rejected++; else if (r.deduped) deduped++; else ingested++;
           if (doc.ts > maxTs) maxTs = doc.ts;
         }
         if (docs.length > 0) setWatermark(this.db, reader.name, maxTs);
-        results.push({ name: reader.name, ok: true, ...(a.reason ? { reason: a.reason } : {}), ingested, deduped });
+        results.push({ name: reader.name, ok: true, ...(a.reason ? { reason: a.reason } : {}), ingested, deduped, rejected });
       } catch (err: any) {
         results.push({ name: reader.name, ok: false,
-          reason: err?.message ?? "reader failed", ingested: 0, deduped: 0 });
+          reason: err?.message ?? "reader failed", ingested: 0, deduped: 0, rejected: 0 });
       }
     }
     return results;

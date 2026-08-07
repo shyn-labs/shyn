@@ -1,11 +1,27 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3-multiple-ciphers";
 import { chunkFor } from "./chunk.js";
+import { isPlumbingUri, canonicalUri, stripScreenFurniture, metaHeader } from "./hygiene.js";
 import type { IngestDoc } from "./types.js";
 
 export function ingestDocument(
   db: Database.Database, doc: IngestDoc
-): { docId: number; chunks: number; deduped: boolean } {
+): { docId: number; chunks: number; deduped: boolean; rejected?: string } {
+  // Hygiene runs BEFORE the identity hash and the (source, uri) lookup, so a
+  // canonicalised URL replaces its twin instead of sitting beside it, and
+  // stripped text does not change the dedup hash on every capture.
+  // Measured against the real corpus — see hygiene.ts for the numbers and for
+  // the rule that was rejected because it would have destroyed 4,992 emails.
+  if (isPlumbingUri(doc.uri)) {
+    // Reported, not silent: a rejection the caller cannot see is how a filter
+    // quietly eats real data for weeks without anyone noticing.
+    return { docId: 0, chunks: 0, deduped: false, rejected: "auth/redirect plumbing" };
+  }
+  doc = { ...doc, uri: canonicalUri(doc.uri) };
+  if (doc.source === "screen") doc = { ...doc, text: stripScreenFurniture(doc.text) };
+  const header = metaHeader(doc.meta as Record<string, unknown> | undefined);
+  if (header) doc = { ...doc, text: `${header}\n\n${doc.text}` };
+
   const hash = createHash("sha256")
     .update(doc.source).update("\0").update(doc.uri).update("\0").update(doc.text)
     .digest("hex");

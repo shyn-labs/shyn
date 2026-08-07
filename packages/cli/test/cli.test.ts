@@ -115,7 +115,7 @@ describe("shyn cli", () => {
     expect(readersLine).not.toMatch(/\[object Object\]/);
     const jsonPart = readersLine!.slice("readers: ".length);
     const parsed = JSON.parse(jsonPart);
-    expect(parsed).toEqual([{ name: "fake", ok: true, ingested: 1, deduped: 0 }]);
+    expect(parsed).toEqual([{ name: "fake", ok: true, ingested: 1, deduped: 0, rejected: 0 }]);
   });
 
   it("install redirects to `shyn setup` under a payload install instead of installing", async () => {
