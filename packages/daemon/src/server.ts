@@ -55,6 +55,10 @@ export async function startServer(opts: {
     },
     recent: (p) => engine.recent(p),
     document: (p) => engine.document(p),
+    // Long-running by nature (scrypt + a whole-corpus stream), so the CLI calls
+    // these with a generous timeout rather than the default.
+    export: async (p) => ({ documents: await engine.exportArchive(p.passphrase, p.path) }),
+    import: (p) => engine.importArchive(p.passphrase, p.path),
     forget: (p) => {
       if (p?.confirm !== true)
         throw Object.assign(new Error("forget requires confirm: true"), { code: -32001 });

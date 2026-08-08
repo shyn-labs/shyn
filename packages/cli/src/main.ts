@@ -69,6 +69,59 @@ async function cmdSearch(query: string, print: (s: string) => void) {
     print(`[${h.score.toFixed(4)}] ${h.uri} (${h.source}) — ${h.text.slice(0, 80)}`);
 }
 
+// Reads a passphrase without echoing it and without it reaching shell history —
+// an --passphrase flag would sit in ~/.zsh_history forever, and this passphrase
+// is the only thing standing between an archive and everything in it.
+// SHYN_PASSPHRASE exists for scripted backups, where a TTY does not exist.
+async function readPassphrase(prompt: string, print: (s: string) => void): Promise<string | null> {
+  const fromEnv = process.env.SHYN_PASSPHRASE;
+  if (fromEnv) return fromEnv;
+  if (!process.stdin.isTTY) {
+    print("aborted: needs an interactive terminal, or set SHYN_PASSPHRASE");
+    return null;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  const stdin = process.stdin as NodeJS.ReadStream & { isRaw?: boolean };
+  process.stdout.write(prompt);
+  const muted = (rl as unknown as { output: NodeJS.WriteStream }).output;
+  const origWrite = muted.write.bind(muted);
+  (muted as unknown as { write: (c: string) => boolean }).write = () => true;   // swallow the echo
+  const answer = await new Promise<string>((res) => rl.question("", res));
+  (muted as unknown as { write: typeof origWrite }).write = origWrite;
+  process.stdout.write("\n");
+  rl.close();
+  void stdin;
+  return answer;
+}
+
+async function cmdExport(args: string[], print: (s: string) => void) {
+  const path = args[0];
+  if (!path) return print("usage: shyn export <path.shynarc>");
+  const pass = await readPassphrase("Passphrase for the archive: ", print);
+  if (pass === null) { process.exitCode = 1; return; }
+  if (!pass) { print("error: a passphrase is required"); process.exitCode = 1; return; }
+  const confirm = process.env.SHYN_PASSPHRASE
+    ? pass : await readPassphrase("Confirm passphrase: ", print);
+  if (confirm !== pass) { print("error: passphrases do not match"); process.exitCode = 1; return; }
+  try {
+    const r = await rpcCall(sock(), "export", { path, passphrase: pass }, 600_000);
+    print(`exported ${r.documents} document(s) to ${path}`);
+    print("Keep this file and the passphrase apart from this Mac — it is the only");
+    print("copy of your memory that survives losing the machine or its Keychain.");
+  } catch (e: any) { print(`error: ${e.message}`); process.exitCode = 1; }
+}
+
+async function cmdImport(args: string[], print: (s: string) => void) {
+  const path = args[0];
+  if (!path) return print("usage: shyn import <path.shynarc>");
+  const pass = await readPassphrase("Passphrase for the archive: ", print);
+  if (pass === null) { process.exitCode = 1; return; }
+  try {
+    const r = await rpcCall(sock(), "import", { path, passphrase: pass }, 600_000);
+    print(`imported ${r.imported} document(s); ${r.deduped} already present`);
+  } catch (e: any) { print(`error: ${e.message}`); process.exitCode = 1; }
+}
+
 async function cmdShow(args: string[], print: (s: string) => void) {
   const uri = args[0];
   if (!uri) return print("usage: shyn show <uri> [--source <source>]");
@@ -231,6 +284,8 @@ export async function runCli(argv: string[], print: (s: string) => void = consol
     if (cmd === "status") return await cmdStatus(print);
     if (cmd === "search" && rest[0]) return await cmdSearch(rest.join(" "), print);
     if (cmd === "show") return await cmdShow(rest, print);
+    if (cmd === "export") return await cmdExport(rest, print);
+    if (cmd === "import") return await cmdImport(rest, print);
     if (cmd === "stats") return await cmdStats(rest, print);
     if (cmd === "diagnose") {
       // diagnose handles daemon-down itself — that's its whole point.
@@ -302,7 +357,7 @@ export async function runCli(argv: string[], print: (s: string) => void = consol
       if (!rest[0]) return print("usage: shyn exclude <bundle-id|title-regex>");
       addExclude(cfgPath(), rest[0]); return print(`excluded: ${rest[0]}`);
     }
-    print("usage: shyn <ingest <path> | status | search <query> | show <uri> [--source <source>] | stats [--days N] | diagnose [--mail] | forget [--source|--doc|--from|--to] | sync [--full] | install | uninstall [--purge] | setup | pause [30m|2h|until-tomorrow] | resume | exclude <bundle-id|title-regex> | meeting <status|stop|cancel>>");
+    print("usage: shyn <ingest <path> | status | search <query> | show <uri> [--source <source>] | export <path> | import <path> | stats [--days N] | diagnose [--mail] | forget [--source|--doc|--from|--to] | sync [--full] | install | uninstall [--purge] | setup | pause [30m|2h|until-tomorrow] | resume | exclude <bundle-id|title-regex> | meeting <status|stop|cancel>>");
   } catch (err) {
     if (isDaemonDownError(err)) print(DAEMON_DOWN_MESSAGE);
     else print(`error: ${(err as Error).message}`);

@@ -434,3 +434,28 @@ describe("document rpc", () => {
     await expect(rpcCall(sock, "document", { uri: "same" })).rejects.toThrow(/file, notes/);
   });
 });
+
+describe("export/import rpc", () => {
+  it("round-trips the corpus through an encrypted archive", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const path = join(mkdtempSync(join(tmpdir(), "shyn-arc-")), "m.shynarc");
+    engine.ingest({ source: "notes", uri: "note://a", title: "A", ts: 1000, text: "alpha body" });
+    await engine.drain();
+    const e: any = await rpcCall(sock, "export", { path, passphrase: "pw" });
+    expect(e.documents).toBeGreaterThan(0);
+    // Importing into the same store is a no-op: dedup makes restore idempotent.
+    const i: any = await rpcCall(sock, "import", { path, passphrase: "pw" });
+    expect(i.imported).toBe(0);
+    expect(i.deduped).toBe(e.documents);
+  });
+
+  it("surfaces a wrong passphrase as an rpc error", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const path = join(mkdtempSync(join(tmpdir(), "shyn-arc-")), "m.shynarc");
+    await rpcCall(sock, "export", { path, passphrase: "right" });
+    await expect(rpcCall(sock, "import", { path, passphrase: "wrong" }))
+      .rejects.toThrow(/wrong passphrase|corrupt/i);
+  });
+});

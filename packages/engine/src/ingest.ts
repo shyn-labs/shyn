@@ -5,13 +5,21 @@ import { isPlumbingUri, canonicalUri, stripScreenFurniture, metaHeader } from ".
 import type { IngestDoc } from "./types.js";
 
 export function ingestDocument(
-  db: Database.Database, doc: IngestDoc
+  db: Database.Database, doc: IngestDoc,
+  opts?: { skipHygiene?: boolean }
 ): { docId: number; chunks: number; deduped: boolean; rejected?: string } {
   // Hygiene runs BEFORE the identity hash and the (source, uri) lookup, so a
   // canonicalised URL replaces its twin instead of sitting beside it, and
   // stripped text does not change the dedup hash on every capture.
   // Measured against the real corpus — see hygiene.ts for the numbers and for
   // the rule that was rejected because it would have destroyed 4,992 emails.
+  // Hygiene is a policy for LIVE CAPTURE, not for a restore. Applying today's
+  // rules to an archive rewrites history: a live export/restore of the real
+  // corpus lost 3,449 documents (34,593 exported, 31,144 restored) because
+  // rules written after those documents were captured rejected and merged them
+  // on the way back in. A backup that does not return what you backed up is not
+  // a backup, so importArchive passes skipHygiene.
+  if (!opts?.skipHygiene) {
   if (isPlumbingUri(doc.uri)) {
     // Reported, not silent: a rejection the caller cannot see is how a filter
     // quietly eats real data for weeks without anyone noticing.
@@ -20,7 +28,11 @@ export function ingestDocument(
   doc = { ...doc, uri: canonicalUri(doc.uri) };
   if (doc.source === "screen") doc = { ...doc, text: stripScreenFurniture(doc.text) };
   const header = metaHeader(doc.meta as Record<string, unknown> | undefined);
-  if (header) doc = { ...doc, text: `${header}\n\n${doc.text}` };
+  // Idempotent on purpose: an archive restore re-ingests text that ALREADY
+  // carries the header, and prepending a second copy corrupts the document.
+  // True of any repeated ingest of previously-hygiened text, not just imports.
+  if (header && !doc.text.startsWith(header)) doc = { ...doc, text: `${header}\n\n${doc.text}` };
+  }
 
   const hash = createHash("sha256")
     .update(doc.source).update("\0").update(doc.uri).update("\0").update(doc.text)

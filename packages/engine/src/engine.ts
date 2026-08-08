@@ -8,6 +8,7 @@ import { forget as runForget, type ForgetSelector } from "./forget.js";
 import { sweepScreenRetention, sweepMeetingRetention } from "./retention.js";
 import { recordBeat, coverageReport, sweepCoverage } from "./coverage.js";
 import { joinChunks, type DocumentResult } from "./document.js";
+import { exportArchive, importArchive, type ArchiveDoc } from "./archive.js";
 import { drainEmbedQueue } from "./embed-worker.js";
 import { getWatermark, setWatermark } from "./readers/watermark.js";
 import type { Reader } from "./readers/types.js";
@@ -135,6 +136,23 @@ export class Engine {
     const texts = this.db.prepare(
       "SELECT text FROM chunks WHERE doc_id = ? ORDER BY pos").all(row.docId) as { text: string }[];
     return { ...row, text: joinChunks(texts.map((t) => t.text)), chunkCount: texts.length };
+  }
+
+  // Encrypted export/import. The passphrase is the user's, NOT the Keychain key
+  // — that key is exactly what the lost-machine scenario destroys.
+  exportArchive(passphrase: string, path: string) {
+    return exportArchive(this.db, passphrase, path);
+  }
+  importArchive(passphrase: string, path: string) {
+    // Reuses the ordinary ingest path, so hygiene, chunking and (source, uri)
+    // dedup all apply and a restore onto a populated store merges cleanly.
+    // skipHygiene: a restore must return exactly what was archived. See
+    // ingestDocument — applying current rules to old data silently dropped
+    // 3,449 documents in a live test.
+    return importArchive(path, passphrase, (d: ArchiveDoc) =>
+      ingestDocument(this.db, { source: d.source as never, uri: d.uri, title: d.title,
+                                ts: d.ts, text: d.text, meta: d.meta as never },
+                     { skipHygiene: true }));
   }
 
   async syncReaders(readers: Reader[]): Promise<SyncResult[]> {
