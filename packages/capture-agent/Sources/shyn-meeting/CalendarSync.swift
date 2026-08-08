@@ -54,7 +54,7 @@ func readCalendarEvents(now: Int) async -> [IngestPayload] {
             isAllDay: e.isAllDay,
             location: e.location,
             notes: e.notes,
-            organizer: e.organizer?.name,
+            organizer: e.organizer?.name.flatMap(attendeeDisplayName),
             attendees: attendees,
             declined: declined))
     }

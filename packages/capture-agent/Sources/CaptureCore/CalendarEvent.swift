@@ -60,6 +60,28 @@ public func attendeeDisplayName(_ raw: String) -> String? {
     return local.isEmpty ? nil : local
 }
 
+/// Calendar invites arrive as HTML from Google and Exchange. Tags carry no
+/// meaning in a searchable document and break up the words around them, so
+/// they are removed and block-level ones become line breaks.
+public func plainTextFromNotes(_ raw: String?) -> String? {
+    guard let raw, !raw.isEmpty else { return nil }
+    var s = raw
+    // Block-level tags become newlines so list items and paragraphs stay apart.
+    for tag in ["<br>", "<br/>", "<br />", "</p>", "</li>", "</ul>", "</ol>", "</div>", "</tr>"] {
+        s = s.replacingOccurrences(of: tag, with: "\n", options: .caseInsensitive)
+    }
+    s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+    // The handful of entities that actually show up in invites.
+    for (e, c) in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+                   ("&quot;", "\""), ("&#39;", "'")] {
+        s = s.replacingOccurrences(of: e, with: c, options: .caseInsensitive)
+    }
+    s = s.replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
+    s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+    let out = s.trimmingCharacters(in: .whitespacesAndNewlines)
+    return out.isEmpty ? nil : out
+}
+
 /// A recurring event shares ONE identifier across every occurrence, so the URI
 /// must carry the occurrence start or the whole series collapses into a single
 /// document that overwrites itself every week.
@@ -92,9 +114,10 @@ public func calendarEventText(_ e: CalendarEventInput, timeZone: TimeZone = .cur
     if !e.attendees.isEmpty {
         lines.append("Attendees: \(e.attendees.joined(separator: ", "))")
     }
-    // Notes carry agendas and dial-in details. Capped: a pasted invite can run
-    // to kilobytes of boilerplate that would dominate the document.
-    if let n = e.notes?.trimmingCharacters(in: .whitespacesAndNewlines), !n.isEmpty {
+    // Notes carry agendas and dial-in details. Google Calendar sends them as
+    // HTML, so raw <br>/<ul><li> tags would land in a searchable document.
+    // Capped too: a pasted invite runs to kilobytes of boilerplate.
+    if let n = plainTextFromNotes(e.notes), !n.isEmpty {
         lines.append("")
         lines.append(n.count > 2000 ? String(n.prefix(2000)) + "…" : n)
     }

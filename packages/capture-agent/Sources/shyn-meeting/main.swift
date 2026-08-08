@@ -413,7 +413,20 @@ actor MeetingAgent {
 
     private func finishCalendarSync(shipped: Int, total: Int) {
         calendarTask = nil
-        dbg("calendar sync: \(shipped)/\(total) events shipped")
+        // A sweep that shipped NOTHING must not burn the hour. Lived 2026-08-08:
+        // `shyn setup` restarts the agent and the daemon together, the agent
+        // ticked first, every ingest hit a socket that was not up yet, and
+        // shipCalendarEvents stopped at the first failure — so the interval was
+        // spent on zero events and the calendar stayed empty for an hour.
+        if shipped == 0 && total > 0 {
+            lastCalendarSync = 0
+            logErr("[meeting] calendar sync shipped 0/\(total) — daemon unreachable? retrying next tick")
+            return
+        }
+        // Operator-visible, not dbg: a brand-new subsystem whose only feedback
+        // is behind SHYN_MEETING_DEBUG cannot be told apart from one that never
+        // ran — which is exactly how this went undiagnosed for the first sweep.
+        if total > 0 { logErr("[meeting] calendar sync: \(shipped)/\(total) events") }
     }
 
     private func updateTranscribeProgress(_ p: Double) { transcribeProgress = p }

@@ -107,3 +107,22 @@ private func ev(_ over: (inout CalendarEventInput) -> Void = { _ in }) -> Calend
         #expect(!(attendeeDisplayName(raw) ?? "").contains("@"))
     }
 }
+
+@Test func inviteHtmlBecomesReadableText() {
+    // Google and Exchange send invite bodies as HTML; raw tags are noise in a
+    // searchable document and glue words together. Observed live 2026-08-08.
+    let html = "Hi,<br><br>Cadence for <ul><li>Project updates</li><li>Co-development</li></ul>"
+    let out = plainTextFromNotes(html)!
+    #expect(!out.contains("<"))
+    #expect(out.contains("Project updates"))
+    #expect(out.contains("Co-development"))
+    #expect(!out.contains("updates</li><li>Co"))     // list items stayed apart
+}
+
+@Test func notesEntitiesAndBlankInputAreHandled() {
+    #expect(plainTextFromNotes("A&nbsp;B &amp; C") == "A B & C")
+    #expect(plainTextFromNotes("<div></div>") == nil)   // markup only → nothing
+    #expect(plainTextFromNotes("") == nil)
+    #expect(plainTextFromNotes(nil) == nil)
+    #expect(plainTextFromNotes("plain text, untouched") == "plain text, untouched")
+}
