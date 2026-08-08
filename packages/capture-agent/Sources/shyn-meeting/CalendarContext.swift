@@ -11,6 +11,9 @@ import CaptureCore
 struct CalendarStamp {
     let title: String
     let attendees: [String]
+    /// Attendees EXCLUDING the user. A raw roster of two cannot say which name
+    /// is the far side; isCurrentUser is the only thing that can.
+    let others: [String]
 }
 
 func calendarAccessAuthorized() -> Bool {
@@ -53,8 +56,11 @@ func calendarStamp(startEpoch: Int, endEpoch: Int) async -> CalendarStamp? {
     guard let i = matchMeetingEvent(sessionStart: startEpoch, sessionEnd: endEpoch,
                                     candidates: candidates),
           !candidates[i].title.isEmpty else { return nil }
-    return CalendarStamp(title: candidates[i].title,
-                         attendees: (events[i].attendees ?? []).compactMap(\.name).compactMap(attendeeDisplayName))
+    let all = events[i].attendees ?? []
+    return CalendarStamp(
+        title: candidates[i].title,
+        attendees: all.compactMap(\.name).compactMap(attendeeDisplayName),
+        others: all.filter { !$0.isCurrentUser }.compactMap(\.name).compactMap(attendeeDisplayName))
 }
 
 // Window-title fallback (spec phase 1b): when EventKit has nothing — the

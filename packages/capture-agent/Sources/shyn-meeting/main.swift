@@ -324,7 +324,14 @@ actor MeetingAgent {
                          appName: appName, windowTitle: windowTitle, reason: reason)
             return
         }
-        let transcript = assembleTranscript(segs)
+        // Stamp first: the far-side roster decides how speakers are labelled.
+        let stampEarly = await calendarStamp(startEpoch: start, endEpoch: end)
+        let label = farSideLabel(segs, others: stampEarly?.others ?? [])
+        var transcript = assembleTranscript(segs, farSide: label)
+        // Tell the reader when the labels are unusual rather than leaving them
+        // to infer it — an unlabelled transcript with no explanation is its own
+        // small mystery.
+        if let note = speakerNote(label) { transcript = "[\(note)]\n\n" + transcript }
         guard !transcript.isEmpty else {
             // Decode ran and heard nothing — genuine silence, drop the session.
             purgeAudio(sessionDir: dir); dbg("empty transcript — dropped"); return
@@ -334,7 +341,7 @@ actor MeetingAgent {
         clearPendingSession(in: dir)
         // Stamp precedence (spec 2026-07-23): EventKit match → preroll
         // window title → plain "appName meeting · date".
-        let stamp = await calendarStamp(startEpoch: start, endEpoch: end)
+        let stamp = stampEarly
         // Which fallback won, so a generic doc title is diagnosable next time.
         dbg("stamp: \(stamp != nil ? "eventkit" : (windowTitle != nil ? "window" : "none")) "
             + "(calendar tcc=\(calendarAccessAuthorized()))")

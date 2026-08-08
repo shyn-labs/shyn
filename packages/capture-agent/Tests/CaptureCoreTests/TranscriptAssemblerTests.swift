@@ -104,3 +104,61 @@ import Foundation
     #expect(overlapCoefficient(a, normalizedTokens("completely unrelated sentence here")) < 0.3)
     #expect(overlapCoefficient([], a) == 0)
 }
+
+// --- speaker labelling (0.4.27) ---------------------------------------------
+// Me/Others names the two RECORDING CHANNELS, not two people. That gap bites in
+// both directions: an in-person meeting attributes everyone to "Me", and a 1:1
+// throws away a name the calendar already knew.
+
+private func s(_ who: Speaker, _ t: String, _ at: Double) -> TranscriptSegment {
+    TranscriptSegment(start: at, speaker: who, text: t)
+}
+
+@Test func inPersonMeetingStopsClaimingTheUserSaidEverything() {
+    // Shape of the 2026-08-06 onboarding session: everyone in the room arrived
+    // through one microphone, so the far-side channel is empty and "Me:" on
+    // every line is a false statement about who spoke.
+    let segs = [s(.me, "Have you guys met each other?", 0),
+                s(.me, "My name is Divesh.", 5),
+                s(.me, "I am from Gujarat.", 9)]
+    let label = farSideLabel(segs, others: [])
+    #expect(label == .unattributed)
+    let out = assembleTranscript(segs, farSide: label)
+    #expect(!out.contains("Me:"))
+    #expect(out.contains("My name is Divesh."))
+    #expect(speakerNote(label) != nil)
+}
+
+@Test func aOneToOneCallNamesTheFarSideFromTheCalendar() {
+    let segs = [s(.me, "how did the migration go", 0),
+                s(.others, "no downtime at all", 4)]
+    let label = farSideLabel(segs, others: ["Sam Rivera"])
+    #expect(label == .named("Sam Rivera"))
+    let out = assembleTranscript(segs, farSide: label)
+    #expect(out.contains("Sam Rivera: no downtime at all"))
+    #expect(out.contains("Me: how did the migration go"))
+    #expect(speakerNote(label) == nil)          // ordinary case, no note
+}
+
+@Test func severalParticipantsKeepOthersBecauseWeCannotTellWhoSpoke() {
+    let segs = [s(.me, "shall we start", 0), s(.others, "yes please", 3)]
+    for roster in [["Sam", "Alex"], ["Sam", "Alex", "Jordan"], []] {
+        #expect(farSideLabel(segs, others: roster) == .others)
+    }
+    #expect(assembleTranscript(segs, farSide: .others).contains("Others: yes please"))
+}
+
+@Test func aCallWhereTheUserDidAlmostAllTheTalkingKeepsItsLabels() {
+    // The dangerous false positive: mic-heavy does NOT mean in-person. One real
+    // far-side segment is enough to prove there was a call.
+    var segs = (0..<40).map { s(.me, "point number \($0)", Double($0)) }
+    segs.append(s(.others, "sounds good", 41))
+    #expect(farSideLabel(segs, others: []) == .others)
+    #expect(assembleTranscript(segs, farSide: farSideLabel(segs, others: [])).contains("Me: point number 0"))
+}
+
+@Test func emptyAndBlankNameEdgeCases() {
+    #expect(farSideLabel([], others: ["Sam"]) == .others)          // nothing to label
+    let segs = [s(.me, "hello", 0), s(.others, "hi", 1)]
+    #expect(farSideLabel(segs, others: ["   "]) == .others)        // blank name is no name
+}

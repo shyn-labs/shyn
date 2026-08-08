@@ -79,9 +79,80 @@ public func dropEchoDuplicates(_ segments: [TranscriptSegment]) -> [TranscriptSe
     return segments.enumerated().filter { !echoes.contains($0.offset) }.map(\.element)
 }
 
-public func assembleTranscript(_ segments: [TranscriptSegment]) -> String {
-    dropEchoDuplicates(segments)
-        .sorted { $0.start < $1.start }
-        .map { "\($0.speaker.rawValue): \($0.text)" }
-        .joined(separator: "\n")
+// Speaker labelling. `Me`/`Others` describes the two RECORDING CHANNELS, not
+// two people, and the gap between those bites in both directions:
+//
+//   In-person (lived 2026-08-06): a 70-minute onboarding session came out
+//   1,211 "Me:" against 31 "Others:", because everyone in the room arrived
+//   through one microphone. The transcript asserted the user had said "My name
+//   is Divesh". A reader — or an AI asked what the user said — gets it
+//   badly wrong.
+//
+//   1:1 calls: the far side is exactly one known person, and the calendar
+//   already tells us who. "Others:" throws that away.
+
+/// How the far side should be named.
+public enum FarSideLabel: Sendable, Equatable {
+    /// Two real channels, far side unknown or several people: keep "Others".
+    case others
+    /// Exactly one known person on the far side — a 1:1.
+    case named(String)
+    /// The far-side channel carried nothing, so there was no call: every voice
+    /// came through the mic and the two-channel split says nothing about who
+    /// spoke. Asserting "Me" for all of it would be a claim we cannot support.
+    case unattributed
+}
+
+/// `others` must be the attendees EXCLUDING the user — EKParticipant.isCurrentUser
+/// is what identifies them, and a raw roster of two cannot say which name is the
+/// far side.
+///
+/// Conservative on purpose. `unattributed` requires the far side to be
+/// COMPLETELY empty — not merely quiet — because "I did almost all the talking
+/// on a call" is a real and correctly-labelled case that must not be caught by
+/// this. And `named` requires exactly one other participant: with two or more,
+/// which of them is speaking is exactly what we cannot know without diarization.
+public func farSideLabel(_ segments: [TranscriptSegment], others: [String]) -> FarSideLabel {
+    guard !segments.isEmpty else { return .others }
+    if !segments.contains(where: { $0.speaker == .others }) {
+        // No far-side audio at all: there was no call, so the two-channel split
+        // says nothing about who spoke.
+        return .unattributed
+    }
+    if others.count == 1, !others[0].trimmingCharacters(in: .whitespaces).isEmpty {
+        return .named(others[0])
+    }
+    return .others
+}
+
+public func assembleTranscript(_ segments: [TranscriptSegment],
+                               farSide: FarSideLabel = .others) -> String {
+    let ordered = dropEchoDuplicates(segments).sorted { $0.start < $1.start }
+    switch farSide {
+    case .unattributed:
+        // No prefix at all. Dropping a correct "Me:" from a solo recording
+        // costs little; asserting it over several people in a room is a false
+        // statement about who said what.
+        return ordered.map(\.text).joined(separator: "\n")
+    case .named(let who):
+        return ordered
+            .map { "\($0.speaker == .others ? who : Speaker.me.rawValue): \($0.text)" }
+            .joined(separator: "\n")
+    case .others:
+        return ordered
+            .map { "\($0.speaker.rawValue): \($0.text)" }
+            .joined(separator: "\n")
+    }
+}
+
+/// One line explaining an unusual labelling, so a reader is told rather than
+/// left to infer. nil when the ordinary two-channel labels apply.
+public func speakerNote(_ farSide: FarSideLabel) -> String? {
+    switch farSide {
+    case .unattributed:
+        return "Speaker labels unavailable: no far-side audio, so every voice "
+             + "came through this Mac's microphone and cannot be told apart."
+    case .named, .others:
+        return nil
+    }
 }
