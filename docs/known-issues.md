@@ -491,3 +491,19 @@ step until the next real Claude session fires a hello (the registration
 itself is unaffected — cosmetic regression only). Fix for a future release:
 persist the timestamp to a small file under shynHome (same pattern as
 onboarding-throttle.json) and load it at boot.
+
+## Calendar notes can contain third-party email addresses (accepted, 2026-08-08)
+
+`attendeeDisplayName` guarantees that every field shyn RENDERS — attendees and
+organizer — carries no contactable address. It cannot clean the invite BODY: a
+sender who types "Organizer: Someone (someone@example.org)" into the description
+has put an address in free text, and stripping addresses out of prose would
+mangle legitimate content (a shared mailbox to write to, a support alias in an
+agenda). Two such events exist in the live corpus; both are external workshop
+invites.
+
+Consequence to be aware of: meeting and calendar documents go to an LLM over MCP
+on recall, so an address a third party wrote into an invite body travels with it.
+Accepted rather than fixed — redacting free text is a bigger and riskier
+behaviour than the guarantee this rule actually makes, which is that shyn never
+ADDS an address of its own.
