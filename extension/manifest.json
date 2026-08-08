@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "shyn",
   "display_name": "Shyn — local memory",
-  "version": "0.4.24-alpha",
+  "version": "0.4.25-alpha",
   "description": "Fully local ambient memory. Your corpus is indexed locally; only snippets relevant to questions you ask are shared with the AI you ask.",
   "author": { "name": "Shyn" },
   "server": {

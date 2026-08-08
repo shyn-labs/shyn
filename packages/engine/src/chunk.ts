@@ -1,4 +1,4 @@
-export type Source = "file" | "browser" | "notes" | "conversation" | "screen" | "meeting";
+export type Source = "file" | "browser" | "notes" | "conversation" | "screen" | "meeting" | "calendar";
 
 export const MAX = 1600, OVERLAP = 200;
 

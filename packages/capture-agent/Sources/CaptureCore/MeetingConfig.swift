@@ -8,6 +8,11 @@ public struct MeetingConfig: Codable, Sendable {
     public var maxDurationMinutes = 180
     public var whisperModel = "small"
     public var excludeApps: [String] = []
+    // Calendar events as documents. On by default: the Calendar grant is
+    // already held for meeting titles, the read is local (macOS Calendar's own
+    // sync is the transport), and a memory of your days without your schedule
+    // in it is the gap this closes.
+    public var calendarSync = true
     // NOTE: `echoCancellation` existed in 0.4.18 and was REMOVED in 0.4.19 along
     // with the voice-processing code it gated. A live-degrading feature behind a
     // default-on flag is worse than no feature; a dead flag that silently does
@@ -23,6 +28,7 @@ public struct MeetingConfig: Codable, Sendable {
         maxDurationMinutes = try c.decodeIfPresent(Int.self, forKey: .maxDurationMinutes) ?? 180
         whisperModel = try c.decodeIfPresent(String.self, forKey: .whisperModel) ?? "small"
         excludeApps = try c.decodeIfPresent([String].self, forKey: .excludeApps) ?? []
+        calendarSync = try c.decodeIfPresent(Bool.self, forKey: .calendarSync) ?? true
     }
     public static let defaults = MeetingConfig()
 

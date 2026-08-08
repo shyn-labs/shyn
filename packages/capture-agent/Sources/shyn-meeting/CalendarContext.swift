@@ -54,7 +54,7 @@ func calendarStamp(startEpoch: Int, endEpoch: Int) async -> CalendarStamp? {
                                     candidates: candidates),
           !candidates[i].title.isEmpty else { return nil }
     return CalendarStamp(title: candidates[i].title,
-                         attendees: (events[i].attendees ?? []).compactMap(\.name))
+                         attendees: (events[i].attendees ?? []).compactMap(\.name).compactMap(attendeeDisplayName))
 }
 
 // Window-title fallback (spec phase 1b): when EventKit has nothing — the

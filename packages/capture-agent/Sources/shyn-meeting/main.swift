@@ -97,6 +97,9 @@ actor MeetingAgent {
     // both channels have shown sustained voice; otherwise it is purged.
     private var prerollStart: Double? = nil
     private var committed = false
+    // Calendar sweep (hourly): 0 means "never run", so the first tick does it.
+    private var lastCalendarSync = 0
+    private var calendarTask: Task<Void, Never>? = nil
 
     func tick() async {
         let cfg = MeetingConfig.load(from: configPath)       // hot-reload
@@ -198,6 +201,10 @@ actor MeetingAgent {
         // Idle window: pick up a session whose transcription failed earlier
         // (model was still downloading, machine was offline).
         if state != .recording { await retryPendingTranscription(cfg: cfg) }
+
+        // Calendar events as documents. Off the recording path deliberately: a
+        // sweep is a burst of ingests and a live call is the wrong moment.
+        if state != .recording, cfg.calendarSync { startCalendarSync(now: Int(now)) }
 
         await postStats(state: pendingTranscriptions > 0 ? "transcribing" : state.rawValue)
     }
@@ -388,6 +395,25 @@ actor MeetingAgent {
                                   system: dir.appendingPathComponent("system.wav")),
                            start: p.start, end: end, bundleId: p.bundleId,
                            appName: p.appName, windowTitle: p.windowTitle, cfg: cfg)
+    }
+
+    // Ships calendar events as documents. Failures are logged and dropped: a
+    // calendar that cannot be read is not a reason to disturb meeting capture.
+    private func startCalendarSync(now: Int) {
+        guard now - lastCalendarSync >= calendarSyncIntervalSeconds else { return }
+        guard calendarTask == nil else { return }      // one sweep at a time
+        lastCalendarSync = now
+        let c = client
+        calendarTask = Task { [weak self] in
+            let payloads = await readCalendarEvents(now: now)
+            let shipped = await shipCalendarEvents(payloads, via: c)
+            await self?.finishCalendarSync(shipped: shipped, total: payloads.count)
+        }
+    }
+
+    private func finishCalendarSync(shipped: Int, total: Int) {
+        calendarTask = nil
+        dbg("calendar sync: \(shipped)/\(total) events shipped")
     }
 
     private func updateTranscribeProgress(_ p: Double) { transcribeProgress = p }

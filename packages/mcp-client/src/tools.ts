@@ -54,7 +54,7 @@ export function buildMcpServer(socketPath: string): McpServer {
       query: z.string(),
       time_from: z.string().describe("ISO 8601 date or datetime, offsets allowed").optional(),
       time_to: z.string().describe("ISO 8601 date or datetime, offsets allowed").optional(),
-      sources: z.array(z.enum(["file", "browser", "notes", "conversation", "screen", "meeting"])).optional(),
+      sources: z.array(z.enum(["file", "browser", "notes", "conversation", "screen", "meeting", "calendar"])).optional(),
       limit: z.number().int().min(1).max(25).optional(),
     },
   }, async (a) => {
@@ -115,7 +115,7 @@ export function buildMcpServer(socketPath: string): McpServer {
       "Page with limit/offset — the reply says so when more rows remain.",
     inputSchema: {
       hours: z.number().int().min(1).max(720).optional(),
-      sources: z.array(z.enum(["file", "browser", "notes", "conversation", "screen", "meeting"])).optional(),
+      sources: z.array(z.enum(["file", "browser", "notes", "conversation", "screen", "meeting", "calendar"])).optional(),
       time_from: z.string().describe("ISO 8601 date or datetime, offsets allowed").optional(),
       time_to: z.string().describe("ISO 8601 date or datetime, offsets allowed").optional(),
       limit: z.number().int().min(1).max(500).optional(),
@@ -162,7 +162,7 @@ export function buildMcpServer(socketPath: string): McpServer {
     inputSchema: {
       uri: z.string().optional(),
       doc_id: z.number().int().optional(),
-      source: z.enum(["file", "browser", "notes", "conversation", "screen", "meeting"])
+      source: z.enum(["file", "browser", "notes", "conversation", "screen", "meeting", "calendar"])
         .describe("disambiguates a uri that exists under more than one source").optional(),
       offset: z.number().int().min(0).describe("character offset into the document").optional(),
       max_chars: z.number().int().min(1).max(200_000).optional(),
@@ -221,7 +221,7 @@ export function buildMcpServer(socketPath: string): McpServer {
       "time_from/time_to accept ISO 8601 date or datetime, offsets allowed.",
     inputSchema: {
       doc_id: z.number().int().optional(),
-      source: z.enum(["file", "browser", "notes", "conversation", "screen", "meeting"]).optional(),
+      source: z.enum(["file", "browser", "notes", "conversation", "screen", "meeting", "calendar"]).optional(),
       time_from: z.string().describe("ISO 8601 date or datetime, offsets allowed").optional(),
       time_to: z.string().describe("ISO 8601 date or datetime, offsets allowed").optional(),
       confirm: z.boolean(),
