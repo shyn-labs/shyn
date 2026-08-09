@@ -2,7 +2,21 @@
 // bundle (platform: "browser" — no node builtins allowed) and by derive.
 // Filesystem/spawn helpers live in update.ts, which re-exports this file.
 
-export const UPGRADE_COMMAND = "brew update && brew upgrade --cask shyn && shyn setup";
+// NO `brew update`. It git-pulls into /opt/homebrew, and this command runs
+// UNATTENDED at whatever hour the check fires — 02:08 on 2026-08-09, when an
+// interruption left Homebrew's working tree gutted: bin/brew and
+// Library/Homebrew/brew.sh deleted while Cellar and every shim survived, so the
+// package manager was dead and only a `git checkout` inside /opt/homebrew
+// brought it back. Damaging a system-wide tool is not an acceptable failure
+// mode for a memory app's updater; the worst a failed upgrade should do is not
+// upgrade.
+//
+// Dropping it is safe because the cask is version-pinned: `brew upgrade --cask`
+// installs whatever the already-fetched tap says. If the tap is stale the
+// upgrade is a no-op and the next check — six hours later — picks it up once
+// Homebrew has refreshed itself on its own schedule. A rare delay in exchange
+// for never touching Homebrew's own repository unattended.
+export const UPGRADE_COMMAND = "brew upgrade --cask shyn && shyn setup";
 
 // How often the status app re-checks for a release. Was 24h until 0.4.21, which
 // meant a hotfix could sit unseen for a day — three releases shipped in one

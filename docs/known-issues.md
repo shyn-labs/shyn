@@ -336,6 +336,40 @@ public repo.
   REVERTED the same day (see the AEC entry above); the phantom-preroll surface is
   therefore unchanged, and the real-VAD revisit still stands.
 
+## Unattended auto-update gutted Homebrew itself — fixed 0.4.29
+
+The upgrade command was `brew update && brew upgrade --cask shyn && shyn setup`,
+run UNATTENDED whenever the update check fired. On 2026-08-09 it fired at 02:08
+and was interrupted mid-flight. Casualties:
+
+- `/opt/homebrew`: `bin/brew`, `Library/Homebrew/brew.rb`, `brew.sh` and two
+  shims deleted — 5 tracked files — while all 234 formulae in `Cellar/` and all
+  941 shims survived. Every installed binary still worked; only the package
+  manager was dead. `brew update` git-pulls into `/opt/homebrew`, so an
+  interrupted pull leaves exactly this: intact `.git`, gutted working tree.
+- shyn's own cask payload: `bin/shyn`, `setup/` and the capture apps missing, so
+  `shyn setup` died partway and never staged the daemon. shyn stopped capturing
+  until repaired.
+
+Recovery, for next time: `git -C /opt/homebrew checkout -- .` restores the
+program files from the intact repo without touching `Cellar` (they are ignored
+paths). Then `brew reinstall --cask shyn-labs/tap/shyn && shyn setup`.
+
+Ruled out during diagnosis: the build scripts (all six anchor ROOT to
+`import.meta.url` — the 2026-07-10 cwd-relative `rmSync` fix held), and a bad
+release (the published tarball contains both missing scripts; the 0.4.28 asset
+is 190MB, identical to 0.4.26 and 0.4.27, so no other user was affected).
+
+Fix: `brew update` is gone from the command. Damaging a system-wide tool is not
+an acceptable failure mode for a memory app's updater — the worst a failed
+upgrade may do is not upgrade. Safe because the cask is version-pinned: a stale
+tap makes the upgrade a no-op and the next six-hourly check picks it up once
+Homebrew has refreshed on its own schedule.
+
+NOT established: the precise interrupting event. 02:08 is consistent with the
+machine sleeping, but the power log did not confirm it, and it is an assumption
+(not a finding) that one interruption caused both casualties.
+
 ## Whisper "quality gates" were dead code — shipped 0.4.18, removed 0.4.22
 
 Three per-segment gates (`noSpeechProb > 0.6`, `avgLogprob < -1.0`,

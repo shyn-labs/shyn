@@ -337,3 +337,22 @@ describe("notice dismissal", () => {
     expect(readDismissedNotices(h)).toEqual([]);
   });
 });
+
+describe("upgrade command safety", () => {
+  it("never runs `brew update` — it must not touch Homebrew's own repo unattended", () => {
+    // Lived 2026-08-09: the unattended 02:08 upgrade was interrupted mid-flight
+    // and left /opt/homebrew's working tree gutted — bin/brew and
+    // Library/Homebrew/brew.sh deleted, Cellar and shims intact — so the package
+    // manager was dead until a git checkout restored it. The worst a failed
+    // upgrade may do is not upgrade.
+    expect(UPGRADE_COMMAND).not.toMatch(/brew\s+update/);
+    expect(UPGRADE_COMMAND).toContain("brew upgrade --cask shyn");
+    expect(UPGRADE_COMMAND).toContain("shyn setup");
+  });
+
+  it("still fails closed: setup only runs if the upgrade succeeded", () => {
+    // && not ; — a half-applied upgrade must not be followed by a setup that
+    // restages from an incomplete payload.
+    expect(UPGRADE_COMMAND).toMatch(/brew upgrade --cask shyn\s*&&\s*shyn setup/);
+  });
+});
