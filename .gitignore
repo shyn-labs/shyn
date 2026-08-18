@@ -14,3 +14,4 @@ packages/capture-agent/.build/
 spikes/capture-probe/.build/
 .build/
 packages/status-ui/release/
+.worktrees/
