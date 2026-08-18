@@ -17,6 +17,13 @@ local-first, minimal egress, no shyn-operated infrastructure, auditable.
 
 - No shyn relay/server component. Rejected outright: it converts
   "nothing to trust" into "trust us", the one wedge shyn has.
+- No remote MCP bridge (`shyn serve --remote` or any internet-reachable
+  endpoint), now or as a phase-3 maybe. Decided 2026-08-18: shyn keeps zero
+  listening surfaces — no OAuth server to get wrong, no tunnel hostname to be
+  scanned, no component whose compromise exposes the corpus. Claude-on-mobile
+  integration is structurally impossible without one (Claude connects to
+  connectors from Anthropic's cloud), so the on-device pipeline in §4 is the
+  mobile answer, not a stopgap.
 - No CloudKit in v1 (needs paid dev program). The design upgrades to it
   cleanly later: transport swaps, replica/crypto/UX layers carry over.
 - No conversation threading in the ask UI; each ask is standalone.
