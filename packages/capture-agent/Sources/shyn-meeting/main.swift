@@ -97,6 +97,10 @@ actor MeetingAgent {
     // both channels have shown sustained voice; otherwise it is purged.
     private var prerollStart: Double? = nil
     private var committed = false
+    // Whether a recognized meeting app was frontmost when this session was
+    // admitted — the commit gate accepts incoming voice alone for those
+    // (muted-listener meetings never voice the mic).
+    private var sessionMeetingAppFrontmost = false
     // Calendar sweep (hourly): 0 means "never run", so the first tick does it.
     private var lastCalendarSync = 0
     private var calendarTask: Task<Void, Never>? = nil
@@ -110,8 +114,11 @@ actor MeetingAgent {
         if let control = consumeMeetingControl(home: home) {
             switch control {
             // stop during an unverified pre-roll discards (nothing to keep).
-            case .stop:   await endSession(transcribe: committed, cfg: cfg); detector.cancel()
-            case .cancel: await endSession(transcribe: false, cfg: cfg); detector.cancel()
+            // cancelUntilQuiet, not cancel: the call the user just skipped is
+            // still holding the devices — plain cancel re-detected it ~10s
+            // later and notified again, defeating the skip.
+            case .stop:   await endSession(transcribe: committed, cfg: cfg); detector.cancelUntilQuiet()
+            case .cancel: await endSession(transcribe: false, cfg: cfg); detector.cancelUntilQuiet()
             }
             // `stop` hands transcription off to the background; reflect that
             // rather than flashing idle for a tick.
@@ -138,6 +145,9 @@ actor MeetingAgent {
         // outside a real gui/<uid> LaunchAgent session, like SP2's flag).
         let force = ProcessInfo.processInfo.environment["SHYN_MEETING_FORCE_ACTIVE"] == "1"
         let frontmost = await MainActor.run { meetingAppFrontmost() }
+        // Mic engine health: covers .candidate (pre-roll) and .recording alike —
+        // the 2026-08-18 death happened DURING the grace window.
+        if await recorder.recording { await recorder.ensureMicAlive() }
         let prev = detector.state
         let signal: MeetingSignal
         if prev == .recording, await recorder.recording {
@@ -165,7 +175,15 @@ actor MeetingAgent {
         case (_, .candidate) where prev != .candidate:
             notify("Meeting detected",
                    "Recording starts in \(cfg.graceSeconds)s — `shyn meeting cancel` to skip.")
-            await startPreroll(cfg: cfg)
+            await startPreroll(cfg: cfg, meetingAppFrontmost: frontmost)
+        case (.candidate, .idle):
+            // Signals died during the grace window (call ended, device
+            // released). Without this teardown the pre-roll leaked FOREVER:
+            // every stop path requires .recording, so nothing ever stopped the
+            // recorder (lived 2026-08-18 — a system-audio tap ran for 14+ min
+            // after a call ended, growing 12MB/min with the agent "idle").
+            logErr("[meeting] candidate dropped during grace — pre-roll discarded")
+            await endSession(transcribe: false, cfg: cfg)
         case (.recording, .ended):
             // An unverified pre-roll that reaches .ended is a phantom: purge.
             await endSession(transcribe: committed, cfg: cfg)
@@ -173,20 +191,27 @@ actor MeetingAgent {
         }
 
         // Commit gate: the detector says .recording, but the session only
-        // counts once BOTH channels have shown sustained voice at some point
-        // since the pre-roll began (a real call has two live sides; music or
-        // ambient noise doesn't voice the mic). Verification window extends
-        // 30s past the grace so a slow "hello" still commits.
+        // counts once voice is verified in the recorded audio. Mirrors the
+        // START gate (MeetingDetector): a two-sided call voices both channels,
+        // but a session admitted with a meeting app frontmost commits on
+        // incoming voice alone — a muted/listening attendee never voices the
+        // mic, and requiring it here purged exactly those meetings AND
+        // re-notified every ~57s for the rest of the call (lived 2026-08-18).
+        // Verification window extends 30s past the grace so a slow "hello"
+        // still commits.
         if state == .recording, !committed, let started = prerollStart, sessionDir != nil {
             let age = now - started
             let micVoiced = recorder.meter.voiceActiveWithin(age, .mic)
             let sysVoiced = recorder.meter.voiceActiveWithin(age, .system)
-            if micVoiced && sysVoiced {
+            if sysVoiced && (micVoiced || sessionMeetingAppFrontmost) {
                 commitSession()
             } else if age > Double(cfg.graceSeconds) + 30 {
-                dbg("verification failed (mic=\(micVoiced) sys=\(sysVoiced)) — phantom, purging")
+                // cancelUntilQuiet: the devices that admitted this phantom are
+                // still held (ambient mic-holder + music); plain cancel meant
+                // re-candidate + re-notify ~10s later, forever.
+                logErr("[meeting] verification failed (mic=\(micVoiced) sys=\(sysVoiced)) — phantom, purging")
                 await endSession(transcribe: false, cfg: cfg)
-                detector.cancel()
+                detector.cancelUntilQuiet()
             }
         }
 
@@ -212,7 +237,7 @@ actor MeetingAgent {
     // Starts recording at candidate time (grace audio is part of the meeting
     // when it commits, purged otherwise). Deliberately NO "Recording"
     // notification and no stats.session* here — those are commit-time.
-    private func startPreroll(cfg: MeetingConfig) async {
+    private func startPreroll(cfg: MeetingConfig, meetingAppFrontmost: Bool) async {
         let start = Int(Date().timeIntervalSince1970)
         let dir = meetingTmp.appendingPathComponent("session-\(start)")
         let info = await MainActor.run { frontmostAppInfo() }
@@ -225,12 +250,16 @@ actor MeetingAgent {
             // by upload time a browser could be on another tab.
             sessionWindowTitle = await MainActor.run { meetingWindowTitle(bundleId: info.bundleId) }
             prerollStart = Double(start); committed = false
+            sessionMeetingAppFrontmost = meetingAppFrontmost
             stats.tcc.audio = true
             dbg("preroll → \(dir.path)")
         } catch {
-            dbg("recorder start failed: \(error)")
+            // Operator-visible: a session was dropped. cancelUntilQuiet, not
+            // cancel — a persistent failure (TCC revoked) otherwise re-tried
+            // and re-notified every ~13s for the whole call.
+            logErr("[meeting] recorder start failed: \(error)")
             stats.tcc.audio = false
-            detector.cancel()
+            detector.cancelUntilQuiet()
         }
     }
 
@@ -277,6 +306,7 @@ actor MeetingAgent {
         sessionWindowTitle = nil
         prerollStart = nil
         committed = false
+        sessionMeetingAppFrontmost = false
         stats.sessionStartedAt = nil
         stats.sessionApp = nil
         guard transcribe else { purgeAudio(sessionDir: dir); dbg("canceled — audio purged"); return }

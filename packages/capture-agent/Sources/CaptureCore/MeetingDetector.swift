@@ -15,6 +15,7 @@ public struct MeetingDetector: Sendable {
     private var audioSince: Double? = nil       // when both audio signals first went active
     private var candidateAt: Double? = nil      // when we entered .candidate
     private var lastAudioAt: Double? = nil      // last step at which audio was observed active
+    private var suppressed = false              // no new candidate until a quiet step re-arms
     public init() {}
 
     // Audio-based primary trigger.
@@ -33,6 +34,16 @@ public struct MeetingDetector: Sendable {
             ? s.micActive || s.systemAudioActive
             : (s.micActive && s.systemAudioActive)
                 || (s.systemAudioActive && s.meetingAppFrontmost)
+        // Suppression (cancelUntilQuiet): the signals that admitted the last
+        // episode are usually STILL active right after a cancel — a meeting
+        // app holds mic + system audio for the whole call — so re-arming on
+        // time alone re-candidates ~10s later and re-notifies for as long as
+        // the call lasts (observed live: one notification every ~57s). Only a
+        // quiet observation ends the episode and re-arms detection.
+        if suppressed {
+            if audio { audioSince = nil; return state }
+            suppressed = false
+        }
         switch state {
         case .idle, .ended:
             state = .idle
@@ -62,5 +73,13 @@ public struct MeetingDetector: Sendable {
 
     public mutating func cancel() {
         state = .idle; audioSince = nil; candidateAt = nil; lastAudioAt = nil
+    }
+
+    // cancel(), plus: stay idle until a step observes the audio signals quiet.
+    // For cancels where the episode's signals are known to persist (phantom
+    // purge, user skip, recorder failure) — plain cancel() there means instant
+    // re-detection and another notification.
+    public mutating func cancelUntilQuiet() {
+        cancel(); suppressed = true
     }
 }

@@ -24,6 +24,9 @@ actor AudioRecorder {
     private var micURL: URL?
     private var systemURL: URL?
     private(set) var recording = false
+    private var micFormat: AVAudioFormat?   // input format the tap + file were built for
+    private var micRestartAttempts = 0
+    private var micDeclaredDead = false
     // Signal-level activity from the recorded buffers themselves — the ONLY
     // valid end-of-meeting signal while recording (our own taps keep the
     // devices "running", so the device probes read active forever).
@@ -75,6 +78,33 @@ actor AudioRecorder {
         catch { input.removeTap(onBus: 0); t.stop(); throw error }
 
         engine = eng; tap = t; micURL = mic; systemURL = sys; recording = true
+        micFormat = inFormat; micRestartAttempts = 0; micDeclaredDead = false
+    }
+
+    // The mic AVAudioEngine stops silently on an input-device configuration
+    // change (call app releasing the device, AirPods → built-in switch) and
+    // never restarts itself — lived 2026-08-18: mic.wav froze 3.7s into a
+    // session while the system tap kept going. Called every tick while
+    // recording: restart the engine when the input format is unchanged (tap
+    // and file are still valid); if the format changed they are stale — no
+    // converter is allowed in the tap callback (spike finding) — so declare
+    // the channel dead, loudly, once. The session survives on system audio.
+    func ensureMicAlive() {
+        guard recording, let eng = engine, !eng.isRunning, !micDeclaredDead else { return }
+        let current = eng.inputNode.outputFormat(forBus: 0)
+        guard micRestartAttempts < 3, let started = micFormat, current == started else {
+            micDeclaredDead = true
+            logErr("[recorder] mic engine dead (format changed or \(micRestartAttempts) restarts failed)"
+                   + " — continuing on system audio only")
+            return
+        }
+        micRestartAttempts += 1
+        do {
+            try eng.start()
+            logErr("[recorder] mic engine stopped (device change?) — restarted, attempt \(micRestartAttempts)")
+        } catch {
+            logErr("[recorder] mic engine restart failed (attempt \(micRestartAttempts)): \(error)")
+        }
     }
 
     func stop() -> (mic: URL, system: URL)? {
@@ -83,6 +113,7 @@ actor AudioRecorder {
         engine?.stop()
         tap?.stop()
         engine = nil; tap = nil; micURL = nil; systemURL = nil; recording = false
+        micFormat = nil
         return (mic: mic, system: sys)
     }
 }

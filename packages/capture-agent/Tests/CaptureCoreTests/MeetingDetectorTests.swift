@@ -64,6 +64,48 @@ private func sig(_ mic: Bool, _ sys: Bool, app: Bool = false) -> MeetingSignal {
     #expect(d.step(signal: sig(false, true, app: true), now: 21, config: cfg) == .recording)
 }
 
+@Test func cancelUntilQuietSuppressesRecandidateWhileSignalsStayActive() {
+    // The phantom-purge loop (live finding 2026-08-18): verification fails,
+    // the detector is cancelled, but the meeting app still holds mic+system —
+    // so it re-candidated 10s later and re-notified every ~57s for a whole
+    // meeting. After cancelUntilQuiet(), continuously-active audio must NOT
+    // produce a new candidate; only a quiet gap re-arms detection.
+    let cfg = MeetingConfig.defaults
+    var d = MeetingDetector()
+    _ = d.step(signal: sig(true, true), now: 0, config: cfg)
+    _ = d.step(signal: sig(true, true), now: 10, config: cfg)   // candidate
+    _ = d.step(signal: sig(true, true), now: 21, config: cfg)   // recording
+    d.cancelUntilQuiet()
+    #expect(d.state == .idle)
+    #expect(d.step(signal: sig(true, true), now: 30, config: cfg) == .idle)
+    #expect(d.step(signal: sig(true, true), now: 120, config: cfg) == .idle)   // 90s active: still suppressed
+    #expect(d.step(signal: sig(true, true), now: 600, config: cfg) == .idle)   // suppression never times out
+}
+
+@Test func quietGapReArmsDetectionAfterCancelUntilQuiet() {
+    let cfg = MeetingConfig.defaults
+    var d = MeetingDetector()
+    _ = d.step(signal: sig(true, true), now: 0, config: cfg)
+    _ = d.step(signal: sig(true, true), now: 10, config: cfg)   // candidate
+    d.cancelUntilQuiet()
+    _ = d.step(signal: sig(true, true), now: 20, config: cfg)    // suppressed
+    _ = d.step(signal: sig(false, false), now: 30, config: cfg)  // quiet: re-armed
+    #expect(d.step(signal: sig(true, true), now: 40, config: cfg) == .idle)       // new episode t0
+    #expect(d.step(signal: sig(true, true), now: 50, config: cfg) == .candidate)  // sustained 10s → candidate
+}
+
+@Test func plainCancelStillAllowsImmediateRedetection() {
+    // `cancel()` keeps its old semantics (max-duration splits rely on it):
+    // detection restarts while the signals are still active.
+    let cfg = MeetingConfig.defaults
+    var d = MeetingDetector()
+    _ = d.step(signal: sig(true, true), now: 0, config: cfg)
+    _ = d.step(signal: sig(true, true), now: 10, config: cfg)   // candidate
+    d.cancel()
+    _ = d.step(signal: sig(true, true), now: 20, config: cfg)   // new episode t0
+    #expect(d.step(signal: sig(true, true), now: 30, config: cfg) == .candidate)
+}
+
 @Test func systemAudioWithoutMeetingAppDoesNotRecord() {
     // A lone YouTube video (system audio, no mic, no meeting app frontmost)
     // must NOT start a recording — the meeting-app gate is what prevents it.
