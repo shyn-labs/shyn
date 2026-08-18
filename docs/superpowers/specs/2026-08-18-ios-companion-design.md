@@ -153,8 +153,12 @@ Safari extension: parked, reassess phase 3.
 
 ## Open questions (tracked, not blocking)
 
-- Exact iOS minimum (Foundation Models device floor) — pin during
-  implementation planning against current Apple docs.
+- ~~Exact iOS minimum (Foundation Models device floor)~~ — pinned 2026-08-18:
+  **iOS 26.0+, Apple Intelligence-capable hardware (iPhone 15 Pro or newer)**,
+  gated at runtime via `SystemLanguageModel.default.availability` with
+  retrieval-only fallback on `.unavailable`. On-device model context is small
+  (~4k tokens): top-K snippet selection must stay tight. Never use
+  `PrivateCloudComputeLanguageModel` — it leaves the device.
 - Snapshot/delta size thresholds — pick from real corpus measurements.
 - Whether the popover QR pairing can reuse the existing controls IPC or needs
   a new surface.
