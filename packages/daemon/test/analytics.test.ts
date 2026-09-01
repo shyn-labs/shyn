@@ -213,3 +213,40 @@ describe("scrubbing holds against real error shapes", () => {
     expect(String(out.stack)).toContain("node:fs");   // node internals are not user data
   });
 });
+
+// Cross-language contract. The Swift agents call analytics.track with string
+// literals; the daemon drops names it does not recognise, silently and by
+// design (so a version-skewed agent cannot error). That silence is exactly
+// what makes drift invisible: rename an event here, or typo one there, and
+// the data just quietly stops arriving. This reads the Swift source and
+// checks every literal it sends is a name this daemon knows.
+describe("swift agents only emit events the daemon knows", () => {
+  test("every client.track(...) literal is in ANALYTICS_EVENTS", async () => {
+    const { readFileSync, readdirSync, statSync } = await import("node:fs");
+    const { join: j } = await import("node:path");
+    const root = j(import.meta.dirname, "../../capture-agent/Sources");
+
+    const swiftFiles: string[] = [];
+    const walk = (d: string) => {
+      for (const e of readdirSync(d)) {
+        const p = j(d, e);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (e.endsWith(".swift")) swiftFiles.push(p);
+      }
+    };
+    walk(root);
+
+    const emitted = new Set<string>();
+    for (const f of swiftFiles) {
+      const src = readFileSync(f, "utf8");
+      for (const m of src.matchAll(/\.track\(\s*"([a-z0-9_]+)"/g)) emitted.add(m[1]);
+    }
+
+    // Guard the guard: if this finds nothing, the regex broke, not the code.
+    expect(emitted.size).toBeGreaterThan(0);
+    for (const e of emitted) {
+      expect(ANALYTICS_EVENTS, `Swift emits "${e}" but the daemon does not know it`)
+        .toContain(e as never);
+    }
+  });
+});

@@ -223,7 +223,10 @@ actor MeetingAgent {
                                   micUnavailable: await recorder.micDeclaredDead,
                                   rescue: rescue, ageSeconds: age,
                                   graceSeconds: cfg.graceSeconds) {
-            case .commit: commitSession()
+            case .commit:
+                commitSession()
+                await client.track("meeting_capture_committed",
+                                   ["rescued": !micVoiced])
             case .wait: break
             case .purge:
                 // cancelUntilQuiet: the devices that admitted this phantom are
@@ -231,6 +234,12 @@ actor MeetingAgent {
                 // re-candidate + re-notify ~10s later, forever.
                 logErr("[meeting] verification failed (mic=\(micVoiced) sys=\(sysVoiced)"
                        + " rescue=\(rescue)) — phantom, purging")
+                // A purge is indistinguishable from "no meeting happened"
+                // unless it is counted. The rate of this, against
+                // meeting_capture_committed, is the single number that says
+                // whether the commit gate is calibrated.
+                await client.track("meeting_capture_purged",
+                                   ["sys_voiced": sysVoiced, "mic_voiced": micVoiced])
                 await endSession(transcribe: false, cfg: cfg)
                 detector.cancelUntilQuiet()
             }
@@ -381,6 +390,10 @@ actor MeetingAgent {
             // model is present. Bounded by maxPendingAttempts and the 24h sweep.
             keepForRetry(dir: dir, start: start, end: end, bundleId: bundleId,
                          appName: appName, windowTitle: windowTitle, reason: reason)
+            // Only the failure CLASS, never the reason string: it can carry a
+            // model path or a URL. The daemon would scrub it anyway; not
+            // sending it at all is the stronger guarantee.
+            await client.track("transcription_failed", ["outcome": "error"])
             return
         }
         // Stamp first: the far-side roster decides how speakers are labelled.

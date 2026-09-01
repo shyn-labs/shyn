@@ -66,6 +66,19 @@ public final class DaemonClient: Sendable {
         let obj = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         _ = try await call(method: "captureStats", params: obj)
     }
+
+    /// Anonymous usage event. Fire-and-forget by design: the daemon decides
+    /// whether analytics is on at all (this agent never reads consent), and a
+    /// telemetry failure must never surface to the caller or interrupt a
+    /// capture. Every error is swallowed, including "daemon is down".
+    ///
+    /// `event` must be one of the names the daemon knows; an unrecognised one
+    /// is dropped there rather than erroring, so agent and daemon can skew
+    /// across an upgrade without breaking either.
+    public func track(_ event: String, _ properties: [String: Any] = [:]) async {
+        _ = try? await call(method: "analytics.track",
+                            params: ["event": event, "properties": properties])
+    }
 }
 
 public enum DaemonError: Error { case closed, empty, badResponse, rpc(message: String) }
