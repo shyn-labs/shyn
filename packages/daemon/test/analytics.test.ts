@@ -165,3 +165,51 @@ describe("call sites reach a real queue", () => {
     }
   });
 });
+
+// Found by auditing REAL crash payloads (2026-09-01), not imagined ones.
+// The README, the first-run dialog and shyn.day all promise "no content, no
+// file paths". These are the cases that promise did not survive.
+describe("scrubbing holds against real error shapes", () => {
+  test("JSON.parse errors must not carry the file's contents", () => {
+    // Node embeds a snippet of the parsed text in the message. A user's
+    // malformed note or config would otherwise ship its first characters.
+    let msg = "";
+    try { JSON.parse("SECRETXY not json at all"); }
+    catch (e: any) { msg = e.message; }
+    // Precondition: Node really does echo the text, truncated to ~10 chars.
+    // The marker is kept short deliberately so it survives that truncation.
+    expect(msg).toContain("SECRETXY");
+    const out = scrubProperties({ message: msg });
+    expect(JSON.stringify(out)).not.toContain("SECRETXY");
+  });
+
+  test("absolute paths outside the home directory are scrubbed too", () => {
+    const out = scrubProperties({
+      stack: "at read (/Volumes/BigDisk/ClientName/contract.md:1:1)\n"
+           + "at load (/opt/private-notes/journal.md:2:2)",
+    });
+    const s = JSON.stringify(out);
+    expect(s).not.toContain("ClientName");
+    expect(s).not.toContain("contract");
+    expect(s).not.toContain("private-notes");
+    expect(s).not.toContain("journal");
+  });
+
+  test("a quoted document title in an error message does not survive", () => {
+    const out = scrubProperties({
+      message: 'failed to ingest "Q3 board deck — Globex acquisition.pdf"',
+    });
+    expect(JSON.stringify(out)).not.toContain("Globex");
+    expect(JSON.stringify(out)).not.toContain("board deck");
+  });
+
+  test("the error SHAPE still survives, or this is useless for debugging", () => {
+    const out = scrubProperties({
+      message: "ENOENT: no such file or directory, open '/Users/sam/x.md'",
+      stack: "Error: ENOENT\n    at readFileSync (node:fs:539:20)",
+    });
+    expect(String(out.message)).toContain("ENOENT");
+    expect(String(out.stack)).toContain("readFileSync");
+    expect(String(out.stack)).toContain("node:fs");   // node internals are not user data
+  });
+});

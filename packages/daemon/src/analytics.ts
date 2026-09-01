@@ -87,13 +87,39 @@ const ALLOWED_STRING_VALUES: Record<string, ReadonlySet<string>> = {
 // credentials redacted, home paths anonymized, truncated.
 const SCRUBBED_TEXT_KEYS = new Set(["message", "stack", "code", "error"]);
 
+// Node internals and the app's own frames are the parts of a stack that are
+// actually diagnostic, and they are not user data. Everything else is.
+const KEEP_PATH_PREFIXES = ["node:", "/System/", "/usr/lib/"];
+
+// Audited against REAL crash payloads on 2026-09-01. The two leaks it found
+// are the reason this is not just a credential regex:
+//
+//   1. JSON.parse embeds a snippet of the PARSED TEXT in its message
+//      ("Unexpected token 'S', \"SHYN_POSTH\"... is not valid JSON"). For a
+//      user's malformed note that is the file's first characters, verbatim.
+//   2. Only /Users and /home were scrubbed, so a project living on
+//      /Volumes/<client>/ or /opt/ survived intact.
+//
+// Both would have broken the "no content, no file paths" promise that the
+// README, the first-run dialog and shyn.day now all make in public.
 function scrubText(raw: string): string {
   let s = raw;
   for (const p of SECRET_PATTERNS) s = s.replace(new RegExp(p.source, "g"), "[redacted]");
-  // /Users/<name>/... carries both the username and the user's folder names,
-  // which are frequently project or client names.
-  s = s.replace(/\/Users\/[^/\s]+(\/[^\s:)]*)?/g, "/Users/[redacted]");
-  s = s.replace(/\/home\/[^/\s]+(\/[^\s:)]*)?/g, "/home/[redacted]");
+
+  // Any absolute path, not just home directories. Keeps the leaf filename
+  // only when it is one of ours or a runtime internal; otherwise the whole
+  // path goes, because directory names are themselves content (client and
+  // project names live there).
+  s = s.replace(/(?:\/[\w .@~+-]+){2,}\.?[\w]*/g, (m) => {
+    if (KEEP_PATH_PREFIXES.some((k) => m.startsWith(k))) return m;
+    return "[path]";
+  });
+
+  // Quoted spans are how content sneaks into a message: JSON.parse snippets,
+  // document titles, window titles. Anything long enough to be meaningful is
+  // dropped; short quotes ('S', "y") are punctuation-like and harmless.
+  s = s.replace(/"[^"]{6,}"/g, '"[redacted]"').replace(/'[^']{6,}'/g, "'[redacted]'");
+
   return s.length > 300 ? s.slice(0, 300) + "…" : s;
 }
 
