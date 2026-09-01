@@ -112,3 +112,45 @@ describe("corrupt state", () => {
     });
   });
 });
+
+// The status UI must not reimplement the consent file format — minting and
+// destroying the installId belongs in one place. It asks the daemon instead.
+describe("consent over RPC", () => {
+  test("status reports needsPrompt, and setConsent records the answer", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir: td } = await import("node:os");
+    const { join: j } = await import("node:path");
+    const { Engine, StaticKeyProvider, Embedder, EMBEDDING_DIM } = await import("@shyn/engine");
+    const { startServer } = await import("../src/server.js");
+    const { rpcCall } = await import("../src/rpc.js");
+
+    const dir = mkdtempSync(j(td(), "shyn-consent-rpc-"));
+    const embedder = new Embedder(async () => ({
+      embed: async () => { const v = new Float32Array(EMBEDDING_DIM); v[0] = 1; return v; },
+      dispose: async () => {},
+    }) as any);
+    const engine = new Engine({
+      dbPath: j(dir, "t.db"), keyProvider: new StaticKeyProvider(null), embedder,
+    });
+    const sock = j(dir, "e.sock");
+    const server = await startServer({
+      socketPath: sock, engine, version: "test", readers: [], home: dir,
+    });
+    try {
+      expect((await rpcCall(sock, "analytics.consentStatus", {})).needsPrompt).toBe(true);
+
+      await rpcCall(sock, "analytics.setConsent", { enabled: true });
+      const on = await rpcCall(sock, "analytics.consentStatus", {});
+      expect(on.needsPrompt).toBe(false);
+      expect(on.enabled).toBe(true);
+      // The id itself must never cross the socket — the UI has no use for it
+      // and every extra copy is another place it can leak.
+      expect(JSON.stringify(on)).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
+
+      await rpcCall(sock, "analytics.setConsent", { enabled: false });
+      expect((await rpcCall(sock, "analytics.consentStatus", {})).enabled).toBe(false);
+    } finally {
+      await server.close(); await engine.close();
+    }
+  });
+});

@@ -20,9 +20,12 @@ await build({ bundle: true, platform: "browser", format: "iife", logLevel: "sile
   entryPoints: [join(PKG, "renderer/index.ts")], outfile: join(DIST, "renderer.js") });
 await build({ bundle: true, platform: "browser", format: "iife", logLevel: "silent",
   entryPoints: [join(PKG, "renderer/onboarding.ts")], outfile: join(DIST, "onboarding.js") });
+await build({ bundle: true, platform: "browser", format: "iife", logLevel: "silent",
+  entryPoints: [join(PKG, "renderer/analytics-consent.ts")], outfile: join(DIST, "analytics-consent.js") });
 
 cpSync(join(PKG, "renderer/index.html"), join(DIST, "index.html"));
 cpSync(join(PKG, "renderer/styles.css"), join(DIST, "styles.css"));
 cpSync(join(PKG, "renderer/onboarding.html"), join(DIST, "onboarding.html"));
+cpSync(join(PKG, "renderer/analytics-consent.html"), join(DIST, "analytics-consent.html"));
 execFileSync(process.execPath, [join(PKG, "scripts/gen-icons.mjs"), join(DIST, "assets")]);
 console.log("build → dist/");

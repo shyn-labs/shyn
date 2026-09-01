@@ -96,19 +96,29 @@ if (retried > 0) console.log(`re-enqueued ${retried} previously-failed embeds`);
 // dialog and is opted in — an unanswered or declined install has no queue at
 // all, so there is nothing holding events even in memory. See
 // docs/superpowers/specs/2026-09-01-analytics-telemetry-design.md
-const consent = loadConsent(home);
-const analytics = consent.enabled && consent.installId
-  ? new AnalyticsQueue({
-      enabled: true,
-      installId: consent.installId,
-      send: makeAnalyticsSender(),
-    })
-  : undefined;
-if (analytics) {
-  const timer = setInterval(() => { void analytics.flush(); }, ANALYTICS_FLUSH_MS);
-  timer.unref();   // never hold the process open for a telemetry flush
-  analytics.track("daemon_started", { install_method: detectInstallMethod() });
-}
+// Lazily constructed: a daemon started before the user has answered the
+// first-run dialog holds NO queue and no installId. When consent arrives
+// over RPC the queue is built on the spot, so opting in takes effect
+// immediately rather than at the next restart — and opting out drops the
+// queue entirely rather than merely muting it.
+let queue: AnalyticsQueue | undefined;
+const analytics = {
+  track(event: string, properties?: Record<string, unknown>) {
+    queue?.track(event as never, properties ?? {});
+  },
+  setEnabled(on: boolean) {
+    if (!on) { queue?.setEnabled(false); queue = undefined; return; }
+    const c = loadConsent(home);
+    if (!c.enabled || !c.installId || queue) return;
+    queue = new AnalyticsQueue({
+      enabled: true, installId: c.installId, send: makeAnalyticsSender(),
+    });
+    queue.track("daemon_started", { install_method: detectInstallMethod() });
+  },
+};
+analytics.setEnabled(loadConsent(home).enabled);
+// unref: a telemetry flush must never be the reason the process stays alive.
+setInterval(() => { void queue?.flush(); }, ANALYTICS_FLUSH_MS).unref();
 
 const server = serverHandle = await startServer({
   socketPath: join(home, "shyn.sock"), engine, version: pkg.version, analytics,

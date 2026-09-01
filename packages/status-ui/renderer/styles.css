@@ -134,3 +134,17 @@ body.onboarding { padding: 4px 0 14px; }
 .step-body button { margin-top: 6px; }
 .setup-row { cursor: pointer; }
 .setup-row:hover { background: var(--lift); }
+
+/* First-run analytics choice. Same vibrancy shell as onboarding; the copy
+   carries the weight, so the layout stays out of its way. */
+.ac { padding: 22px 24px 18px; display: flex; flex-direction: column; gap: 11px; }
+.ac h2 { margin: 0 0 2px; font-size: 16px; font-weight: 600; }
+.ac p { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-dim); }
+.ac .ac-sent, .ac .ac-never { color: var(--ink); }
+.ac .ac-never b { color: var(--ok, #3aa76d); }
+.ac-toggle { display: flex; align-items: center; gap: 9px; margin-top: 5px;
+  padding: 10px 12px; border: 1px solid var(--hairline); border-radius: 9px;
+  background: var(--lift); cursor: pointer; font-size: 13px; }
+.ac-toggle input { width: 15px; height: 15px; cursor: pointer; }
+.ac-actions { display: flex; justify-content: flex-end; margin-top: 3px; }
+.ac-fine { font-size: 11px !important; color: var(--ink-dim); opacity: .8; }

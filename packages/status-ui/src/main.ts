@@ -73,6 +73,37 @@ if (!app.requestSingleInstanceLock()) {
   };
   let completedMarkerWritten = false;
 
+  // First-run analytics choice. Shown once, before any event is queued and
+  // before an installId exists — the daemon refuses to construct a queue
+  // until this has been answered, so the dialog is the gate, not a courtesy.
+  const AC_WIN = { width: 420, height: 470 };
+  let acWin: BrowserWindow | null = null;
+  function showAnalyticsConsent() {
+    if (acWin) { acWin.show(); acWin.focus(); return; }
+    acWin = new BrowserWindow({
+      ...AC_WIN, show: false, frame: false, transparent: true, resizable: false,
+      vibrancy: "hud", visualEffectState: "active", center: true,
+      fullscreenable: false,
+      webPreferences: {
+        preload: join(DIST, "preload.cjs"),
+        contextIsolation: true, sandbox: true, nodeIntegration: false,
+      },
+    });
+    acWin.on("closed", () => { acWin = null; });
+    acWin.once("ready-to-show", () => acWin?.show());
+    void acWin.loadFile(join(DIST, "analytics-consent.html"));
+  }
+
+  // Ask the daemon (which owns the consent file) whether the dialog is still
+  // owed. Best-effort: a daemon that is not up yet simply means we ask on a
+  // later poll, never that we assume consent.
+  async function promptForConsentIfNeeded() {
+    try {
+      const r = await rpcCall(sock, "analytics.consentStatus", {});
+      if (r?.needsPrompt) showAnalyticsConsent();
+    } catch { /* daemon down or too old: ask again next time, never assume */ }
+  }
+
   function showOnboarding() {
     if (obWin) { obWin.show(); obWin.focus(); return; }
     obWin = new BrowserWindow({
@@ -265,6 +296,13 @@ if (!app.requestSingleInstanceLock()) {
         else if (name === "run-update") startUpgrade(updLatest, false);
         else if (name === "dismiss-notice") { if (typeof arg === "string") dismissNotice(home, arg); }
         else if (name === "open-onboarding") showOnboarding();
+        else if (name === "analytics-consent") {
+          // The dialog closes on either answer: it has done its job once the
+          // choice is recorded, and re-showing it would read as nagging.
+          void rpcCall(sock, "analytics.setConsent", { enabled: arg === "on" })
+            .catch((e) => console.error("failed to record analytics consent:", e));
+          acWin?.close();
+        }
         else if (name === "open-settings") {
           const url = Object.hasOwn(SETTINGS_URLS, arg as string) ? SETTINGS_URLS[arg as SettingsPane] : undefined;
           if (url) void shell.openExternal(url);
@@ -312,6 +350,11 @@ if (!app.requestSingleInstanceLock()) {
         writeThrottle(throttlePath(), now);
         showOnboarding();
       }
+      // Sequenced AFTER onboarding on purpose: permission grants are what the
+      // user came for, and stacking a telemetry question on top of them is
+      // how a first run starts feeling like an interrogation. The daemon
+      // holds the queue shut until this is answered, so there is no rush.
+      if (!obWin) void promptForConsentIfNeeded();
     }, 4000);
   });
 

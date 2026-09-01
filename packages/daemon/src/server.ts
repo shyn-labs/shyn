@@ -2,6 +2,7 @@ import { join, dirname } from "node:path";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import { chmodSync, rmSync , readFileSync, writeFileSync} from "node:fs";
+import { loadConsent, consentNeedsPrompt, recordConsentChoice } from "./analytics-consent.js";
 import type { Engine, Reader, SyncResult } from "@shyn/engine";
 import { HEARTBEAT_SECONDS } from "@shyn/engine";
 
@@ -19,7 +20,12 @@ export async function startServer(opts: {
   // Absent when the user has not consented (or has opted out): the whole
   // analytics path is then not merely disabled but not constructed, so there
   // is nothing holding events in memory either.
-  analytics?: { track(event: string, properties?: Record<string, unknown>): void };
+  analytics?: {
+    track(event: string, properties?: Record<string, unknown>): void;
+    setEnabled?(on: boolean): void;
+  };
+  /// Where analytics-consent.json lives. Defaults to the socket's directory.
+  home?: string;
 }): Promise<{ close(): Promise<void>; scheduleDrain(): void }> {
   const { engine } = opts;
   let draining = Promise.resolve();
@@ -133,6 +139,24 @@ export async function startServer(opts: {
     // must never be something a caller has to handle, and must never be able
     // to fail an operation the user actually asked for.
     "analytics.track": (p) => { track(p?.event, p?.properties ?? {}); return { ok: true }; },
+    // Consent lives HERE, not in the status UI. Minting and destroying the
+    // installId is the one operation that must not have two implementations
+    // that can drift; the UI asks rather than writing the file itself.
+    "analytics.consentStatus": () => {
+      const c = loadConsent(opts.home ?? dirname(opts.socketPath));
+      // Deliberately does NOT return installId: the UI has no use for it and
+      // every extra copy is another place it can leak.
+      return { needsPrompt: consentNeedsPrompt(c), enabled: c.enabled };
+    },
+    "analytics.setConsent": (p) => {
+      const home = opts.home ?? dirname(opts.socketPath);
+      const c = recordConsentChoice(home, p?.enabled === true);
+      // Reflect the decision on the LIVE queue immediately. Without this a
+      // user who opts out keeps sending until the next daemon restart, which
+      // is exactly the "off means off" promise the dialog makes.
+      opts.analytics?.setEnabled?.(c.enabled);
+      return { ok: true, enabled: c.enabled };
+    },
   };
 
   rmSync(opts.socketPath, { force: true });
