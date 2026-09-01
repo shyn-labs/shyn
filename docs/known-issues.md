@@ -685,3 +685,27 @@ YouTube, no call:      Chrome holds OUTPUT → rescue=false → purged
 Both lines carry the identical channel evidence (`mic=false sys=true`) that
 lost the 31 Aug meeting. The rescue term is the only thing separating them,
 and it decides both correctly.
+
+## Logged (2026-09-01): `meeting.tcc.audio` does not mean what its name says
+
+`mic` is a real permission query. `audio` is set to `true` only when a
+pre-roll successfully starts a recording, and defaults to `false` — so on a
+freshly restarted agent that has not yet seen a call it reads `false`
+regardless of whether System Audio Recording is granted. The two sit side by
+side under one `tcc` label in the status RPC and the menu bar popover.
+
+Cost of the confusion, same day: reading `tcc mic/audio: true / false` right
+after a cask upgrade was taken as "the upgrade revoked the audio grant", and
+the user was told his permissions had broken. They had not. The code
+signature was unchanged (`com.shyn.meeting`, `Authority=Shyn Dev`), so the
+grant had persisted, and a synthetic call minutes later showed
+`tcc audio: true` and `sys=true`.
+
+Fix next release, either way round:
+- make `audio` an actual authorization query (as `mic` already is), or
+- rename it to what it reports (`audioCaptureSucceeded`) and give the
+  popover a separate real permission read.
+
+Not urgent — it misreports only in the direction of alarm, never of false
+reassurance. But it fooled a reader with the source open, so it will
+certainly fool a user reading the menu bar.
