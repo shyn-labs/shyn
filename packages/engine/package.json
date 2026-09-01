@@ -1,6 +1,6 @@
 {
   "name": "@shyn/engine",
-  "version": "0.4.30-alpha",
+  "version": "0.5.0-alpha",
   "license": "Elastic-2.0",
   "type": "module",
   "exports": {
