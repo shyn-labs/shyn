@@ -12,6 +12,11 @@ import {
 } from "@shyn/engine";
 import { startServer } from "./server.js";
 import { shouldRestartForEmbedFailure } from "./embed-restart.js";
+import { AnalyticsQueue } from "./analytics.js";
+import { loadConsent } from "./analytics-consent.js";
+import {
+  makeAnalyticsSender, detectInstallMethod, ANALYTICS_FLUSH_MS,
+} from "./analytics-transport.js";
 // Static JSON import (not createRequire): esbuild's build-dist.mjs bundle
 // inlines this at build time as a literal object, so the version survives
 // bundling correctly even though the bundled daemon.mjs runs from a
@@ -87,8 +92,26 @@ const engine = new Engine({
 const retried = engine.retryFailedEmbeds();
 if (retried > 0) console.log(`re-enqueued ${retried} previously-failed embeds`);
 
+// Usage analytics. Constructed ONLY when the user has answered the first-run
+// dialog and is opted in — an unanswered or declined install has no queue at
+// all, so there is nothing holding events even in memory. See
+// docs/superpowers/specs/2026-09-01-analytics-telemetry-design.md
+const consent = loadConsent(home);
+const analytics = consent.enabled && consent.installId
+  ? new AnalyticsQueue({
+      enabled: true,
+      installId: consent.installId,
+      send: makeAnalyticsSender(),
+    })
+  : undefined;
+if (analytics) {
+  const timer = setInterval(() => { void analytics.flush(); }, ANALYTICS_FLUSH_MS);
+  timer.unref();   // never hold the process open for a telemetry flush
+  analytics.track("daemon_started", { install_method: detectInstallMethod() });
+}
+
 const server = serverHandle = await startServer({
-  socketPath: join(home, "shyn.sock"), engine, version: pkg.version,
+  socketPath: join(home, "shyn.sock"), engine, version: pkg.version, analytics,
   onDrainError: (err) => {
     if (!(err instanceof EmbedBackendUnavailableError)) { console.error("drain failed:", err); return; }
     console.error("embed backend unavailable — cause:", (err.cause as Error)?.message ?? err.cause);
