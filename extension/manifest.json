@@ -3,7 +3,7 @@
   "name": "shyn",
   "display_name": "Shyn — local memory",
   "version": "0.4.30-alpha",
-  "description": "Fully local ambient memory. Your corpus is indexed locally; only snippets relevant to questions you ask are shared with the AI you ask.",
+  "description": "Local-first ambient memory. Your corpus is indexed locally; only snippets relevant to questions you ask are shared with the AI you ask.",
   "author": { "name": "Shyn" },
   "server": {
     "type": "node",
