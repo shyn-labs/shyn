@@ -1,6 +1,7 @@
 import Foundation
 import CoreAudio
 import AppKit
+import CaptureCore
 
 // OS-level signal probes feeding MeetingDetector (CaptureCore). All three
 // are cheap property reads — safe to poll every few seconds.
@@ -66,8 +67,137 @@ let meetingBundleIds: Set<String> = [
     return meetingBundleIds.contains(id)
 }
 
-// Frontmost app identity for the meeting uri/title (falls back to "call").
-@MainActor func frontmostAppInfo() -> (bundleId: String?, name: String) {
+// WHICH process is holding audio, not merely whether the device is hot.
+//
+// `deviceRunningSomewhere` above cannot distinguish a call from an ambient
+// mic-holder, and on a machine running Granola or Wispr Flow it is pinned
+// true all day — which is why the START gate leans on system audio and why
+// the commit gate needed a rescue term at all. macOS 14.2 (already this
+// agent's floor, for CATapDescription) exposes CoreAudio *process* objects,
+// so we can ask the honest question instead: is a conferencing-capable app
+// holding an audio stream right now?
+//
+// Immune to our own capture — these flags are per-process, and shyn-meeting
+// running input does not set Chrome's. That makes this the first probe here
+// that stays valid DURING recording.
+//
+// Read-only property reads, same class as deviceRunningSomewhere: no device
+// opened, no aggregate created, nothing shared reconfigured. This is
+// categorically not the AEC failure mode (see docs/known-issues.md).
+private func audioProcessObjects() -> [AudioObjectID] {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyProcessObjectList,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var size = UInt32(0)
+    guard AudioObjectGetPropertyDataSize(
+        AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr, size > 0
+    else { return [] }
+    var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr
+    else { return [] }
+    return ids
+}
+
+private func processBundleId(_ obj: AudioObjectID) -> String? {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioProcessPropertyBundleID,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    // kAudioProcessPropertyBundleID returns a RETAINED CFString — the caller
+    // owns it, so the retain must be consumed exactly once or this leaks a
+    // string per process per tick. Read into untyped storage and bridge
+    // explicitly: passing `&cfStringOptional` straight to the CoreAudio call
+    // forms a raw pointer to a managed reference, which is unsound.
+    var raw: UnsafeMutableRawPointer? = nil
+    var size = UInt32(MemoryLayout<UnsafeMutableRawPointer?>.size)
+    let status = withUnsafeMutablePointer(to: &raw) {
+        AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, $0)
+    }
+    guard status == noErr, let raw else { return nil }
+    return Unmanaged<CFString>.fromOpaque(raw).takeRetainedValue() as String
+}
+
+private func processRunningFlag(_ obj: AudioObjectID,
+                                _ selector: AudioObjectPropertySelector) -> Bool {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var running = UInt32(0)
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    guard AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, &running) == noErr else { return false }
+    return running != 0
+}
+
+/// True when a conferencing-capable app currently holds the MICROPHONE.
+///
+/// This briefly read the output stream too, on the theory that a muted
+/// listener releases the mic. That theory is false — verified live twice on
+/// 2026-09-01, Chrome keeps its input stream open through a muted Meet call
+/// — and the output check would have made any YouTube tab look like a call,
+/// committing a phantom recording of a user who was not in one. See
+/// callEvidence() in CaptureCore for the full reasoning and its tests.
+func conferencingAppHoldingAudio() -> Bool {
+    conferencingAppHoldingAudioId() != nil
+}
+
+/// The conferencing app holding the MICROPHONE, if any. Doubles as the
+/// meeting's identity: the app on the call is the meeting, whatever happens
+/// to be frontmost.
+///
+/// Input only — see callEvidence(). Output would make a YouTube tab look
+/// like a call.
+func conferencingAppHoldingAudioId() -> String? {
+    var inputHolders: [String] = []
+    var outputHolders: [String] = []
+    for obj in audioProcessObjects() {
+        guard let id = processBundleId(obj) else { continue }
+        if processRunningFlag(obj, kAudioProcessPropertyIsRunningInput) { inputHolders.append(id) }
+        if processRunningFlag(obj, kAudioProcessPropertyIsRunningOutput) { outputHolders.append(id) }
+    }
+    guard callEvidence(inputHolders: inputHolders, outputHolders: outputHolders),
+          let held = conferencingHolder(from: inputHolders) else { return nil }
+    return responsibleAppBundleId(held)
+}
+
+/// Map a helper's bundle id back to the app a user would recognise.
+func responsibleAppBundleId(_ id: String) -> String {
+    if let mapped = conferencingHelperApp[id] { return mapped }
+    for prefix in conferencingBundlePrefixes where id.hasPrefix(prefix + ".") { return prefix }
+    return id
+}
+
+/// Full input-holder dump for verification. The bundle ids that matter here
+/// were inferred, not observed, and a rescue signal keyed on a guessed id
+/// fails silently — so make them recordable on a real machine before the
+/// live checklist is run.
+func debugDumpAudioInputHolders() -> String {
+    var lines: [String] = []
+    for obj in audioProcessObjects() {
+        let id = processBundleId(obj) ?? "(no bundle id)"
+        let input = processRunningFlag(obj, kAudioProcessPropertyIsRunningInput)
+        let output = processRunningFlag(obj, kAudioProcessPropertyIsRunningOutput)
+        guard input || output else { continue }
+        lines.append("  input=\(input) conferencing=\(isConferencingCapableBundleId(id)) \(id)")
+    }
+    return lines.isEmpty ? "  (no process holding an input stream)" : lines.joined(separator: "\n")
+}
+
+// App identity for the meeting uri/title (falls back to "call").
+//
+// `preferring` is the bundle id of whatever holds the call's audio. When it
+// is supplied and the app is running, it wins over frontmost — the app on
+// the call is the meeting, whatever the user happens to be looking at.
+@MainActor func frontmostAppInfo(preferring holder: String? = nil)
+        -> (bundleId: String?, name: String) {
+    if let holder,
+       let app = NSWorkspace.shared.runningApplications.first(where: {
+           $0.bundleIdentifier == holder
+       }) {
+        return (holder, app.localizedName ?? "Call")
+    }
     let front = NSWorkspace.shared.frontmostApplication
     return (front?.bundleIdentifier, front?.localizedName ?? "Call")
 }

@@ -168,6 +168,12 @@ actor MeetingAgent {
                 meetingAppFrontmost: frontmost)
         }
 
+        // A purge suppresses detection until the audio goes quiet — which on a
+        // live call is not until it ends. Rescue evidence lifts that once per
+        // episode, so a wrong verdict costs 40s rather than the whole meeting.
+        if detector.state == .idle, conferencingAppHoldingAudio() {
+            detector.noteRescueEvidence()
+        }
         let state = detector.step(signal: signal, now: now, config: cfg)
         if state != prev { dbg("state \(prev.rawValue) → \(state.rawValue)") }
 
@@ -203,13 +209,28 @@ actor MeetingAgent {
             let age = now - started
             let micVoiced = recorder.meter.voiceActiveWithin(age, .mic)
             let sysVoiced = recorder.meter.voiceActiveWithin(age, .system)
-            if sysVoiced && (micVoiced || sessionMeetingAppFrontmost) {
-                commitSession()
-            } else if age > Double(cfg.graceSeconds) + 30 {
+            // Rescue is re-evaluated EVERY TICK, not snapshotted at preroll.
+            // The snapshot was its own bug: alt-tabbing away from Zoom during
+            // the grace window lost the term for the whole session, the same
+            // failure class as the browser case below. OR-ed with the
+            // snapshot so it only ever widens.
+            var rescue = sessionMeetingAppFrontmost || frontmost
+                || conferencingAppHoldingAudio()
+            // Ordered cheapest-first: the calendar probe only runs when the
+            // in-memory signals have already failed.
+            if !rescue { rescue = await liveConferencingEventInProgress() }
+            switch commitDecision(sysVoiced: sysVoiced, micVoiced: micVoiced,
+                                  micUnavailable: await recorder.micDeclaredDead,
+                                  rescue: rescue, ageSeconds: age,
+                                  graceSeconds: cfg.graceSeconds) {
+            case .commit: commitSession()
+            case .wait: break
+            case .purge:
                 // cancelUntilQuiet: the devices that admitted this phantom are
                 // still held (ambient mic-holder + music); plain cancel meant
                 // re-candidate + re-notify ~10s later, forever.
-                logErr("[meeting] verification failed (mic=\(micVoiced) sys=\(sysVoiced)) — phantom, purging")
+                logErr("[meeting] verification failed (mic=\(micVoiced) sys=\(sysVoiced)"
+                       + " rescue=\(rescue)) — phantom, purging")
                 await endSession(transcribe: false, cfg: cfg)
                 detector.cancelUntilQuiet()
             }
@@ -240,7 +261,15 @@ actor MeetingAgent {
     private func startPreroll(cfg: MeetingConfig, meetingAppFrontmost: Bool) async {
         let start = Int(Date().timeIntervalSince1970)
         let dir = meetingTmp.appendingPathComponent("session-\(start)")
-        let info = await MainActor.run { frontmostAppInfo() }
+        // Identity comes from the app HOLDING THE AUDIO, not the app in
+        // front. Frontmost is wrong in the ordinary case, not just an edge
+        // one: taking notes, reading mail or sitting in Slack during a call
+        // is normal, and naming the record after that makes it unfindable by
+        // the name the user knows it by (lived 2026-09-01, a recording
+        // titled "Ghostty"). Falls back to frontmost when nothing
+        // conferencing-capable holds audio.
+        let holder = conferencingAppHoldingAudioId()
+        let info = await MainActor.run { frontmostAppInfo(preferring: holder) }
         do {
             recorder.meter.reset()
             try await recorder.start(sessionDir: dir)
