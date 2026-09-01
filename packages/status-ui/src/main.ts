@@ -61,6 +61,7 @@ if (!app.requestSingleInstanceLock()) {
   let win: BrowserWindow | null = null;
   let lastTray: TrayState | null = null;
   let lastVm: ViewModel | null = null;
+  let analyticsEnabled: boolean | undefined;
 
   const OB_WIN = { width: 400, height: 540 };
   let obWin: BrowserWindow | null = null;
@@ -72,6 +73,37 @@ if (!app.requestSingleInstanceLock()) {
     "accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
   };
   let completedMarkerWritten = false;
+
+  // First-run analytics choice. Shown once, before any event is queued and
+  // before an installId exists — the daemon refuses to construct a queue
+  // until this has been answered, so the dialog is the gate, not a courtesy.
+  const AC_WIN = { width: 420, height: 470 };
+  let acWin: BrowserWindow | null = null;
+  function showAnalyticsConsent() {
+    if (acWin) { acWin.show(); acWin.focus(); return; }
+    acWin = new BrowserWindow({
+      ...AC_WIN, show: false, frame: false, transparent: true, resizable: false,
+      vibrancy: "hud", visualEffectState: "active", center: true,
+      fullscreenable: false,
+      webPreferences: {
+        preload: join(DIST, "preload.cjs"),
+        contextIsolation: true, sandbox: true, nodeIntegration: false,
+      },
+    });
+    acWin.on("closed", () => { acWin = null; });
+    acWin.once("ready-to-show", () => acWin?.show());
+    void acWin.loadFile(join(DIST, "analytics-consent.html"));
+  }
+
+  // Ask the daemon (which owns the consent file) whether the dialog is still
+  // owed. Best-effort: a daemon that is not up yet simply means we ask on a
+  // later poll, never that we assume consent.
+  async function promptForConsentIfNeeded() {
+    try {
+      const r = await rpcCall(sock, "analytics.consentStatus", {});
+      if (r?.needsPrompt) showAnalyticsConsent();
+    } catch { /* daemon down or too old: ask again next time, never assume */ }
+  }
 
   function showOnboarding() {
     if (obWin) { obWin.show(); obWin.focus(); return; }
@@ -141,6 +173,13 @@ if (!app.requestSingleInstanceLock()) {
       updFailedAt = Math.floor(Date.now() / 1000);
     }
     const status = await poll(sock);
+    // Consent lives in the daemon; refresh it alongside the poll so the
+    // toggle reflects a choice made in the first-run dialog immediately.
+    // undefined (unanswered, or daemon unreachable) hides the row entirely.
+    try {
+      const c = await rpcCall(sock, "analytics.consentStatus", {});
+      analyticsEnabled = c?.needsPrompt ? undefined : c?.enabled === true;
+    } catch { analyticsEnabled = undefined; }
     // Auto-update is evaluated here rather than on the 24h check timer so the
     // meeting guard reads LIVE state: a decision made an hour ago could land
     // in the middle of a call.
@@ -176,6 +215,7 @@ if (!app.requestSingleInstanceLock()) {
       claudeCommand: existsSync(join(home, "bin", "shyn-mcp"))
         ? `claude mcp add shyn -- "${join(home, "bin", "shyn-mcp")}"`
         : CLAUDE_ADD_COMMAND,
+      analyticsEnabled,
     });
     lastVm = vm;
     // win and tray are supposed to live for the whole process; if either is
@@ -265,6 +305,21 @@ if (!app.requestSingleInstanceLock()) {
         else if (name === "run-update") startUpgrade(updLatest, false);
         else if (name === "dismiss-notice") { if (typeof arg === "string") dismissNotice(home, arg); }
         else if (name === "open-onboarding") showOnboarding();
+        else if (name === "analytics-toggle") {
+          // Optimistic so the row flips at once; the next tick reconciles it
+          // against the daemon, which is the authority.
+          const want = arg === "on";
+          analyticsEnabled = want;
+          void rpcCall(sock, "analytics.setConsent", { enabled: want })
+            .catch((e) => console.error("failed to change analytics setting:", e));
+        }
+        else if (name === "analytics-consent") {
+          // The dialog closes on either answer: it has done its job once the
+          // choice is recorded, and re-showing it would read as nagging.
+          void rpcCall(sock, "analytics.setConsent", { enabled: arg === "on" })
+            .catch((e) => console.error("failed to record analytics consent:", e));
+          acWin?.close();
+        }
         else if (name === "open-settings") {
           const url = Object.hasOwn(SETTINGS_URLS, arg as string) ? SETTINGS_URLS[arg as SettingsPane] : undefined;
           if (url) void shell.openExternal(url);
@@ -312,6 +367,11 @@ if (!app.requestSingleInstanceLock()) {
         writeThrottle(throttlePath(), now);
         showOnboarding();
       }
+      // Sequenced AFTER onboarding on purpose: permission grants are what the
+      // user came for, and stacking a telemetry question on top of them is
+      // how a first run starts feeling like an interrogation. The daemon
+      // holds the queue shut until this is answered, so there is no rush.
+      if (!obWin) void promptForConsentIfNeeded();
     }, 4000);
   });
 

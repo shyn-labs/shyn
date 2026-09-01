@@ -2,6 +2,7 @@ import { join, dirname } from "node:path";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
 import { chmodSync, rmSync , readFileSync, writeFileSync} from "node:fs";
+import { loadConsent, consentNeedsPrompt, recordConsentChoice } from "./analytics-consent.js";
 import type { Engine, Reader, SyncResult } from "@shyn/engine";
 import { HEARTBEAT_SECONDS } from "@shyn/engine";
 
@@ -16,6 +17,15 @@ export async function startServer(opts: {
   meetingRetentionDays?: number; coverageRetentionDays?: number;
   heartbeatIntervalMs?: number;
   onDrainError?: (err: unknown) => void;
+  // Absent when the user has not consented (or has opted out): the whole
+  // analytics path is then not merely disabled but not constructed, so there
+  // is nothing holding events in memory either.
+  analytics?: {
+    track(event: string, properties?: Record<string, unknown>): void;
+    setEnabled?(on: boolean): void;
+  };
+  /// Where analytics-consent.json lives. Defaults to the socket's directory.
+  home?: string;
 }): Promise<{ close(): Promise<void>; scheduleDrain(): void }> {
   const { engine } = opts;
   let draining = Promise.resolve();
@@ -29,6 +39,13 @@ export async function startServer(opts: {
     const { ts } = JSON.parse(readFileSync(helloPath, "utf8"));
     if (typeof ts === "number") lastMcpHelloTs = ts;
   } catch { /* no marker yet */ }
+  // Analytics is absent unless the user consented. Every call site goes
+  // through this so a missing queue, an unknown event, or a throwing tracker
+  // can never fail the operation the user actually asked for.
+  const track = (event: string, properties?: Record<string, unknown>) => {
+    try { opts.analytics?.track(event, properties ?? {}); }
+    catch { /* never propagates */ }
+  };
   const scheduleDrain = () => {
     draining = draining.then(() => engine.drain()).catch((err) => { opts.onDrainError?.(err); });
   };
@@ -51,10 +68,12 @@ export async function startServer(opts: {
       // Counting is never on the search critical path — a failed bump must
       // not fail the search (spec: failures to count are swallowed).
       try { engine.countSearch(); } catch { /* swallowed by design */ }
+      // Shape only: THAT a search happened, never what was searched for.
+      track("search_memory_called");
       return engine.search(p);
     },
-    recent: (p) => engine.recent(p),
-    document: (p) => engine.document(p),
+    recent: (p) => { track("recent_activity_called"); return engine.recent(p); },
+    document: (p) => { track("get_document_called"); return engine.document(p); },
     // Long-running by nature (scrypt + a whole-corpus stream), so the CLI calls
     // these with a generous timeout rather than the default.
     export: async (p) => ({ documents: await engine.exportArchive(p.passphrase, p.path) }),
@@ -63,6 +82,7 @@ export async function startServer(opts: {
       if (p?.confirm !== true)
         throw Object.assign(new Error("forget requires confirm: true"), { code: -32001 });
       const { confirm: _c, ...sel } = p;
+      track("forget_called");
       return engine.forget(sel);
     },
     sync: (p) => {
@@ -113,6 +133,30 @@ export async function startServer(opts: {
       ...(opts.extraStatus?.() ?? {}),
     }),
     stats: (p) => engine.stats(p ?? {}),
+    // Usage analytics. Agents and the CLI call this unconditionally and it is
+    // ALWAYS ok:true — a disabled queue, an unknown event from a version-
+    // skewed agent, or a missing queue entirely are all no-ops. Analytics
+    // must never be something a caller has to handle, and must never be able
+    // to fail an operation the user actually asked for.
+    "analytics.track": (p) => { track(p?.event, p?.properties ?? {}); return { ok: true }; },
+    // Consent lives HERE, not in the status UI. Minting and destroying the
+    // installId is the one operation that must not have two implementations
+    // that can drift; the UI asks rather than writing the file itself.
+    "analytics.consentStatus": () => {
+      const c = loadConsent(opts.home ?? dirname(opts.socketPath));
+      // Deliberately does NOT return installId: the UI has no use for it and
+      // every extra copy is another place it can leak.
+      return { needsPrompt: consentNeedsPrompt(c), enabled: c.enabled };
+    },
+    "analytics.setConsent": (p) => {
+      const home = opts.home ?? dirname(opts.socketPath);
+      const c = recordConsentChoice(home, p?.enabled === true);
+      // Reflect the decision on the LIVE queue immediately. Without this a
+      // user who opts out keeps sending until the next daemon restart, which
+      // is exactly the "off means off" promise the dialog makes.
+      opts.analytics?.setEnabled?.(c.enabled);
+      return { ok: true, enabled: c.enabled };
+    },
   };
 
   rmSync(opts.socketPath, { force: true });

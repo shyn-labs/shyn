@@ -14,11 +14,23 @@ life. Ask Claude "what did we decide in yesterday's standup?" or "where did
 I read about that retention bug?" and get an answer grounded in your own
 history, not the internet's.
 
-**100% local. Zero cloud. Private by design.** Everything shyn captures
-lives in an encrypted database on your Mac. Nothing is uploaded, synced, or
-phoned home — the only bytes that ever leave your machine are the few
-snippets relevant to a question *you* chose to ask, sent to the AI *you*
+**Your memory stays local. Private by design.** Everything shyn captures
+lives in an encrypted database on your Mac. Nothing it captures is uploaded,
+synced, or phoned home — the only bytes that ever leave your machine are the
+few snippets relevant to a question *you* chose to ask, sent to the AI *you*
 chose to ask it.
+
+**During beta, shyn also sends anonymous usage data.** shyn runs across
+different macOS versions, hardware, and permission states, and those
+combinations produce bugs we cannot reproduce or test for. Most people who
+hit one never write in; they just quit the app. So shyn reports which
+features get used, what crashes, its version, and timing numbers, tied to a
+random ID that is not you.
+
+It never includes anything shyn captured. No screen text, no transcripts, no
+searches, no identity. **You choose on first run**, and one click in Settings
+changes it any time. Turn it off and shyn is exactly what it promises above:
+nothing but your own questions leaving your machine.
 
 > **Status: pre-alpha.** Shyn is young, moving fast, and macOS-only
 > (Apple Silicon). Expect rough edges and breaking changes. Install is a
@@ -199,8 +211,18 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
 - **The menu bar app checks GitHub once a day for a newer release** — a
   plain unauthenticated request for the latest version number; nothing
   about you or your machine rides along. Turn it off with
-  `"updateCheck": false` in capture.json. The capture agents and the
-  daemon make no network requests, ever.
+  `"updateCheck": false` in capture.json.
+- **Anonymous usage data during beta.** The daemon is the only component
+  that sends it, and only after you have answered the first-run prompt.
+  What goes: which features were used, crashes, version and OS, timing
+  numbers, under a random ID unconnected to you. What never goes: anything
+  shyn captured, including search text, document titles and file paths
+  (error messages are scrubbed of credentials and home-directory paths
+  before sending). Event names come from a fixed list in
+  [`analytics.ts`](packages/daemon/src/analytics.ts) — read it; that list
+  is the whole surface. Turning it off in Settings stops sending
+  immediately and discards anything queued. The capture agents themselves
+  make no network requests, ever.
 - **Sources that need permissions report themselves unavailable with a
   plain-language reason** instead of silently capturing nothing.
 - The eval harness (`pnpm eval:keyword`, `eval:hybrid`) runs a synthetic
@@ -211,13 +233,20 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
 
 ## What shyn never does
 
-- **Phones home.** No telemetry, no analytics endpoint, no crash reporter.
-  There is no server to send anything to. The one outbound request in the
-  whole system is the menu bar app's daily version check against GitHub
-  (see the fine print) — it carries nothing and turns off with one config
-  key.
+- **Ships your captured memory anywhere.** Screen text, transcripts,
+  documents and search queries never leave your Mac, under any setting.
+  Outbound traffic is limited to three things: the snippets relevant to a
+  question you asked, the menu bar app's version check against GitHub, and
+  the anonymous beta usage data described below.
 - **Stores what you searched for.** Usage stats are counts in your local
-  database (searches per day as a number — never the query).
+  database (searches per day as a number — never the query). The same is
+  true of what is reported during beta: that a search happened, never what
+  it was.
+- **Sends anything before you have seen the choice.** During beta shyn
+  reports anonymous usage and crash data, and it asks on first run before a
+  single event is queued. Decline and no identifier is even generated;
+  change it any time in Settings. See "Anonymous usage data during beta"
+  above for what is and is not included.
 - **Ships your content anywhere.** When something breaks, run `shyn diagnose`:
   it prints a copy-pasteable block of versions, service states, and
   error-log lines — zero document content — and *you* choose where to

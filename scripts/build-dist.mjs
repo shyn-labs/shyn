@@ -23,6 +23,8 @@ import {
   cpSync, mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, symlinkSync,
   readlinkSync, unlinkSync, realpathSync, renameSync,
 } from "node:fs";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative } from "node:path";
 
@@ -36,6 +38,36 @@ rmSync(DEPLOY_SCRATCH, { recursive: true, force: true });
 mkdirSync(DIST, { recursive: true });
 
 console.log("[1/4] bundling packages/daemon/src/main.ts -> dist/daemon/daemon.mjs");
+// PostHog ingest key, injected at BUILD time from outside the repo.
+//
+// Never a literal in source: shyn's repo is public, and a key committed there
+// is scraped within hours and used to spam junk events into the project,
+// burning quota and poisoning the data. Read instead from
+// ~/.config/shyn/posthog.env (the location CLAUDE.md designates for this
+// project's credentials), which is outside the repo and cannot be committed
+// by accident.
+//
+// A missing key is NOT a build error. It produces a build with no analytics
+// transport at all, which is the correct outcome for a local dev build and a
+// safe one for a release that forgot it: such a build sends nothing rather
+// than sending somewhere wrong.
+function readPosthogEnv(name) {
+  const path = join(homedir(), ".config/shyn/posthog.env");
+  if (!existsSync(path)) return undefined;
+  const m = readFileSync(path, "utf8").match(new RegExp(`^\\s*${name}\\s*=\\s*(.+?)\\s*$`, "m"));
+  return m?.[1]?.replace(/^["']|["']$/g, "") || undefined;
+}
+const posthogKey = readPosthogEnv("SHYN_POSTHOG_KEY");
+// The HOST must be baked in alongside the key. Getting the region wrong
+// fails SILENTLY — PostHog's ingest endpoint returns 200 from either region
+// whether or not the key belongs to it, so a US key pointed at the EU host
+// looks perfectly healthy and drops every event. Same failure class as the
+// dead quality gates and the release check that never worked.
+const posthogHost = readPosthogEnv("SHYN_POSTHOG_HOST");
+console.log(posthogKey
+  ? `[1/4] esbuild bundle (analytics transport: CONFIGURED, host: ${posthogHost ?? "default eu"})`
+  : "[1/4] esbuild bundle (analytics transport: absent — no key at ~/.config/shyn/posthog.env)");
+
 await build({
   entryPoints: [join(ROOT, "packages/daemon/src/main.ts")],
   bundle: true,
@@ -44,6 +76,12 @@ await build({
   format: "esm", // top-level await in main.ts rules out format: "cjs"
   outfile: join(DIST, "daemon.mjs"),
   external: NATIVE,
+  // Baked in so the shipped daemon does not depend on an env var being set
+  // in whatever launchd context it runs under. Deliberately NOT logged.
+  define: {
+    ...(posthogKey ? { "process.env.SHYN_POSTHOG_KEY": JSON.stringify(posthogKey) } : {}),
+    ...(posthogHost ? { "process.env.SHYN_POSTHOG_HOST": JSON.stringify(posthogHost) } : {}),
+  },
   banner: { js: "// shyn daemon — bundled by scripts/build-dist.mjs; native deps in ./node_modules" },
   logLevel: "info",
 });

@@ -76,6 +76,10 @@ export type ViewModel = {
   notice: Notice | null;
   setup: SetupView;
   diagnostics: boolean;
+  // null until the first-run choice has been made, and whenever the daemon
+  // is unreachable: consent lives in the daemon, and a toggle that silently
+  // fails is worse than no toggle.
+  analytics: { enabled: boolean } | null;
 };
 
 export type DeriveContext = {
@@ -87,6 +91,9 @@ export type DeriveContext = {
   // main.ts owns the update-check timer + in-flight state; derive stays pure.
   update: { latest: string | null; updating: boolean; failed: boolean; brewFound: boolean };
   notice?: Notice | null;
+  // undefined = the first-run dialog has not been answered yet. Distinct
+  // from false, which is a real decision the user made.
+  analyticsEnabled?: boolean;
 };
 
 const READER_DISPLAY_NAMES: Record<string, string> = {
@@ -124,6 +131,7 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
       notice: ctx.notice ?? null,
       setup: { kind: "unavailable" },
       diagnostics: true,
+      analytics: null,
     };
   }
   const s = poll.status;
@@ -343,7 +351,9 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
     : { kind: "steps", steps, done, total: steps.length };
 
   return { tray, verdict, meeting, rows, stats, week, paused, modelChoice, update,
-           notice: ctx.notice ?? null, setup, diagnostics };
+           notice: ctx.notice ?? null, setup, diagnostics,
+           analytics: ctx.analyticsEnabled === undefined
+             ? null : { enabled: ctx.analyticsEnabled } };
 }
 
 function agoText(sec: number): string {

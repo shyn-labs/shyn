@@ -459,3 +459,25 @@ describe("export/import rpc", () => {
       .rejects.toThrow(/wrong passphrase|corrupt/i);
   });
 });
+
+describe("analytics.track RPC", () => {
+  it("accepts a known event and reports it queued", async () => {
+    const r = await rpcCall(sock, "analytics.track",
+      { event: "search_memory_called", properties: { source: "meeting" } });
+    expect(r.ok).toBe(true);
+  });
+
+  it("does not fail the caller when analytics is off", async () => {
+    // Agents call this unconditionally; a disabled queue must be a no-op,
+    // never an error that a caller has to handle.
+    const r = await rpcCall(sock, "analytics.track", { event: "daemon_started" });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects nothing but silently drops an unknown event", async () => {
+    // A stale agent posting an event this daemon version does not know must
+    // not error — versions skew across an upgrade.
+    const r = await rpcCall(sock, "analytics.track", { event: "invented_event" });
+    expect(r.ok).toBe(true);
+  });
+});

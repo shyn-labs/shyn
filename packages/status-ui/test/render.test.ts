@@ -13,7 +13,7 @@ const vm = (over: Partial<ViewModel> = {}): ViewModel => ({
   paused: false, modelChoice: { selected: "standard", busy: false },
   update: null,
   notice: null,
-  setup: { kind: "complete" }, diagnostics: false, ...over,
+  setup: { kind: "complete" }, diagnostics: false, analytics: null, ...over,
 });
 
 const mount = (html: string) => {
@@ -171,5 +171,26 @@ describe("maintainer notice row", () => {
     expect(info).toContain("notice-row");
     expect(info).not.toContain("notice-warn");
     expect(render(vm({ notice: null }), NOW)).not.toContain("notice-row");
+  });
+});
+
+describe("analytics toggle row", () => {
+  it("states what is happening, in both directions", () => {
+    const on = mount(render(vm({ analytics: { enabled: true } }), NOW));
+    expect(on.textContent).toContain("Help improve the beta");
+    expect(on.textContent).toContain("Never your content");
+    // The button carries the action it would PERFORM, not the current state,
+    // or clicking it would re-assert what is already true.
+    expect(on.querySelector('[data-action="analytics-toggle"]')?.getAttribute("data-arg")).toBe("off");
+
+    const off = mount(render(vm({ analytics: { enabled: false } }), NOW));
+    expect(off.textContent).toContain("Nothing is being sent");
+    expect(off.querySelector('[data-action="analytics-toggle"]')?.getAttribute("data-arg")).toBe("on");
+  });
+
+  it("is absent entirely when the choice has not been made", () => {
+    const none = mount(render(vm({ analytics: null }), NOW));
+    expect(none.querySelector('[data-action="analytics-toggle"]')).toBeNull();
+    expect(none.textContent).not.toContain("Help improve the beta");
   });
 });
