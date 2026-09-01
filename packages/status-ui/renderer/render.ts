@@ -68,6 +68,26 @@ export function render(vm: ViewModel, nowSec: number): string {
        <button data-action="diagnose" class="wide ghost">Copy diagnostics</button>`
     : `<button data-action="diagnose-mail" class="wide ghost">Something off? Email diagnostics</button>`;
 
+  // The promise made by the first-run dialog, README and shyn.day is
+  // "change it any time in Settings" — this is the any time. Hidden until
+  // the choice has been made, and while the daemon is down, because consent
+  // lives there and a switch that silently fails is worse than none.
+  //
+  // The label leads with what the user gets, not with the data category —
+  // "Anonymous usage data" describes our side of the trade, not theirs. The
+  // hint then states the actual state in plain terms, because a bare On/Off
+  // beside a privacy setting is exactly where people assume the worst.
+  const an = vm.analytics;
+  const analyticsRow = an ? `
+  <div class="row">
+    <span class="lab">Help improve the beta</span>
+    <button data-action="analytics-toggle" data-arg="${an.enabled ? "off" : "on"}"
+      class="seg-toggle ${an.enabled ? "on" : ""}">${an.enabled ? "On" : "Off"}</button>
+  </div>
+  <div class="seg-hint">${an.enabled
+    ? "Sending crashes and which features you use. Never your content."
+    : "Nothing is being sent. Crashes stay on this Mac."}</div>` : "";
+
   const setupRow = vm.setup.kind === "steps" ? `
   <div class="row setup-row" data-action="open-onboarding">
     <span class="lab">☀️ Finish setup (${vm.setup.done}/${vm.setup.total})</span>
@@ -111,5 +131,6 @@ export function render(vm: ViewModel, nowSec: number): string {
   <section class="stats"><h2 class="section-lab">Index</h2>${vm.stats.map(rowHtml).join("")}</section>
   ${vm.week.length ? `<section class="stats"><h2 class="section-lab">This week</h2>${vm.week.map(rowHtml).join("")}</section>` : ""}
   ${modelSection}
+  ${analyticsRow ? `<section class="stats"><h2 class="section-lab">Privacy</h2>${analyticsRow}</section>` : ""}
   <footer>${controls}${diagnostics}</footer>`;
 }

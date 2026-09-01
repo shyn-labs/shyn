@@ -61,6 +61,7 @@ if (!app.requestSingleInstanceLock()) {
   let win: BrowserWindow | null = null;
   let lastTray: TrayState | null = null;
   let lastVm: ViewModel | null = null;
+  let analyticsEnabled: boolean | undefined;
 
   const OB_WIN = { width: 400, height: 540 };
   let obWin: BrowserWindow | null = null;
@@ -172,6 +173,13 @@ if (!app.requestSingleInstanceLock()) {
       updFailedAt = Math.floor(Date.now() / 1000);
     }
     const status = await poll(sock);
+    // Consent lives in the daemon; refresh it alongside the poll so the
+    // toggle reflects a choice made in the first-run dialog immediately.
+    // undefined (unanswered, or daemon unreachable) hides the row entirely.
+    try {
+      const c = await rpcCall(sock, "analytics.consentStatus", {});
+      analyticsEnabled = c?.needsPrompt ? undefined : c?.enabled === true;
+    } catch { analyticsEnabled = undefined; }
     // Auto-update is evaluated here rather than on the 24h check timer so the
     // meeting guard reads LIVE state: a decision made an hour ago could land
     // in the middle of a call.
@@ -207,6 +215,7 @@ if (!app.requestSingleInstanceLock()) {
       claudeCommand: existsSync(join(home, "bin", "shyn-mcp"))
         ? `claude mcp add shyn -- "${join(home, "bin", "shyn-mcp")}"`
         : CLAUDE_ADD_COMMAND,
+      analyticsEnabled,
     });
     lastVm = vm;
     // win and tray are supposed to live for the whole process; if either is
@@ -296,6 +305,14 @@ if (!app.requestSingleInstanceLock()) {
         else if (name === "run-update") startUpgrade(updLatest, false);
         else if (name === "dismiss-notice") { if (typeof arg === "string") dismissNotice(home, arg); }
         else if (name === "open-onboarding") showOnboarding();
+        else if (name === "analytics-toggle") {
+          // Optimistic so the row flips at once; the next tick reconciles it
+          // against the daemon, which is the authority.
+          const want = arg === "on";
+          analyticsEnabled = want;
+          void rpcCall(sock, "analytics.setConsent", { enabled: want })
+            .catch((e) => console.error("failed to change analytics setting:", e));
+        }
         else if (name === "analytics-consent") {
           // The dialog closes on either answer: it has done its job once the
           // choice is recorded, and re-showing it would read as nagging.

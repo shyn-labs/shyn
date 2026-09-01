@@ -148,3 +148,13 @@ body.onboarding { padding: 4px 0 14px; }
 .ac-toggle input { width: 15px; height: 15px; cursor: pointer; }
 .ac-actions { display: flex; justify-content: flex-end; margin-top: 3px; }
 .ac-fine { font-size: 11px !important; color: var(--ink-dim); opacity: .8; }
+
+/* Analytics toggle in the popover's Privacy section. Reads as a state pill
+   rather than a call to action: the row is informational most of the time,
+   and a loud button next to a privacy setting invites misreading. */
+.seg-toggle { min-width: 46px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--hairline); background: var(--lift);
+  color: var(--ink-dim); font-size: 11.5px; cursor: pointer; }
+.seg-toggle.on { border-color: color-mix(in srgb, var(--ok, #3aa76d) 55%, transparent);
+  color: var(--ok, #3aa76d); }
+.seg-toggle:hover { background: var(--hover, rgba(127,127,127,.12)); }

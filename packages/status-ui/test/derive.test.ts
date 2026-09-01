@@ -460,3 +460,30 @@ describe("in-app update states", () => {
     expect(deriveView({ ok: false }, upd({ latest: "9.9.9" })).update).toBeNull();
   });
 });
+
+describe("analytics settings toggle", () => {
+  it("reflects the daemon's consent state so the user can change their mind", () => {
+    // The README, the first-run dialog and shyn.day all say "change it any
+    // time in Settings". Until this exists that is a promise with nothing
+    // behind it.
+    const on = deriveView({ ok: true, status: healthyStatus() }, baseCtx({ analyticsEnabled: true }));
+    expect(on.analytics).toEqual({ enabled: true });
+
+    const off = deriveView({ ok: true, status: healthyStatus() }, baseCtx({ analyticsEnabled: false }));
+    expect(off.analytics).toEqual({ enabled: false });
+  });
+
+  it("shows nothing until the first-run choice has been made", () => {
+    // Before the dialog is answered there is no state to toggle, and showing
+    // an "off" switch would misrepresent a question that has not been asked.
+    const vm = deriveView({ ok: true, status: healthyStatus() }, baseCtx({ analyticsEnabled: undefined }));
+    expect(vm.analytics).toBeNull();
+  });
+
+  it("stays hidden when the daemon is unreachable", () => {
+    // Consent lives in the daemon. With it down we cannot know the state, and
+    // a toggle that silently fails is worse than no toggle.
+    const vm = deriveView({ ok: false }, baseCtx({ analyticsEnabled: true }));
+    expect(vm.analytics).toBeNull();
+  });
+});
