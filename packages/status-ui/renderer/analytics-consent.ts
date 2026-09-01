@@ -15,17 +15,18 @@ export function renderConsent(): string {
   <div class="ac">
     <h2>Help make the beta reliable</h2>
 
-    <p>shyn runs across different macOS versions, hardware, and permission
-    states. Those combinations produce bugs we cannot reproduce or test for,
-    and most people who hit one never write in. They just quit.</p>
+    <p>shyn breaks in ways we cannot predict. Every Mac has a different OS
+    version, different hardware, different permissions granted. We cannot
+    test for all of it, and almost nobody who hits a bug writes in. They
+    just quit.</p>
 
-    <p class="ac-sent"><b>What it sends:</b> which features get used, what
-    crashes, the version, and timing numbers, under a random ID that is
-    not you.</p>
+    <p class="ac-sent"><b>Sent:</b> crashes, which features you use, your
+    version, how long things take. Under a random ID that is not you and
+    is deleted the moment you turn this off.</p>
 
-    <p class="ac-never"><b>What it never sends:</b> anything shyn captured.
-    No screen text, no transcripts, no searches, no file paths, no
-    identity. Your memory stays on this Mac.</p>
+    <p class="ac-never"><b>Never sent:</b> a single word shyn captured. Not
+    your screen, not your meetings, not your notes, not what you searched
+    for, not even your file names.</p>
 
     <label class="ac-toggle">
       <input type="checkbox" id="ac-on" checked />
@@ -36,8 +37,8 @@ export function renderConsent(): string {
       <button class="btn primary" data-action="analytics-consent-confirm">Continue</button>
     </div>
 
-    <p class="ac-fine">You can change this any time in Settings. Turning it
-    off stops sending immediately and discards anything queued.</p>
+    <p class="ac-fine">Change it whenever you like in the menu bar. Off means
+    off at once, including anything still waiting to send.</p>
   </div>`;
 }
 
