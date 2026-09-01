@@ -115,3 +115,50 @@ private func sig(_ mic: Bool, _ sys: Bool, app: Bool = false) -> MeetingSignal {
     #expect(d.step(signal: sig(false, true, app: false), now: 10, config: cfg) == .idle)
     #expect(d.step(signal: sig(false, true, app: false), now: 30, config: cfg) == .idle)
 }
+
+@Test func rescueEvidenceReArmsDetectionOnceAfterAPhantomPurge() {
+    // The purge AMPLIFIER (live loss 2026-08-31): suppression only lifts on a
+    // quiet observation, but a live call never goes quiet — so one wrong
+    // 40-second verdict disarmed detection for the remaining 57 minutes of a
+    // real meeting. Rescue evidence arriving later (the user finally joins the
+    // call properly, the browser grabs the mic) must re-arm without waiting
+    // for silence that will not come until the call is over.
+    let cfg = MeetingConfig.defaults
+    var d = MeetingDetector()
+    _ = d.step(signal: sig(true, true), now: 0, config: cfg)
+    _ = d.step(signal: sig(true, true), now: 10, config: cfg)   // candidate
+    _ = d.step(signal: sig(true, true), now: 21, config: cfg)   // recording
+    d.cancelUntilQuiet()
+    #expect(d.step(signal: sig(true, true), now: 30, config: cfg) == .idle)  // suppressed
+
+    // Rising edge of rescue: false → true re-arms even though audio never
+    // went quiet.
+    d.noteRescueEvidence()
+    #expect(d.step(signal: sig(true, true), now: 40, config: cfg) == .idle)       // new episode t0
+    #expect(d.step(signal: sig(true, true), now: 50, config: cfg) == .candidate)  // sustained → candidate
+}
+
+@Test func rescueReArmIsBoundedToOncePerEpisode() {
+    // Bounded on purpose: an unbounded re-arm would resurrect the original
+    // notification-spam bug (one "Meeting detected" every ~57s for a whole
+    // call) whenever the rescue signal stays true through repeated purges.
+    let cfg = MeetingConfig.defaults
+    var d = MeetingDetector()
+    _ = d.step(signal: sig(true, true), now: 0, config: cfg)
+    _ = d.step(signal: sig(true, true), now: 10, config: cfg)
+    d.cancelUntilQuiet()
+    d.noteRescueEvidence()
+    _ = d.step(signal: sig(true, true), now: 20, config: cfg)
+    _ = d.step(signal: sig(true, true), now: 30, config: cfg)   // candidate again
+
+    // Second purge in the same unbroken episode: rescue must NOT re-arm again.
+    d.cancelUntilQuiet()
+    d.noteRescueEvidence()
+    #expect(d.step(signal: sig(true, true), now: 40, config: cfg) == .idle)
+    #expect(d.step(signal: sig(true, true), now: 100, config: cfg) == .idle)
+
+    // Only real silence clears the episode and restores the rescue budget.
+    _ = d.step(signal: sig(false, false), now: 110, config: cfg)
+    _ = d.step(signal: sig(true, true), now: 120, config: cfg)
+    #expect(d.step(signal: sig(true, true), now: 130, config: cfg) == .candidate)
+}

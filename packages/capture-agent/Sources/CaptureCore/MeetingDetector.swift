@@ -16,6 +16,9 @@ public struct MeetingDetector: Sendable {
     private var candidateAt: Double? = nil      // when we entered .candidate
     private var lastAudioAt: Double? = nil      // last step at which audio was observed active
     private var suppressed = false              // no new candidate until a quiet step re-arms
+    // One rescue-driven re-arm per unbroken audio episode. Spent when used,
+    // restored only by a genuinely quiet step (which also ends the episode).
+    private var rescueReArmAvailable = true
     public init() {}
 
     // Audio-based primary trigger.
@@ -44,6 +47,8 @@ public struct MeetingDetector: Sendable {
             if audio { audioSince = nil; return state }
             suppressed = false
         }
+        // A quiet step ends the episode: restore the one rescue re-arm.
+        if !audio { rescueReArmAvailable = true }
         switch state {
         case .idle, .ended:
             state = .idle
@@ -81,5 +86,23 @@ public struct MeetingDetector: Sendable {
     // re-detection and another notification.
     public mutating func cancelUntilQuiet() {
         cancel(); suppressed = true
+    }
+
+    // Lift suppression on rescue evidence, without waiting for silence.
+    //
+    // cancelUntilQuiet re-arms only on a quiet observation, and a live call
+    // never goes quiet — so a single wrong purge verdict disarmed detection
+    // for the REST of the meeting (2026-08-31: 57 minutes lost after one bad
+    // 40-second decision, nothing captured until the call ended).
+    //
+    // Bounded to once per unbroken audio episode. Unbounded, this would
+    // resurrect the notification-spam bug cancelUntilQuiet exists to prevent:
+    // rescue evidence that stays true through repeated purges would re-notify
+    // every ~57s for a whole call.
+    public mutating func noteRescueEvidence() {
+        guard suppressed, rescueReArmAvailable else { return }
+        rescueReArmAvailable = false
+        suppressed = false
+        audioSince = nil
     }
 }

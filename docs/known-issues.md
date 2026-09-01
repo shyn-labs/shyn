@@ -541,3 +541,96 @@ on recall, so an address a third party wrote into an invite body travels with it
 Accepted rather than fixed — redacting free text is a bigger and riskier
 behaviour than the guarantee this rule actually makes, which is that shyn never
 ADDS an address of its own.
+
+## The commit gate purged a real 60-minute meeting — fixed 2026-09-01
+
+**A silent listener on a BROWSER call had no rescue signal at all.** On
+2026-08-31 the "Biochar Roadmap Review" (Google Meet in Chrome, 15:35–16:30
+IST) was recorded and then discarded in full. One line in `meeting.log`:
+
+```
+2026-08-31T15:37:05+05:30 [meeting] verification failed (mic=false sys=true) — phantom, purging
+```
+
+The commit gate required `sysVoiced && (micVoiced || sessionMeetingAppFrontmost)`.
+The far side was voiced (Suraj was presenting), the user never spoke inside
+grace+30s, and `sessionMeetingAppFrontmost` was false — Chrome is deliberately
+absent from `meetingBundleIds`, because being frontmost in a browser does not
+itself predict a call (the same bar that correctly excludes Slack). So both
+halves of the OR failed on a completely genuine meeting. Every browser-based
+call where the user listens before speaking was exposed to this.
+
+**The purge is amplified far beyond the 40 seconds it discards.** The purge
+path calls `detector.cancelUntilQuiet()`, and suppression only lifts when a
+step observes the audio signals quiet. For a live call they never go quiet,
+so ONE bad verdict disarmed detection for the remaining 57 minutes. The log
+shows nothing between the purge and the next hourly calendar sweep.
+
+Four changes, all reads, none touching live audio:
+
+- The gate is extracted from `tick()` into a pure `commitDecision(...)` in
+  CaptureCore, so both the rescue cases and the phantom cases it exists for
+  are pinned by tests. It was inline and untestable, which is how this
+  shipped: no test could have caught it.
+- `micDeclaredDead` now means "cannot report", not "silent". Once the mic
+  engine dies, `micVoiced` is structurally incapable of being true, so
+  requiring it purged every time — 2 of the 8 logged purges were this.
+- New rescue term: **per-process** CoreAudio input attribution
+  (`kAudioHardwarePropertyProcessObjectList`, macOS 14.2+, already this
+  agent's floor). "Is a conferencing-capable app holding an input stream"
+  is a far stronger claim than "is the input device hot", which on a machine
+  running ambient mic-holders carries almost no information. Immune to our
+  own capture, since the flags are per-process.
+- New rescue term: a strict live-conferencing calendar check. NOT
+  `matchMeetingEvent` — at commit time the session is ~40s old so every
+  in-progress block covers "half the session", including 3-hour "Occupied"
+  focus holds. `isLikelyLiveCallEvent` requires 2+ attendees, not declined,
+  <= 4h, and a real conferencing link.
+
+The rescue term is re-evaluated **every tick** rather than snapshotted at
+pre-roll. The snapshot was its own latent bug of the same class: alt-tabbing
+away from Zoom during the grace window lost the term for the whole session.
+
+**Accepted trade:** the calendar term can fire for a meeting the user
+skipped while leaving the tab open. Far-side voice remains mandatory in
+every branch, so this cannot commit silence — but it can ship a junk
+transcript where before it shipped nothing. For a memory app, a recoverable
+wrong transcript (`forget`) beats a permanently lost meeting.
+
+**NOT established:** whether Chrome keeps the input stream open while a Meet
+call is muted. It is the load-bearing assumption behind the mic-attribution
+term and it is unverified — the verification checklist leads with it.
+Observed 2026-09-01 on this machine: Granola and Wispr Flow were both
+running and held NO input stream, so they are on-demand grabbers rather than
+the permanent holders assumed during diagnosis.
+
+## Meet speaker attribution: what macOS Accessibility can and cannot give (2026-09-01)
+
+Probed live against real Meet calls in Chrome, so the negative results are
+tested rather than assumed. Recorded because "we never tried it" and "we
+tried it and it does not work" must not be confusable later.
+
+- **Active-speaker state is NOT in the AX tree.** Tested with 2
+  participants, People panel open, names populated, 30s of speech: zero
+  speaking/muted/presenting markers, and no state change. Meet's video
+  tiles are not accessibility objects.
+- **The full AX tree cannot be forced.** `AXManualAccessibility` returns
+  `-25205` (attribute unsupported) on Chrome; the node count stays ~334
+  either way. Usefully, this also means the browser-wide accessibility-mode
+  performance risk does not exist — there is no switch to flip.
+- **Captions ARE readable**, with a speaker label, streaming live from the
+  captions ARIA live region. Not adopted as the mechanism: captions are off
+  by default, do NOT persist across calls (observed — a second call the
+  same hour had them off), and tie attribution to Google's ASR.
+- **The participant roster IS readable**, but only while the People side
+  panel is open, and it names who is *present*, not who is *talking*.
+- The Meet call runs as a Chrome **PWA**
+  (`com.google.Chrome.app.kjgfgldnnfoeklkmfkjfagphfepbbdan`), a separate
+  running application from `com.google.Chrome`. Any AX probe that grabs the
+  first Chrome-family process finds the wrong one and sees no call.
+
+Consequence: a browser extension is the only route to caption-free speaker
+timing for Meet. Design in
+`docs/superpowers/specs/2026-09-01-meet-speaker-attribution-design.md`.
+Diarization on the recorded audio — the only option that would also cover
+Zoom, Teams and in-person — is parked pending a reliability review.

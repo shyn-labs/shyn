@@ -136,3 +136,44 @@ the bleed this is meant to fix), with `SHYN_MEETING_DEBUG=1`:
    stop it. Expect: audio KEPT in `meeting-tmp`, `pending.json` written,
    failure logged. Restore the model, wait a tick, expect the retry to
    transcribe and ship, and `meeting-tmp` to end up empty.
+
+## Commit-gate rescue (2026-09-01)
+
+Motivated by a live loss: the 60-minute "Biochar Roadmap Review" on
+Meet-in-Chrome (2026-08-31 15:35 IST) was purged whole —
+`verification failed (mic=false sys=true) — phantom, purging` — because the
+user listened silently and Chrome is deliberately absent from
+`meetingBundleIds`. The gate now accepts three additional forms of evidence
+(mic-unavailable, a conferencing app holding an input stream, a live
+conferencing calendar event) and re-evaluates them every tick instead of
+snapshotting at pre-roll.
+
+These are property READS — no device opened, nothing shared reconfigured —
+so the AEC class of risk does not apply. The harness is still cheap, so run
+it before trusting the signal on real work.
+
+**Harness (no real meeting at risk):** open a solo Meet room in Chrome, mute
+yourself, and drive the far side with `say` through the speakers.
+
+1. [ ] **Bundle ids are OBSERVED, not guessed.** With a muted Meet call live,
+   dump the input holders and confirm a `com.google.Chrome*` process appears
+   with `conferencing=true`. **This is the load-bearing assumption**: if
+   Chrome releases the input stream while muted, the mic-attribution rescue
+   does not fire for exactly the case it was built for, and the calendar
+   term is carrying the fix alone. Record the real ids seen.
+2. [ ] **The regression itself.** Muted + far-side voice for > grace+30s must
+   COMMIT, not purge. `meeting.log` should show no `verification failed`
+   line for that session.
+3. [ ] **Phantom protection intact.** Play music/YouTube in Chrome with no
+   call and no calendar event: must still purge at grace+30s
+   (`rescue=false` in the log line).
+4. [ ] **Calendar false positive.** During a scheduled call you did NOT join,
+   play a video. The calendar term will fire — confirm the far-side-voice
+   requirement still keeps this from committing silence, and note if a
+   junk transcript ships anyway (that is the accepted trade of this term).
+5. [ ] **Ambient mic-holders stay excluded.** With Granola / Wispr Flow
+   running but no call, confirm they never appear as `conferencing=true`.
+   (Observed 2026-09-01: both were running and held NO input stream, so
+   they are on-demand grabbers, not permanent holders.)
+6. [ ] **Dead-mic path.** Force the mic engine dead mid-session (switch input
+   device); the session must still commit on system audio alone.

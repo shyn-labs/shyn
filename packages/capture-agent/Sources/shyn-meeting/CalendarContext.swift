@@ -63,6 +63,57 @@ func calendarStamp(startEpoch: Int, endEpoch: Int) async -> CalendarStamp? {
         others: all.filter { !$0.isCurrentUser }.compactMap(\.name).compactMap(attendeeDisplayName))
 }
 
+// Commit-gate rescue: is a real video call scheduled RIGHT NOW?
+//
+// Deliberately not matchMeetingEvent: at commit time the session is ~40s old,
+// so every in-progress block covers "half the session" trivially — including
+// 3-hour "Occupied" focus holds. isLikelyLiveCallEvent is the strict version
+// (2+ attendees, not declined, <= 4h, real conferencing link); the reasoning
+// and the false positives it must reject live with it in CaptureCore.
+//
+// Cached: this runs every tick during an unverified pre-roll, and a fresh
+// EKEventStore per tick is wasteful. Never prompts — an unresolved grant
+// degrades to false, exactly like the existing readers.
+actor LiveCallProbe {
+    static let shared = LiveCallProbe()
+    private var store: EKEventStore? = nil
+    private var cache: (answer: Bool, at: Double) = (false, 0)
+    private let cacheSeconds = 60.0
+
+    func inProgress(now: Double = Date().timeIntervalSince1970) -> Bool {
+        guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return false }
+        if now - cache.at < cacheSeconds { return cache.answer }
+        let store = self.store ?? EKEventStore()
+        self.store = store
+        let at = Date(timeIntervalSince1970: now)
+        let events = store.events(matching: store.predicateForEvents(
+            withStart: at, end: at.addingTimeInterval(1), calendars: nil))
+        let answer = events.contains { ev in
+            guard !ev.isAllDay else { return false }
+            let declined = (ev.attendees ?? []).contains {
+                $0.isCurrentUser && $0.participantStatus == .declined
+            }
+            // url + notes + location: Meet puts the link in notes, Zoom and
+            // Teams often in url or location. Never stored, never logged —
+            // searched for a marker and discarded.
+            let text = [ev.url?.absoluteString, ev.notes, ev.location]
+                .compactMap { $0 }.joined(separator: " ")
+            return isLikelyLiveCallEvent(LiveCallCandidate(
+                title: ev.title ?? "",
+                attendeeCount: ev.attendees?.count ?? 0,
+                durationSeconds: Int(ev.endDate.timeIntervalSince(ev.startDate)),
+                selfDeclined: declined,
+                conferencingText: text))
+        }
+        cache = (answer, now)
+        return answer
+    }
+}
+
+func liveConferencingEventInProgress() async -> Bool {
+    await LiveCallProbe.shared.inProgress()
+}
+
 // Window-title fallback (spec phase 1b): when EventKit has nothing — the
 // Google-only-calendar user — the meeting app's window title (Zoom windows and
 // Meet tabs usually carry the meeting name) is better than "Zoom meeting ·

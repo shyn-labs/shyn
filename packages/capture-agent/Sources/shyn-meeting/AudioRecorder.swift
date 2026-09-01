@@ -26,7 +26,11 @@ actor AudioRecorder {
     private(set) var recording = false
     private var micFormat: AVAudioFormat?   // input format the tap + file were built for
     private var micRestartAttempts = 0
-    private var micDeclaredDead = false
+    // Read by the commit gate: once the mic engine is declared dead, that
+    // channel's silence means "cannot report", not "nobody spoke". Treating
+    // it as a negative made the gate's mic term dead code for the rest of
+    // the session and purged real meetings (2 of 8 logged purges).
+    private(set) var micDeclaredDead = false
     // Signal-level activity from the recorded buffers themselves — the ONLY
     // valid end-of-meeting signal while recording (our own taps keep the
     // devices "running", so the device probes read active forever).
