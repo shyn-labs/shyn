@@ -634,3 +634,54 @@ timing for Meet. Design in
 `docs/superpowers/specs/2026-09-01-meet-speaker-attribution-design.md`.
 Diarization on the recorded audio — the only option that would also cover
 Zoom, Teams and in-person — is parked pending a reliability review.
+
+## Reading the OUTPUT stream made YouTube look like a call — same day, 2026-09-01
+
+Shipped and caught within the hour, by the user asking "what if music or
+YouTube is running in the background?" Worth recording because the fix was
+easy and the mistake was not novel.
+
+The commit-gate rescue term counted a conferencing-capable app holding
+EITHER an input or an output stream. A video playing in a browser therefore
+satisfied `sysVoiced && rescue` with no microphone involvement at all, and
+would have committed a phantom recording of a user who was not in a call.
+That is a worse failure than the data loss the rescue term was added to fix:
+recording someone who is not in a meeting is a privacy failure, not an
+inconvenience. It is also, exactly, the music/playback phantom this gate has
+existed to prevent since 2026-07-22.
+
+**How it got in.** The output read came from a research agent's reasoning: a
+muted listener releases the microphone, so the output stream is the durable
+signal. Plausible, and false. The same session had ALREADY observed twice,
+on a live muted Meet call, that `com.google.Chrome.helper` keeps its INPUT
+stream open throughout. The observation was in hand before the code was
+written, and the model was believed over it.
+
+That is the failure class already recorded twice in this file — the dead
+Whisper quality gates ("verified present on TranscriptionSegment": true of
+the type, false of the values) and the release check that never worked. The
+rule those cost us applies here unchanged: **when a measurement and a model
+disagree, the measurement wins, including when the model came from
+somewhere authoritative-sounding.**
+
+**What limited the damage.** Far-side voice is mandatory in every branch of
+the gate, so no rescue term can commit on its own. A log line from the live
+test says it plainly:
+
+```
+verification failed (mic=false sys=false rescue=true) — phantom, purging
+```
+
+Defence in depth that nothing needed until it did.
+
+**Verified after the fix**, on the shipped binary rather than in tests, with
+Granola holding the mic so the gate was actually reached:
+
+```
+real muted Meet call:  Chrome holds INPUT  → rescue=true  → committed
+YouTube, no call:      Chrome holds OUTPUT → rescue=false → purged
+```
+
+Both lines carry the identical channel evidence (`mic=false sys=true`) that
+lost the 31 Aug meeting. The rescue term is the only thing separating them,
+and it decides both correctly.
