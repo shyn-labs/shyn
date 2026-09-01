@@ -124,3 +124,63 @@ private func event(_ title: String, attendees: Int, minutes: Int,
     // evidence of a call.
     #expect(!isConferencingCapableBundleId("com.shyn.meeting"))
 }
+
+// MARK: - Which app the meeting belongs to
+
+@Test func meetingAppIsTheOneHoldingAudioNotTheOneInFront() {
+    // Lived 2026-09-01: a verification recording was titled "Ghostty" because
+    // the terminal was frontmost at pre-roll. The general case is worse than
+    // the test artifact — taking notes, reading mail or sitting in Slack
+    // during a call is normal, so the title would routinely name whatever the
+    // user glanced at rather than the call.
+    #expect(conferencingHolder(from: ["com.apple.Music", "com.google.Chrome.helper"])
+            == "com.google.Chrome.helper")
+    #expect(conferencingHolder(from: ["us.zoom.xos"]) == "us.zoom.xos")
+}
+
+@Test func meetingAppIgnoresOurOwnRecorder() {
+    // shyn-meeting holds an input stream for the whole session; naming the
+    // meeting after ourselves would be absurd and is easy to do by accident.
+    #expect(conferencingHolder(from: ["com.shyn.meeting"]) == nil)
+    #expect(conferencingHolder(from: ["com.shyn.meeting", "us.zoom.xos"]) == "us.zoom.xos")
+}
+
+@Test func meetingAppIsNilWhenNothingConferencingHoldsAudio() {
+    // Caller falls back to the frontmost app, which is the old behaviour and
+    // still the best available guess when there is nothing better.
+    #expect(conferencingHolder(from: ["com.apple.Music", "com.apple.QuickTimePlayerX"]) == nil)
+    #expect(conferencingHolder(from: []) == nil)
+}
+
+// MARK: - Playback must never look like a call
+
+@Test func browserPlaybackIsNotEvidenceOfACall() {
+    // Found by asking "what if music or YouTube is running?" (2026-09-01).
+    // Reading the OUTPUT stream made any browser audio count as a call, so a
+    // YouTube video alone satisfied `sysVoiced && rescue` and would have
+    // committed a phantom recording — recording the user when no call was
+    // happening. That is a worse failure than the data loss this whole
+    // change set out to fix.
+    //
+    // INPUT is the honest signal. A call holds the microphone; playback does
+    // not. Verified live twice on 2026-09-01: Chrome keeps its input stream
+    // open through a MUTED Meet call, which is the exact case the output
+    // check was wrongly introduced to cover.
+    #expect(!callEvidence(inputHolders: [], outputHolders: ["com.google.Chrome.helper"]))
+    #expect(!callEvidence(inputHolders: [], outputHolders: ["com.apple.Music"]))
+    #expect(!callEvidence(inputHolders: [], outputHolders: ["com.apple.QuickTimePlayerX"]))
+}
+
+@Test func holdingTheMicIsEvidenceOfACall() {
+    // The muted-listener case: Chrome holds input, user never speaks.
+    #expect(callEvidence(inputHolders: ["com.google.Chrome.helper"], outputHolders: []))
+    // Realistic: on a call AND playing music at the same time.
+    #expect(callEvidence(inputHolders: ["com.google.Chrome.helper"],
+                         outputHolders: ["com.apple.Music"]))
+}
+
+@Test func ourOwnRecorderHoldingTheMicIsNotACall() {
+    // shyn-meeting holds input for the whole session. If that counted, every
+    // recording would justify itself and the gate would never purge anything.
+    #expect(!callEvidence(inputHolders: ["com.shyn.meeting"], outputHolders: []))
+}

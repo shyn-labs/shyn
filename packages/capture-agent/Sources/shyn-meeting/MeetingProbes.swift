@@ -131,27 +131,42 @@ private func processRunningFlag(_ obj: AudioObjectID,
     return running != 0
 }
 
-/// True when a conferencing-capable app currently holds an audio stream —
-/// input OR output.
+/// True when a conferencing-capable app currently holds the MICROPHONE.
 ///
-/// OUTPUT is the load-bearing half, and the reason the 2026-08-31 meeting
-/// was lost. A muted listener may release the mic, but the browser keeps
-/// PLAYING the other participants for the whole call, so its output stream
-/// is held continuously. Observed live 2026-09-01 during a real Meet call:
-/// `com.google.Chrome.helper` appeared on both input and output.
-///
-/// Safe because it is gated on a conferencing-capable bundle id: Music and
-/// QuickTime hold output all day and match nothing here. Far-side voice
-/// also remains mandatory at the commit gate, so this can never commit
-/// silence on its own.
+/// This briefly read the output stream too, on the theory that a muted
+/// listener releases the mic. That theory is false — verified live twice on
+/// 2026-09-01, Chrome keeps its input stream open through a muted Meet call
+/// — and the output check would have made any YouTube tab look like a call,
+/// committing a phantom recording of a user who was not in one. See
+/// callEvidence() in CaptureCore for the full reasoning and its tests.
 func conferencingAppHoldingAudio() -> Bool {
+    conferencingAppHoldingAudioId() != nil
+}
+
+/// The conferencing app holding the MICROPHONE, if any. Doubles as the
+/// meeting's identity: the app on the call is the meeting, whatever happens
+/// to be frontmost.
+///
+/// Input only — see callEvidence(). Output would make a YouTube tab look
+/// like a call.
+func conferencingAppHoldingAudioId() -> String? {
+    var inputHolders: [String] = []
+    var outputHolders: [String] = []
     for obj in audioProcessObjects() {
-        let active = processRunningFlag(obj, kAudioProcessPropertyIsRunningInput)
-            || processRunningFlag(obj, kAudioProcessPropertyIsRunningOutput)
-        guard active, let id = processBundleId(obj) else { continue }
-        if isConferencingCapableBundleId(id) { return true }
+        guard let id = processBundleId(obj) else { continue }
+        if processRunningFlag(obj, kAudioProcessPropertyIsRunningInput) { inputHolders.append(id) }
+        if processRunningFlag(obj, kAudioProcessPropertyIsRunningOutput) { outputHolders.append(id) }
     }
-    return false
+    guard callEvidence(inputHolders: inputHolders, outputHolders: outputHolders),
+          let held = conferencingHolder(from: inputHolders) else { return nil }
+    return responsibleAppBundleId(held)
+}
+
+/// Map a helper's bundle id back to the app a user would recognise.
+func responsibleAppBundleId(_ id: String) -> String {
+    if let mapped = conferencingHelperApp[id] { return mapped }
+    for prefix in conferencingBundlePrefixes where id.hasPrefix(prefix + ".") { return prefix }
+    return id
 }
 
 /// Full input-holder dump for verification. The bundle ids that matter here
@@ -170,8 +185,19 @@ func debugDumpAudioInputHolders() -> String {
     return lines.isEmpty ? "  (no process holding an input stream)" : lines.joined(separator: "\n")
 }
 
-// Frontmost app identity for the meeting uri/title (falls back to "call").
-@MainActor func frontmostAppInfo() -> (bundleId: String?, name: String) {
+// App identity for the meeting uri/title (falls back to "call").
+//
+// `preferring` is the bundle id of whatever holds the call's audio. When it
+// is supplied and the app is running, it wins over frontmost — the app on
+// the call is the meeting, whatever the user happens to be looking at.
+@MainActor func frontmostAppInfo(preferring holder: String? = nil)
+        -> (bundleId: String?, name: String) {
+    if let holder,
+       let app = NSWorkspace.shared.runningApplications.first(where: {
+           $0.bundleIdentifier == holder
+       }) {
+        return (holder, app.localizedName ?? "Call")
+    }
     let front = NSWorkspace.shared.frontmostApplication
     return (front?.bundleIdentifier, front?.localizedName ?? "Call")
 }

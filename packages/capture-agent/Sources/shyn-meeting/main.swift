@@ -261,7 +261,15 @@ actor MeetingAgent {
     private func startPreroll(cfg: MeetingConfig, meetingAppFrontmost: Bool) async {
         let start = Int(Date().timeIntervalSince1970)
         let dir = meetingTmp.appendingPathComponent("session-\(start)")
-        let info = await MainActor.run { frontmostAppInfo() }
+        // Identity comes from the app HOLDING THE AUDIO, not the app in
+        // front. Frontmost is wrong in the ordinary case, not just an edge
+        // one: taking notes, reading mail or sitting in Slack during a call
+        // is normal, and naming the record after that makes it unfindable by
+        // the name the user knows it by (lived 2026-09-01, a recording
+        // titled "Ghostty"). Falls back to frontmost when nothing
+        // conferencing-capable holds audio.
+        let holder = conferencingAppHoldingAudioId()
+        let info = await MainActor.run { frontmostAppInfo(preferring: holder) }
         do {
             recorder.meter.reset()
             try await recorder.start(sessionDir: dir)

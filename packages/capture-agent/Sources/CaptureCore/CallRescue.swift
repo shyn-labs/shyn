@@ -23,7 +23,7 @@ import Foundation
 // prefix match catches. Ambient mic-holders (Granola, Wispr Flow) are
 // deliberately absent — they are the reason the DEVICE-level probe carries
 // almost no information on this machine.
-let conferencingBundlePrefixes: [String] = [
+public let conferencingBundlePrefixes: [String] = [
     "com.google.Chrome",            // + .helper, .helper.renderer
     "com.apple.Safari",
     "com.apple.WebKit",             // Safari's GPU/content processes
@@ -47,14 +47,15 @@ let conferencingBundlePrefixes: [String] = [
 // be absent for Safari, FaceTime, Webex and Zoom Phone rather than visibly
 // broken. Transcribed from the equivalent map Granola ships, which exists
 // for exactly this reason.
-let conferencingHelperIds: Set<String> = [
-    "com.apple.WebKit.GPU",             // → Safari
-    "com.apple.avconferenced",          // → FaceTime
-    "Cisco-Systems.Spark",              // → Webex
-    "us.zoom.ZoomPhone",                // → Zoom
-    "us.zoom.ZoomHybridConf",           // → Zoom
-    "com.microsoft.teams2.modulehost",  // → Teams
+public let conferencingHelperApp: [String: String] = [
+    "com.apple.WebKit.GPU": "com.apple.Safari",
+    "com.apple.avconferenced": "com.apple.FaceTime",
+    "Cisco-Systems.Spark": "Cisco-Systems.Spark",
+    "us.zoom.ZoomPhone": "us.zoom.xos",
+    "us.zoom.ZoomHybridConf": "us.zoom.xos",
+    "com.microsoft.teams2.modulehost": "com.microsoft.teams2",
 ]
+let conferencingHelperIds: Set<String> = Set(conferencingHelperApp.keys)
 
 /// True when a process with this bundle id, observed holding a mic input
 /// stream, is evidence that a call is happening.
@@ -71,6 +72,44 @@ public func isConferencingCapableBundleId(_ bundleId: String) -> Bool {
         if bundleId.hasPrefix(prefix + ".") { return true }
     }
     return false
+}
+
+/// Which of the processes currently holding audio is the meeting?
+///
+/// The app HOLDING THE AUDIO is a far better answer than the app in front.
+/// Lived 2026-09-01: a verification recording came out titled "Ghostty"
+/// because the terminal was frontmost at pre-roll — and the real-world case
+/// is worse than the test artifact, because taking notes or reading mail
+/// during a call is normal. Naming the record after whatever the user
+/// glanced at makes it unfindable by the name they know it by.
+///
+/// Same lesson `MeetingWindowTitle` already learned for the window title:
+/// do not trust focus. Returns nil when nothing conferencing-capable holds
+/// audio, and the caller falls back to frontmost.
+public func conferencingHolder(from bundleIds: [String]) -> String? {
+    bundleIds.first { isConferencingCapableBundleId($0) }
+}
+
+/// Is a call actually happening, judged from who holds which audio streams?
+///
+/// INPUT ONLY, and the reason matters. Reading the OUTPUT stream made any
+/// browser audio count as a call: a YouTube video alone satisfied
+/// `sysVoiced && rescue` and would have committed a phantom recording,
+/// recording the user while no call was happening. That is a worse failure
+/// than the data loss this change set out to fix, and it is exactly the
+/// music/playback phantom the gate has always existed to prevent.
+///
+/// A call holds the MICROPHONE; playback does not. The output check was
+/// added on the theory that a muted listener releases the mic — verified
+/// live twice on 2026-09-01 that this is false: Chrome keeps its input
+/// stream open through a muted Meet call. So the theory was wrong and the
+/// signal it justified was harmful.
+///
+/// `outputHolders` is accepted but deliberately unused, so the decision to
+/// ignore it is visible at the call site rather than silently absent.
+public func callEvidence(inputHolders: [String], outputHolders: [String]) -> Bool {
+    _ = outputHolders
+    return conferencingHolder(from: inputHolders) != nil
 }
 
 // MARK: - Live-call calendar events
