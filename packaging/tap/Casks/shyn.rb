@@ -29,7 +29,11 @@ cask "shyn" do
         sha-verified), not third-party software.
       - Corporate EDR (e.g. SentinelOne) may quarantine fresh binaries; an
       exclusion for ~/Library/Application Support/shyn may be needed.
-    - Everything shyn captures stays on your Mac. Nothing phones home.
+    - Everything shyn captures stays on your Mac: screen text, transcripts,
+      notes and searches never leave it.
+    - During beta shyn reports anonymous crashes and feature usage, under a
+      random id. Never your content. It asks on first run, and the menu bar
+      turns it off any time.
 
     After upgrades, re-run: shyn setup   (grants persist)
     Uninstall: shyn uninstall [--purge], then brew uninstall shyn
