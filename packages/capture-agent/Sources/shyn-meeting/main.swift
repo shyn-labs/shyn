@@ -411,15 +411,33 @@ actor MeetingAgent {
         // A transcript exists from here on: never re-transcribe this session,
         // even if the ship below only reaches the ring buffer.
         clearPendingSession(in: dir)
-        // Stamp precedence (spec 2026-07-23): EventKit match → preroll
-        // window title → plain "appName meeting · date".
+        // Title precedence (spec 2026-07-23, reordered 2026-09-06): the
+        // conferencing TAB TITLE from shyn's own browser index → EventKit
+        // match → preroll window title → plain "appName meeting · date".
+        //
+        // The tab now outranks the calendar. A tab that was open is evidence
+        // of what HAPPENED; a calendar entry is a record of what was PLANNED,
+        // and the two diverge constantly — a stale local copy, an event moved
+        // that morning, or a 3-hour Reclaim hold that merely overlaps. Lived
+        // 2026-09-06: seven meetings running shipped as "Google Chrome
+        // meeting" with the real name sitting in the corpus the whole time.
+        // Costs no permission the browser reader does not already hold, which
+        // is the point — the calendar is now opportunistic, never depended on.
+        //
+        // EventKit keeps its other, unrelated job above: the attendee roster
+        // that decides far-side speaker labels. Title and roster are sourced
+        // independently on purpose.
         let stamp = stampEarly
-        // Which fallback won, so a generic doc title is diagnosable next time.
-        dbg("stamp: \(stamp != nil ? "eventkit" : (windowTitle != nil ? "window" : "none")) "
-            + "(calendar tcc=\(calendarAccessAuthorized()))")
+        let tabTitle = conferencingTabTitle(
+            visits: await client.browserVisits(from: start - tabTitleLeadInSeconds, to: end),
+            sessionStart: start, sessionEnd: end)
+        // Which rung won, so a generic doc title is diagnosable next time.
+        let rung = tabTitle != nil ? "tab"
+            : (stamp != nil ? "eventkit" : (windowTitle != nil ? "window" : "none"))
+        dbg("title: \(rung) (calendar tcc=\(calendarAccessAuthorized()), ax=\(AXIsProcessTrusted()))")
         let payload = meetingPayload(bundleId: bundleId, appName: appName,
                                      startEpoch: start, endEpoch: end, transcript: transcript,
-                                     eventTitle: stamp?.title ?? windowTitle,
+                                     eventTitle: tabTitle ?? stamp?.title ?? windowTitle,
                                      attendees: stamp?.attendees ?? [])
         if await ship(payload) {
             purgeAudio(sessionDir: dir)   // byte-honest: audio gone on ingest ack
@@ -537,6 +555,7 @@ actor MeetingAgent {
             modelDir: URL(fileURLWithPath: home + "/models/whisperkit"))
         stats.tcc.mic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         stats.tcc.calendar = calendarAccessAuthorized()
+        stats.tcc.ax = AXIsProcessTrusted()
         _ = await ship()   // retry any buffered transcripts opportunistically
         try? await client.postMeetingStats(stats)
     }

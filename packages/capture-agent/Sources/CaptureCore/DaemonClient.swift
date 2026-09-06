@@ -67,6 +67,23 @@ public final class DaemonClient: Sendable {
         _ = try await call(method: "captureStats", params: obj)
     }
 
+    /// Browser rows the daemon saw in a window, for naming a recording after
+    /// the conferencing tab that was open during it. Returns [] on any failure
+    /// — a daemon that is down, an older daemon with no such method, a shape
+    /// that does not parse. Naming is a nicety; it must never cost a
+    /// transcript, so every error degrades to the next rung of the ladder.
+    public func browserVisits(from: Int, to: Int) async -> [BrowserVisit] {
+        guard let result = try? await call(method: "browserVisits",
+                                           params: ["timeFrom": from, "timeTo": to]),
+              let rows = result["visits"] as? [[String: Any]] else { return [] }
+        return rows.compactMap { row in
+            guard let ts = row["ts"] as? Int,
+                  let title = row["title"] as? String,
+                  let uri = row["uri"] as? String else { return nil }
+            return BrowserVisit(ts: ts, title: title, url: uri)
+        }
+    }
+
     /// Anonymous usage event. Fire-and-forget by design: the daemon decides
     /// whether analytics is on at all (this agent never reads consent), and a
     /// telemetry failure must never surface to the caller or interrupt a

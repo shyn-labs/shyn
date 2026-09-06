@@ -73,6 +73,25 @@ export async function startServer(opts: {
       return engine.search(p);
     },
     recent: (p) => { track("recent_activity_called"); return engine.recent(p); },
+    // Browser rows in a time window, for the meeting agent's title lookup: the
+    // conferencing tab open during a recording carries the meeting's real name
+    // (`Meet – Weekly Ops Review`), which beats a calendar that
+    // may be stale and needs no permission the reader doesn't already have.
+    //
+    // NOT folded into `recent`, which emits recent_activity_called — an agent
+    // naming its own recording is not the user reaching for their memory, and
+    // counting it would inflate the one metric that says whether recall is
+    // used at all. Untracked by design; it reads nothing the agent's own
+    // documents don't already contain.
+    // Wrapped in an object rather than returned bare: DaemonClient.call on the
+    // Swift side unwraps `result` as a dictionary and would silently hand back
+    // an empty one for a top-level array.
+    browserVisits: (p) => ({
+      visits: engine.recent({
+        timeFrom: p.timeFrom, timeTo: p.timeTo,
+        sources: ["browser"], order: "asc", limit: p.limit ?? 200,
+      }),
+    }),
     document: (p) => { track("get_document_called"); return engine.document(p); },
     // Long-running by nature (scrypt + a whole-corpus stream), so the CLI calls
     // these with a generous timeout rather than the default.

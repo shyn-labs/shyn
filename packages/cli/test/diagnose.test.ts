@@ -15,7 +15,7 @@ const FAKE_STATUS = {
     { name: "safari", ok: false, reason: "needs Full Disk Access", ingested: 0, deduped: 0 },
   ],
   capture: { agent: "reporting", tcc: { ax: true, screen: false },
-    meeting: { state: "idle", tcc: { mic: true, audio: true }, modelReady: true } },
+    meeting: { state: "idle", tcc: { mic: true, audio: true, calendar: true, ax: false }, modelReady: true } },
 };
 
 function deps(over: Partial<DiagnoseDeps> = {}): DiagnoseDeps {
@@ -109,5 +109,19 @@ describe("diagnosticsMailtoUrl", () => {
     const url = diagnosticsMailtoUrl("x".repeat(20000));
     expect(url.length).toBeLessThan(12000);
     expect(decodeURIComponent(url)).toContain("[truncated");
+  });
+});
+
+describe("meeting naming ladder permissions", () => {
+  // Lived 2026-09-06: both rungs of the meeting naming ladder (EventKit stamp,
+  // then window title) were dead — the local calendar copy was stale and
+  // com.shyn.meeting had Accessibility denied — and `shyn diagnose` reported
+  // neither, so the only visible symptom was meetings titled "Google Chrome
+  // meeting". A permission that silently degrades naming must still print.
+  it("prints the calendar and accessibility grants behind meeting titles", async () => {
+    const text = await buildDiagnostics(deps());
+    const line = text.split("\n").find((l) => l.startsWith("meeting:"))!;
+    expect(line).toContain("calendar tcc: yes");
+    expect(line).toContain("ax tcc: no");
   });
 });

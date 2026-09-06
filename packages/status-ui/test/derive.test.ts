@@ -428,6 +428,29 @@ describe("calendar access (meeting stamping)", () => {
     const oldAgent = deriveView({ ok: true, status: healthyStatus() }, baseCtx());
     expect(oldAgent.rows.find((r) => r.label === "Calendar")).toBeUndefined();
   });
+
+  // Lived 2026-09-06: com.shyn.meeting had Accessibility auth_value=0 while
+  // com.shyn.capture had 2, so meetingWindowTitle() returned nil on EVERY
+  // session and the window-title rung of the naming ladder was silently dead.
+  // Seven consecutive meetings landed on the "Google Chrome meeting" fallback
+  // and the user read that as "shyn isn't capturing meetings". Nothing in
+  // `shyn status` said a word, because tcc carried no `ax` key at all.
+  it("ax false → muted informational row naming the consequence", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ tcc: { mic: true, audio: true, calendar: true, ax: false } }) }, baseCtx());
+    expect(vm.tray).toBe("healthy");
+    const row = vm.rows.find((r) => r.label === "Window titles")!;
+    expect(row).toMatchObject({ tone: "muted", value: "not granted" });
+    expect(row.hint).toContain("Accessibility");
+  });
+
+  it("ax true → no row; older agent without the key → no row", () => {
+    const withAx = deriveView({ ok: true,
+      status: withMeeting({ tcc: { mic: true, audio: true, calendar: true, ax: true } }) }, baseCtx());
+    expect(withAx.rows.find((r) => r.label === "Window titles")).toBeUndefined();
+    const oldAgent = deriveView({ ok: true, status: healthyStatus() }, baseCtx());
+    expect(oldAgent.rows.find((r) => r.label === "Window titles")).toBeUndefined();
+  });
 });
 
 describe("in-app update states", () => {

@@ -481,3 +481,36 @@ describe("analytics.track RPC", () => {
     expect(r.ok).toBe(true);
   });
 });
+
+// The meeting agent's title lookup. Separate from `recent` on purpose: that
+// handler emits recent_activity_called, and an agent naming its own recording
+// is not the user reaching for their memory. Counting it would have inflated
+// the one metric that says whether anybody uses recall.
+describe("browserVisits (meeting title lookup)", () => {
+  const ing = (uri: string, title: string, ts: number) =>
+    rpcCall(sock, "ingest", { source: "browser", uri, title, ts, text: `${title}\n${uri}` });
+
+  it("returns browser rows inside the window, ascending, and nothing else", async () => {
+    await ing("https://meet.google.com/aaa-bbbb-ccc", "Meet", 1000);
+    await ing("https://meet.google.com/aaa-bbbb-ccc?j=1", "Meet – Weekly Ops Review", 1010);
+    await ing("https://mail.google.com/mail/u/0", "Inbox (8)", 1020);
+    await ing("https://meet.google.com/zzz-yyyy-xxx", "Meet – Way Later", 99_000);
+    await rpcCall(sock, "ingest", {
+      source: "notes", uri: "note://x", title: "A note", ts: 1015, text: "A note",
+    });
+
+    const { visits: rows } = await rpcCall(sock, "browserVisits",
+      { timeFrom: 900, timeTo: 1100 }) as { visits: { uri: string; title: string; ts: number }[] };
+
+    expect(rows.map((r) => r.title))
+      .toEqual(["Meet", "Meet – Weekly Ops Review", "Inbox (8)"]);
+    expect(rows.every((r) => r.ts >= 900 && r.ts <= 1100)).toBe(true);
+  });
+
+  it("caps the row count so a busy window cannot flood the socket", async () => {
+    for (let i = 0; i < 40; i++) await ing(`https://example.com/${i}`, `Page ${i}`, 2000 + i);
+    const { visits: rows } = await rpcCall(sock, "browserVisits",
+      { timeFrom: 1900, timeTo: 3000, limit: 10 }) as { visits: unknown[] };
+    expect(rows.length).toBe(10);
+  });
+});

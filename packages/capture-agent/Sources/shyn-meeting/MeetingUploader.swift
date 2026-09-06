@@ -21,7 +21,17 @@ func sweepOrphanAudio(root: URL, olderThanSeconds: Double = 86_400) {
 // --- Stats (posted under the top-level "meeting" key; the daemon merges
 // captureStats posts by top-level key so screen + meeting agents coexist) ---
 
-struct MeetingTcc: Codable, Sendable { var mic: Bool; var audio: Bool; var calendar: Bool = false }
+// `ax` is Accessibility, and it is reported for one reason: it is the ONLY
+// signal that the window-title rung of the naming ladder is alive. Lived
+// 2026-09-06 — com.shyn.meeting sat at Accessibility auth_value=0 while
+// com.shyn.capture had it granted, so meetingWindowTitle() returned nil on
+// every session. Seven meetings in a row were filed as "Google Chrome
+// meeting", and the user reasonably read unfindable records as "shyn isn't
+// capturing meetings". `shyn status` had nothing to say because this key did
+// not exist. A permission that only degrades naming still has to be visible.
+struct MeetingTcc: Codable, Sendable {
+    var mic: Bool; var audio: Bool; var calendar: Bool = false; var ax: Bool = false
+}
 
 struct MeetingStats: Codable, Sendable {
     var state: String = "idle"

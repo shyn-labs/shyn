@@ -18,7 +18,7 @@ export type DaemonStatus = {
 export type MeetingBlock = {
   state: string; meetingsCaptured: number; lastTranscribedTs: number;
   modelReady: boolean;
-  tcc: { mic: boolean; audio: boolean; calendar?: boolean };  // calendar: agents ≥ stamping
+  tcc: { mic: boolean; audio: boolean; calendar?: boolean; ax?: boolean };  // calendar/ax: agents ≥ stamping
   sessionStartedAt?: number; sessionApp?: string;
   whisperDownloading?: boolean;
   // 0..1 fraction, present only while state === "transcribing"; absent from
@@ -193,6 +193,14 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
         if (m.tcc.calendar === false)
           rows.push({ label: "Calendar", value: "not granted", tone: "muted",
             hint: "optional — without it, meetings won't be titled from your calendar" });
+        // The second naming rung. Same shape as Calendar: optional, muted,
+        // never a warning — but it has to SAY something, because a meeting
+        // filed as "Google Chrome meeting" is the only symptom the user ever
+        // sees, and it reads as lost data rather than a missing permission.
+        if (m.tcc.ax === false)
+          rows.push({ label: "Window titles", value: "not granted", tone: "muted",
+            hint: "optional — grant shyn-meeting Accessibility to title meetings "
+              + "your calendar doesn't cover" });
       }
     } else {
       rows.push({ label: "Meeting agent", value: "not reporting", tone: "warn", hint: SILENT_HINT });

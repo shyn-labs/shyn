@@ -151,12 +151,17 @@ describe("call sites reach a real queue", () => {
     try {
       await rpcCall(sock, "search", { query: "a private search phrase", limit: 1 });
       await rpcCall(sock, "recent", { hours: 1 });
+      // The agent's own title lookup must stay OUT of the counts: it is not
+      // the user reaching for their memory, and counting it would inflate the
+      // one metric that says whether recall gets used.
+      await rpcCall(sock, "browserVisits", { timeFrom: 0, timeTo: 9_999_999_999 });
       await rpcCall(sock, "forget", { confirm: true, source: "screen" });
       await q.flush();
 
       const names = sent.map((r) => r.event);
       expect(names).toContain("search_memory_called");
       expect(names).toContain("recent_activity_called");
+      expect(names.filter((n) => n === "recent_activity_called")).toHaveLength(1);
       expect(names).toContain("forget_called");
       // The whole point: the query text must be nowhere in what would ship.
       expect(JSON.stringify(sent)).not.toContain("private search phrase");

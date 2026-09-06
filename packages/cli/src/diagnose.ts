@@ -91,7 +91,13 @@ export async function buildDiagnostics(deps: DiagnoseDeps): Promise<string> {
     const tcc = s.capture?.tcc ?? {};
     lines.push(`capture: agent ${s.capture?.agent ?? "not-reporting"} · screen tcc: ${yn(tcc.screen)} · ax tcc: ${yn(tcc.ax)}`);
     const m = s.capture?.meeting;
-    if (m) lines.push(`meeting: ${m.state} · mic tcc: ${yn(m.tcc?.mic)} · audio tcc: ${yn(m.tcc?.audio)} · whisper ready: ${yn(m.modelReady)}`);
+    // calendar and ax are the two rungs of the meeting naming ladder. Neither
+    // blocks capture, so both were left out — which made a meeting filed as
+    // "Google Chrome meeting" undiagnosable from a bug report (lived
+    // 2026-09-06: Accessibility denied for months, nothing said so).
+    if (m) lines.push(`meeting: ${m.state} · mic tcc: ${yn(m.tcc?.mic)} · audio tcc: ${yn(m.tcc?.audio)}`
+      + ` · calendar tcc: ${yn(m.tcc?.calendar)} · ax tcc: ${yn(m.tcc?.ax)}`
+      + ` · whisper ready: ${yn(m.modelReady)}`);
     lines.push(`mcp: last hello ${s.lastMcpHelloTs ? new Date(s.lastMcpHelloTs * 1000).toISOString() : "never"}`);
     lines.push(`index: ${s.documents} docs · ${s.chunks} chunks · ${s.vectors} vectors · ${s.failedEmbeds} failed embeds`);
   }
