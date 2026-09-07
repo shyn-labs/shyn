@@ -25,12 +25,20 @@ public struct PendingSession: Codable, Sendable {
     public var windowTitle: String?
     public var reason: String
     public var attempts: Int
+    /// Set only for a manually started session (`shyn meeting start "…"`).
+    /// Carried through the sidecar so a crash mid-recording recovers the name
+    /// the user typed — a manual session has no tab and no calendar entry to
+    /// re-derive it from, so losing it here loses it for good. Optional with a
+    /// default so sidecars written by older agents still decode.
+    public var manualTitle: String?
 
     public init(start: Int, end: Int, bundleId: String?, appName: String,
-                windowTitle: String?, reason: String, attempts: Int = 1) {
+                windowTitle: String?, reason: String, attempts: Int = 1,
+                manualTitle: String? = nil) {
         self.start = start; self.end = end; self.bundleId = bundleId
         self.appName = appName; self.windowTitle = windowTitle
         self.reason = reason; self.attempts = attempts
+        self.manualTitle = manualTitle
     }
 }
 

@@ -61,16 +61,15 @@ extension DaemonClient {
     }
 }
 
-// --- One-shot control file written by `shyn meeting stop|cancel` (CLI
-// Task 10); the agent consumes (deletes) it on read. ---
-
-enum MeetingControl: String { case stop, cancel }
+// --- One-shot control file written by `shyn meeting start|stop|cancel` and by
+// the menu bar; the agent consumes (deletes) it on read. Parsing itself lives
+// in CaptureCore/MeetingControl.swift, where the test target can reach it. ---
 
 func consumeMeetingControl(home: String) -> MeetingControl? {
     let path = home + "/meeting-control.json"
     guard let data = FileManager.default.contents(atPath: path) else { return nil }
+    // Delete before parsing, not after: an unparseable file that survived the
+    // read would be retried every tick forever.
     try? FileManager.default.removeItem(atPath: path)
-    guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let action = obj["action"] as? String else { return nil }
-    return MeetingControl(rawValue: action)
+    return parseMeetingControl(data)
 }

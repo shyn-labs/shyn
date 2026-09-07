@@ -10,7 +10,7 @@ import { rpcCall, isDaemonDownError } from "@shyn/daemon/rpc";
 import { extractText, getDocumentProxy } from "unpdf";
 import { installDaemon, uninstallDaemon, installCaptureAgent, installMeetingAgent, installStatusApp, LAUNCHD_LABEL } from "./launchd.js";
 import { pauseCapture, resumeCapture, addExclude } from "./capture-config.js";
-import { requestMeetingStop, requestMeetingCancel } from "./meeting-control.js";
+import { requestMeetingStart, requestMeetingStop, requestMeetingCancel } from "./meeting-control.js";
 import { runSetup } from "./setup.js";
 import { buildDiagnostics, diagnosticsMailtoUrl } from "./diagnose.js";
 
@@ -349,15 +349,24 @@ export async function runCli(argv: string[], print: (s: string) => void = consol
         const s = await rpcCall(sock(), "status", {});
         return print(JSON.stringify(s.capture?.meeting ?? { agent: "not-reporting" }, null, 2));
       }
+      if (sub === "start") {
+        // Everything after the verb is the title, unquoted or quoted alike, so
+        // `shyn meeting start field team standup` does what it looks like.
+        const title = rest.slice(1).join(" ").trim() || undefined;
+        requestMeetingStart(shynHome(), title);
+        return print(title
+          ? `recording requested: ${title} — shyn meeting stop to end`
+          : "recording requested — shyn meeting stop to end");
+      }
       if (sub === "stop") { requestMeetingStop(shynHome()); return print("meeting stop requested"); }
       if (sub === "cancel") { requestMeetingCancel(shynHome()); return print("meeting cancel requested"); }
-      return print("usage: shyn meeting <status|stop|cancel>");
+      return print("usage: shyn meeting <status|start [title]|stop|cancel>");
     }
     if (cmd === "exclude") {
       if (!rest[0]) return print("usage: shyn exclude <bundle-id|title-regex>");
       addExclude(cfgPath(), rest[0]); return print(`excluded: ${rest[0]}`);
     }
-    print("usage: shyn <ingest <path> | status | search <query> | show <uri> [--source <source>] | export <path> | import <path> | stats [--days N] | diagnose [--mail] | forget [--source|--doc|--from|--to] | sync [--full] | install | uninstall [--purge] | setup | pause [30m|2h|until-tomorrow] | resume | exclude <bundle-id|title-regex> | meeting <status|stop|cancel>>");
+    print("usage: shyn <ingest <path> | status | search <query> | show <uri> [--source <source>] | export <path> | import <path> | stats [--days N] | diagnose [--mail] | forget [--source|--doc|--from|--to] | sync [--full] | install | uninstall [--purge] | setup | pause [30m|2h|until-tomorrow] | resume | exclude <bundle-id|title-regex> | meeting <status|start [title]|stop|cancel>>");
   } catch (err) {
     if (isDaemonDownError(err)) print(DAEMON_DOWN_MESSAGE);
     else print(`error: ${(err as Error).message}`);

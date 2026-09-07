@@ -61,9 +61,14 @@ export function setMeetingModel(home: string, model: MeetingModel): void {
   writeCfg(home, { ...cfg, meeting: { ...meeting, whisperModel: model } });
 }
 
-function writeMeetingControl(home: string, action: "stop" | "cancel"): void {
+function writeMeetingControl(home: string, action: "start" | "stop" | "cancel",
+                            title?: string): void {
   writeFileSync(join(home, "meeting-control.json"),
-    JSON.stringify({ action, ts: Math.floor(Date.now() / 1000) }) + "\n");
+    JSON.stringify({ action, title, ts: Math.floor(Date.now() / 1000) }) + "\n");
 }
+// No title from the menu bar: a popover that closes on blur is the wrong place
+// to type one, and an unnamed manual recording still beats no recording. Name
+// it from the CLI (`shyn meeting start "…"`) when the name matters.
+export const meetingStart = (home: string) => writeMeetingControl(home, "start");
 export const meetingStop = (home: string) => writeMeetingControl(home, "stop");
 export const meetingCancel = (home: string) => writeMeetingControl(home, "cancel");

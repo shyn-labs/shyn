@@ -13,7 +13,7 @@ import { poll } from "./poll.js";
 import { live } from "./live.js";
 import { deriveView, type TrayState, type ViewModel, CLAUDE_ADD_COMMAND } from "./derive.js";
 import {
-  pauseCapture, resumeCapture, readPausedUntil, meetingStop, meetingCancel,
+  pauseCapture, resumeCapture, readPausedUntil, meetingStart, meetingStop, meetingCancel,
   readMeetingModel, setMeetingModel,
   type PauseSpec, type MeetingModel,
 } from "./controls.js";
@@ -296,6 +296,7 @@ if (!app.requestSingleInstanceLock()) {
       try {
         if (name === "pause") pauseCapture(home, (arg ?? "30m") as PauseSpec, Math.floor(Date.now() / 1000));
         else if (name === "resume") resumeCapture(home);
+        else if (name === "meeting-start") meetingStart(home);
         else if (name === "meeting-stop") meetingStop(home);
         else if (name === "meeting-cancel") meetingCancel(home);
         else if (name === "meeting-model") {

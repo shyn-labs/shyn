@@ -62,6 +62,12 @@ export type ViewModel = {
   tray: TrayState;
   verdict: string;
   meeting: { app: string; startedAt: number; state: "recording" } | null;
+  // Whether to offer a manual start. Detection is audio-shaped — the commit
+  // gate requires far-side voice on the system channel — so a room, where
+  // every voice arrives on the microphone, can never trigger it. This is the
+  // only way to record one, which is why the affordance has to be visible
+  // rather than CLI-only.
+  canRecord: boolean;
   rows: Row[];
   stats: Row[];
   week: Row[];
@@ -123,7 +129,7 @@ const SILENT_HINT = "agent installed but silent — crashed or quarantined? (see
 export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
   if (!poll.ok) {
     return {
-      tray: "warning", verdict: "daemon not running", meeting: null,
+      tray: "warning", verdict: "daemon not running", meeting: null, canRecord: false,
       rows: [{ label: "Daemon", value: "unreachable", tone: "err", hint: START_HINT }],
       stats: [], week: [], paused: false, modelChoice: null, update: null,
       // A notice still shows with the daemon down — "upgrade, your build is
@@ -358,7 +364,14 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
   const setup: SetupView = complete ? { kind: "complete" }
     : { kind: "steps", steps, done, total: steps.length };
 
-  return { tray, verdict, meeting, rows, stats, week, paused, modelChoice, update,
+  // Offer a manual start only when one would actually work: the agent is
+  // installed AND reporting (so something is there to consume the control
+  // file), the recorder is free (idle — not recording, not still transcribing),
+  // and the user has not paused capture. Anything else and the button would be
+  // a lie.
+  const canRecord = ctx.installed.meeting && !!m && m.state === "idle" && !paused;
+
+  return { tray, verdict, meeting, canRecord, rows, stats, week, paused, modelChoice, update,
            notice: ctx.notice ?? null, setup, diagnostics,
            analytics: ctx.analyticsEnabled === undefined
              ? null : { enabled: ctx.analyticsEnabled } };

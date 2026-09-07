@@ -102,6 +102,12 @@ actor MeetingAgent {
     // (muted-listener meetings never voice the mic).
     private var sessionMeetingAppFrontmost = false
     // Calendar sweep (hourly): 0 means "never run", so the first tick does it.
+    // A manually started session. The detector knows nothing about it (its
+    // state stays .idle), so every guard that keys off detector state has to
+    // account for this flag too — the max-duration cap especially, or a
+    // forgotten manual recording would run until the disk filled.
+    private var manualSession = false
+    private var manualTitle: String? = nil
     private var lastCalendarSync = 0
     private var calendarTask: Task<Void, Never>? = nil
 
@@ -112,7 +118,12 @@ actor MeetingAgent {
 
         // `shyn meeting stop|cancel` control file (one-shot, consumed here).
         if let control = consumeMeetingControl(home: home) {
-            switch control {
+            switch control.action {
+            // An explicit start IS the verification — it bypasses the commit
+            // gate entirely, which is the whole point: a room puts every voice
+            // on the mic and nothing on the system channel, so sysVoiced can
+            // never be true and the gate would purge it every time.
+            case .start:  await startManualSession(title: control.title, cfg: cfg)
             // stop during an unverified pre-roll discards (nothing to keep).
             // cancelUntilQuiet, not cancel: the call the user just skipped is
             // still holding the devices — plain cancel re-detected it ~10s
@@ -246,7 +257,7 @@ actor MeetingAgent {
         }
 
         // Hard cap on runaway sessions.
-        if state == .recording, sessionDir != nil,
+        if state == .recording || manualSession, sessionDir != nil,
            now - Double(sessionStart) > Double(cfg.maxDurationMinutes) * 60 {
             dbg("max duration reached — ending")
             await endSession(transcribe: committed, cfg: cfg)
@@ -301,6 +312,39 @@ actor MeetingAgent {
         }
     }
 
+    // `shyn meeting start` / the menu bar. Records from wherever the Mac can
+    // hear — a room, a speakerphone, a call shyn's detector never noticed —
+    // and commits immediately rather than waiting on the gate, because the
+    // gate's mandatory far-side-voice term can never be satisfied by a
+    // microphone-only recording. The user asking for it is the verification.
+    //
+    // For an in-person recording every voice lands on the mic and the system
+    // channel stays silent, so farSideLabel returns .unattributed downstream:
+    // the transcript ships unprefixed with a note saying speakers could not be
+    // told apart, rather than asserting "Me:" over a whole room.
+    private func startManualSession(title: String?, cfg: MeetingConfig) async {
+        guard cfg.enabled else {
+            logErr("[meeting] start ignored — meeting capture is disabled in config")
+            notify("Recording not started", "Meeting capture is turned off in shyn's settings.")
+            return
+        }
+        // Already running: adopt the name if one was given (the user may be
+        // naming a call shyn started on its own), but never stack a second
+        // recorder on the same devices.
+        guard sessionDir == nil, !(await recorder.recording) else {
+            if let title { manualTitle = title }
+            logErr("[meeting] start ignored — a session is already recording")
+            return
+        }
+        manualTitle = title
+        await startPreroll(cfg: cfg, meetingAppFrontmost: false)
+        // startPreroll clears sessionDir on failure and has already logged and
+        // notified; don't claim a recording that isn't running.
+        guard sessionDir != nil else { manualTitle = nil; return }
+        manualSession = true
+        commitSession()
+    }
+
     private func commitSession() {
         committed = true
         stats.sessionStartedAt = sessionStart
@@ -316,10 +360,16 @@ actor MeetingAgent {
             _ = writePendingSession(PendingSession(
                 start: sessionStart, end: 0, bundleId: sessionBundleId,
                 appName: sessionAppName, windowTitle: sessionWindowTitle,
-                reason: "interrupted while recording", attempts: 0), in: dir)
+                reason: "interrupted while recording", attempts: 0,
+                manualTitle: manualTitle), in: dir)
         }
-        notify("Recording meeting", "\(sessionAppName) — `shyn meeting stop` to end early.")
-        dbg("committed (voice verified on both channels)")
+        // A manual recording is named by what the user typed, not by whatever
+        // happened to be frontmost — "Recording meeting / Ghostty" for a
+        // conversation in a room is nonsense.
+        notify("Recording meeting",
+               "\(manualTitle ?? sessionAppName) — `shyn meeting stop` to end early.")
+        dbg(manualSession ? "committed (manual start)"
+                          : "committed (voice verified on both channels)")
     }
 
     // Tears the session down synchronously (fast: stop recorder, capture
@@ -344,12 +394,16 @@ actor MeetingAgent {
         sessionWindowTitle = nil
         prerollStart = nil
         committed = false
+        let wasManualTitle = manualTitle
+        manualSession = false
+        manualTitle = nil
         sessionMeetingAppFrontmost = false
         stats.sessionStartedAt = nil
         stats.sessionApp = nil
         guard transcribe else { purgeAudio(sessionDir: dir); dbg("canceled — audio purged"); return }
         startTranscription(dir: dir, urls: urls, start: start, end: end,
-                           bundleId: bundleId, appName: appName, windowTitle: windowTitle, cfg: cfg)
+                           bundleId: bundleId, appName: appName, windowTitle: windowTitle,
+                           manualTitle: wasManualTitle, cfg: cfg)
     }
 
     // Kicks off a transcription, chained onto any in-flight one so only a
@@ -358,14 +412,16 @@ actor MeetingAgent {
     // the whole chain.
     private func startTranscription(dir: URL, urls: (mic: URL, system: URL),
                                     start: Int, end: Int, bundleId: String?, appName: String,
-                                    windowTitle: String?, cfg: MeetingConfig) {
+                                    windowTitle: String?, manualTitle: String?,
+                                    cfg: MeetingConfig) {
         if pendingTranscriptions == 0 { transcribeProgress = 0 }   // don't snap a running % back to 0
         pendingTranscriptions += 1
         let prev = transcribeTask
         transcribeTask = Task {
             await prev?.value
             await self.runTranscription(dir: dir, urls: urls, start: start, end: end,
-                                        bundleId: bundleId, appName: appName, windowTitle: windowTitle, cfg: cfg)
+                                        bundleId: bundleId, appName: appName, windowTitle: windowTitle,
+                                        manualTitle: manualTitle, cfg: cfg)
         }
     }
 
@@ -374,7 +430,8 @@ actor MeetingAgent {
     // ANE grinds. finishTranscription always runs, even on an empty drop.
     private func runTranscription(dir: URL, urls: (mic: URL, system: URL),
                                   start: Int, end: Int, bundleId: String?, appName: String,
-                                  windowTitle: String?, cfg: MeetingConfig) async {
+                                  windowTitle: String?, manualTitle: String?,
+                                  cfg: MeetingConfig) async {
         defer { finishTranscription() }
         let outcome = await transcribeMeeting(mic: urls.mic, system: urls.system,
                                               model: cfg.whisperModel,
@@ -389,7 +446,8 @@ actor MeetingAgent {
             // the only irreplaceable thing here, so keep it and retry once the
             // model is present. Bounded by maxPendingAttempts and the 24h sweep.
             keepForRetry(dir: dir, start: start, end: end, bundleId: bundleId,
-                         appName: appName, windowTitle: windowTitle, reason: reason)
+                         appName: appName, windowTitle: windowTitle, reason: reason,
+                         manualTitle: manualTitle)
             // Only the failure CLASS, never the reason string: it can carry a
             // model path or a URL. The daemon would scrub it anyway; not
             // sending it at all is the stronger guarantee.
@@ -432,12 +490,15 @@ actor MeetingAgent {
             visits: await client.browserVisits(from: start - tabTitleLeadInSeconds, to: end),
             sessionStart: start, sessionEnd: end)
         // Which rung won, so a generic doc title is diagnosable next time.
-        let rung = tabTitle != nil ? "tab"
-            : (stamp != nil ? "eventkit" : (windowTitle != nil ? "window" : "none"))
+        // A name the user typed outranks everything inferred. Nothing shyn
+        // guesses can beat being told.
+        let rung = manualTitle != nil ? "manual"
+            : (tabTitle != nil ? "tab"
+            : (stamp != nil ? "eventkit" : (windowTitle != nil ? "window" : "none")))
         dbg("title: \(rung) (calendar tcc=\(calendarAccessAuthorized()), ax=\(AXIsProcessTrusted()))")
         let payload = meetingPayload(bundleId: bundleId, appName: appName,
                                      startEpoch: start, endEpoch: end, transcript: transcript,
-                                     eventTitle: tabTitle ?? stamp?.title ?? windowTitle,
+                                     eventTitle: manualTitle ?? tabTitle ?? stamp?.title ?? windowTitle,
                                      attendees: stamp?.attendees ?? [])
         if await ship(payload) {
             purgeAudio(sessionDir: dir)   // byte-honest: audio gone on ingest ack
@@ -455,7 +516,8 @@ actor MeetingAgent {
     // holding what the retry needs (the agent can restart in between). Attempts
     // are counted so a present-but-unusable model cannot spin the ANE forever.
     private func keepForRetry(dir: URL, start: Int, end: Int, bundleId: String?,
-                              appName: String, windowTitle: String?, reason: String) {
+                              appName: String, windowTitle: String?, reason: String,
+                              manualTitle: String?) {
         let attempts = (readPendingSession(in: dir)?.attempts ?? 0) + 1
         guard attempts <= maxPendingAttempts else {
             logErr("[meeting] transcription failed \(attempts)x — giving up, purging \(dir.lastPathComponent)")
@@ -463,7 +525,8 @@ actor MeetingAgent {
             return
         }
         let pending = PendingSession(start: start, end: end, bundleId: bundleId, appName: appName,
-                                     windowTitle: windowTitle, reason: reason, attempts: attempts)
+                                     windowTitle: windowTitle, reason: reason, attempts: attempts,
+                                     manualTitle: manualTitle)
         if writePendingSession(pending, in: dir) {
             logErr("[meeting] transcription failed (attempt \(attempts)): \(reason) — audio kept for retry")
         } else {
@@ -491,7 +554,8 @@ actor MeetingAgent {
                            urls: (mic: dir.appendingPathComponent("mic.wav"),
                                   system: dir.appendingPathComponent("system.wav")),
                            start: p.start, end: end, bundleId: p.bundleId,
-                           appName: p.appName, windowTitle: p.windowTitle, cfg: cfg)
+                           appName: p.appName, windowTitle: p.windowTitle,
+                           manualTitle: p.manualTitle, cfg: cfg)
     }
 
     // Ships calendar events as documents. Failures are logged and dropped: a

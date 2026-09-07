@@ -6,7 +6,7 @@ import type { ViewModel } from "../src/derive.js";
 const NOW = 1_783_700_000;
 
 const vm = (over: Partial<ViewModel> = {}): ViewModel => ({
-  tray: "healthy", verdict: "all systems go", meeting: null,
+  tray: "healthy", verdict: "all systems go", meeting: null, canRecord: false,
   rows: [{ label: "Daemon", value: "v0.2.0", tone: "ok" }],
   stats: [{ label: "Index", value: "16,951 docs · 41,000 vectors", tone: "muted" }],
   week: [],
@@ -192,5 +192,23 @@ describe("analytics toggle row", () => {
     const none = mount(render(vm({ analytics: null }), NOW));
     expect(none.querySelector('[data-action="analytics-toggle"]')).toBeNull();
     expect(none.textContent).not.toContain("Help improve the beta");
+  });
+});
+
+describe("manual record button", () => {
+  it("renders a record action when canRecord, and not otherwise", () => {
+    const on = render(vm({ canRecord: true }), NOW);
+    expect(on).toContain('data-action="meeting-start"');
+    const off = render(vm({ canRecord: false }), NOW);
+    expect(off).not.toContain('data-action="meeting-start"');
+  });
+
+  it("a live recording shows stop/cancel and never the record button", () => {
+    const out = render(vm({
+      canRecord: false,
+      meeting: { app: "Google Chrome", startedAt: NOW - 120, state: "recording" },
+    }), NOW);
+    expect(out).toContain('data-action="meeting-stop"');
+    expect(out).not.toContain('data-action="meeting-start"');
   });
 });

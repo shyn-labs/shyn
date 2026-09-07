@@ -453,6 +453,48 @@ describe("calendar access (meeting stamping)", () => {
   });
 });
 
+describe("manual recording affordance", () => {
+  const withMeeting = (m: object) => healthyStatus({
+    capture: { ...healthyStatus().capture,
+      meeting: { ...healthyStatus().capture.meeting!, ...m } },
+  });
+
+  // Detection is audio-shaped and cannot see a room: the commit gate requires
+  // far-side voice on the system channel, so an in-person conversation is
+  // invisible to it by construction. The menu bar is the way in, so the
+  // affordance has to be there whenever starting one would actually work.
+  it("idle meeting agent → can record", () => {
+    const vm = deriveView({ ok: true, status: healthyStatus() }, baseCtx());
+    expect(vm.canRecord).toBe(true);
+  });
+
+  it("already recording → no offer (the live card owns stop/cancel)", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ state: "recording", sessionStartedAt: 1_783_600_000 }) }, baseCtx());
+    expect(vm.canRecord).toBe(false);
+  });
+
+  it("transcribing → no offer; the recorder is still busy", () => {
+    const vm = deriveView({ ok: true, status: withMeeting({ state: "transcribing" }) }, baseCtx());
+    expect(vm.canRecord).toBe(false);
+  });
+
+  it("agent not installed, not reporting, or daemon down → no offer", () => {
+    expect(deriveView({ ok: true, status: healthyStatus() },
+      baseCtx({ installed: { capture: true, meeting: false } })).canRecord).toBe(false);
+    const noBlock = healthyStatus();
+    delete (noBlock.capture as { meeting?: unknown }).meeting;
+    expect(deriveView({ ok: true, status: noBlock }, baseCtx()).canRecord).toBe(false);
+    expect(deriveView({ ok: false }, baseCtx()).canRecord).toBe(false);
+  });
+
+  it("paused → no offer, since capture is off by the user's own choice", () => {
+    const vm = deriveView({ ok: true, status: healthyStatus() },
+      baseCtx({ pausedUntil: 1_783_700_000 + 600 }));
+    expect(vm.canRecord).toBe(false);
+  });
+});
+
 describe("in-app update states", () => {
   const upd = (over: object) => baseCtx({
     update: { latest: null, updating: false, failed: false, brewFound: true, ...over },

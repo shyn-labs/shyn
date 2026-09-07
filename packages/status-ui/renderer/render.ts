@@ -36,6 +36,13 @@ export function render(vm: ViewModel, nowSec: number): string {
     </div>
   </div>` : "";
 
+  // Manual start. Deliberately labelled for the case it exists to serve: shyn
+  // hears calls by itself, so anyone reaching for this button is in a room, on
+  // a speakerphone, or in a call it failed to notice.
+  const record = vm.canRecord
+    ? `<button data-action="meeting-start" class="wide">Record this conversation</button>`
+    : "";
+
   const controls = vm.paused
     ? `<button data-action="resume" class="wide">Resume capture</button>`
     : `<div class="pauses"><span class="lab">Pause</span>
@@ -126,7 +133,7 @@ export function render(vm: ViewModel, nowSec: number): string {
   ${setupRow}
   ${noticeRow}
   ${updateRow}
-  ${live}
+  ${live}${record}
   <section class="rows"><h2 class="section-lab">Health</h2>${vm.rows.map(rowHtml).join("")}</section>
   <section class="stats"><h2 class="section-lab">Index</h2>${vm.stats.map(rowHtml).join("")}</section>
   ${vm.week.length ? `<section class="stats"><h2 class="section-lab">This week</h2>${vm.week.map(rowHtml).join("")}</section>` : ""}
