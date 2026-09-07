@@ -74,6 +74,18 @@ without cutting the GitHub release, for a dry-run.
       voice-verified (pre-roll commit gate); before tagging, confirm the
       most recent real meeting auto-ended and produced a transcript
       (`pnpm shyn meeting status`, `pnpm shyn search "<something said>"`).
+- [ ] **`pnpm check:meeting-titles` green.** The step above asks whether a
+      transcript EXISTS. It passed on every release through September 2026 —
+      including the week seven consecutive meetings shipped as "Google Chrome
+      meeting · <date>", because a transcript existed every time and nobody
+      checked whether it could be found by name. This asks the harder
+      question: did every recent meeting get a title from a real source, or
+      did some fall through every rung of the ladder onto the app-name
+      fallback? Needs a running daemon and real captured meetings, so it is a
+      manual gate like the evals, not part of `release.sh`. A failure is not
+      necessarily a code defect — the two permission rungs (calendar, ax) and
+      the browser reader that feeds the tab rung are all environmental — but
+      it is always worth understanding before shipping.
 
 ## Notes
 

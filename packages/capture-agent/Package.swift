@@ -16,5 +16,11 @@ let package = Package(
             "CaptureCore", .product(name: "WhisperKit", package: "WhisperKit"),
         ]),
         .testTarget(name: "CaptureCoreTests", dependencies: ["CaptureCore"]),
+        // shyn-meeting carries the meeting lifecycle — over half the Swift in
+        // this package — and had no tests until 2026-09-07, because a module
+        // with top-level code cannot be imported. Entry.swift moved the
+        // process entry behind @main precisely to lift that restriction. See
+        // the note there before adding top-level code back.
+        .testTarget(name: "MeetingAgentTests", dependencies: ["shyn-meeting", "CaptureCore"]),
     ]
 )

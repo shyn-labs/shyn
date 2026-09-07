@@ -19,7 +19,8 @@
     "typecheck": "pnpm -r typecheck",
     "eval:keyword": "tsx packages/engine/eval/run-eval.ts keyword",
     "eval:hybrid": "tsx packages/engine/eval/run-eval.ts hybrid",
-    "eval:latency": "tsx packages/engine/eval/run-latency.ts"
+    "eval:latency": "tsx packages/engine/eval/run-latency.ts",
+    "check:meeting-titles": "node scripts/check-meeting-titles.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

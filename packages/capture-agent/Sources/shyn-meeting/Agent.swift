@@ -29,35 +29,6 @@ func logErr(_ s: String) {
     FileHandle.standardError.write(Data(logLine(s).utf8))
 }
 
-guard #available(macOS 14.2, *) else {
-    FileHandle.standardError.write(Data("shyn-meeting requires macOS 14.2+ (CoreAudio process tap)\n".utf8))
-    exit(1)
-}
-
-// selftest: exercise the meeting wire path (assemble → payload → ingest →
-// stats) without audio/TCC — mirrors shyn-capture's selftest.
-if CommandLine.arguments.contains("selftest") {
-    let segs = [
-        TranscriptSegment(start: 0.0, speaker: .me, text: "hello everyone, shall we start the synthetic standup"),
-        TranscriptSegment(start: 2.5, speaker: .others, text: "yes, agenda first please"),
-        TranscriptSegment(start: 5.0, speaker: .me, text: "retention decision is due today"),
-    ]
-    let now = Int(Date().timeIntervalSince1970)
-    let payload = meetingPayload(bundleId: "com.shyn.selftest", appName: "SelfTest",
-                                 startEpoch: now - 300, endEpoch: now,
-                                 transcript: assembleTranscript(segs))
-    do {
-        try await client.ingest(payload)
-        var stats = MeetingStats()
-        stats.state = "idle"; stats.meetingsCaptured = 1; stats.lastTranscribedTs = now
-        try await client.postMeetingStats(stats)
-        print("selftest OK: ingested \(payload.uri)")
-        exit(0)
-    } catch {
-        FileHandle.standardError.write(Data("selftest FAIL: \(error)\n".utf8)); exit(1)
-    }
-}
-
 // User-visible notification at the grace boundary (consent: spec §semi-auto).
 // UNUserNotificationCenter traps outside an .app bundle, so guard on identity.
 func notify(_ title: String, _ body: String) {
@@ -490,15 +461,24 @@ actor MeetingAgent {
             visits: await client.browserVisits(from: start - tabTitleLeadInSeconds, to: end),
             sessionStart: start, sessionEnd: end)
         // Which rung won, so a generic doc title is diagnosable next time.
-        // A name the user typed outranks everything inferred. Nothing shyn
-        // guesses can beat being told.
-        let rung = manualTitle != nil ? "manual"
-            : (tabTitle != nil ? "tab"
-            : (stamp != nil ? "eventkit" : (windowTitle != nil ? "window" : "none")))
-        dbg("title: \(rung) (calendar tcc=\(calendarAccessAuthorized()), ax=\(AXIsProcessTrusted()))")
+        // The ladder itself lives in CaptureCore and is tested there, including
+        // the all-rungs-nil case that shipped unnoticed for a week. Inlining it
+        // here again is exactly how that happened.
+        let chosen = chooseMeetingTitle(manual: manualTitle, tab: tabTitle,
+                                        eventKit: stamp?.title, window: windowTitle)
+        // Bottoming out is worth saying out loud, not just tracing: it means
+        // the document is about to be named after an app and a date, which is
+        // the shape of a record nobody can find again.
+        if chosen.rung == .none {
+            logErr("[meeting] no title from any source (calendar tcc="
+                   + "\(calendarAccessAuthorized()), ax=\(AXIsProcessTrusted())) — "
+                   + "filing under app name and date")
+        }
+        dbg("title: \(chosen.rung.rawValue) (calendar tcc=\(calendarAccessAuthorized()), "
+            + "ax=\(AXIsProcessTrusted()))")
         let payload = meetingPayload(bundleId: bundleId, appName: appName,
                                      startEpoch: start, endEpoch: end, transcript: transcript,
-                                     eventTitle: manualTitle ?? tabTitle ?? stamp?.title ?? windowTitle,
+                                     eventTitle: chosen.title,
                                      attendees: stamp?.attendees ?? [])
         if await ship(payload) {
             purgeAudio(sessionDir: dir)   // byte-honest: audio gone on ingest ack
@@ -700,4 +680,3 @@ actor MeetingAgent {
     NSApplication.shared.run()
     fatalError("NSApplication.run returned")
 }
-if #available(macOS 14.2, *) { runAgent() }   // unreachable else: guarded above
