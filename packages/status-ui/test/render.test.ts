@@ -203,6 +203,18 @@ describe("manual record button", () => {
     expect(off).not.toContain('data-action="meeting-start"');
   });
 
+  it("labels the action verb-first, without inventing a noun", () => {
+    // The label read "Record this conversation" until 2026-09-07. "this"
+    // claimed knowledge the app does not have — nothing was detected, so
+    // there is no "this" — and "conversation" was a second noun for what the
+    // CLI verb, the agent, the URI scheme and the status rows all call a
+    // meeting. A talk or a lecture is also the ordinary case here, since this
+    // button exists precisely because the room never voiced the far side.
+    const out = render(vm({ canRecord: true }), NOW);
+    expect(out).toContain(">Start recording<");
+    expect(out).not.toMatch(/conversation/i);
+  });
+
   it("a live recording shows stop/cancel and never the record button", () => {
     const out = render(vm({
       canRecord: false,

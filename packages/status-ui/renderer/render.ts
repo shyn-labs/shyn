@@ -36,11 +36,18 @@ export function render(vm: ViewModel, nowSec: number): string {
     </div>
   </div>` : "";
 
-  // Manual start. Deliberately labelled for the case it exists to serve: shyn
-  // hears calls by itself, so anyone reaching for this button is in a room, on
-  // a speakerphone, or in a call it failed to notice.
+  // Manual start. Verb-first and nounless, to match Stop/Cancel on the live
+  // card above — this is the same control at the other end of a session.
+  //
+  // It read "Record this conversation" until 2026-09-07. Wrong twice: "this"
+  // claimed knowledge the app does not have (nothing was detected, so there is
+  // no "this"), and "conversation" invented a second noun for what everything
+  // else in the product — the CLI verb, the agent, the URI scheme, the status
+  // rows — calls a meeting. It is also frequently not a conversation: a talk
+  // or a lecture is the ordinary case for a button that exists because the
+  // room never voiced the far-side channel.
   const record = vm.canRecord
-    ? `<button data-action="meeting-start" class="wide">Record this conversation</button>`
+    ? `<button data-action="meeting-start" class="wide">Start recording</button>`
     : "";
 
   const controls = vm.paused
