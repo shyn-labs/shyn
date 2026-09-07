@@ -62,6 +62,34 @@ export async function startServer(opts: {
     return run;
   };
 
+  // Whether the SCREEN agent is currently reporting — derived here, from the
+  // post timestamps the daemon already keeps, rather than trusted from a field
+  // the agent sets about itself.
+  //
+  // It never set one. The Swift Stats struct has no `agent` key, and this
+  // handler only ever supplied one in its null fallback, so the moment any
+  // agent posted, `capture.agent` went ABSENT and every reader defaulted it to
+  // "not-reporting" forever. `shyn diagnose` printed "agent not-reporting ·
+  // screen tcc: yes" — contradicting itself in one line, since it cannot know
+  // the TCC state of an agent that never reported (lived 2026-09-07).
+  //
+  // Keyed on any top-level key that is not `meeting`: the two agents merge
+  // into one blob under different keys, and a live meeting agent must not
+  // vouch for a dead screen one. Two heartbeat intervals is the same freshness
+  // rule `coverage` uses — one missed post is jitter, not an outage.
+  const screenAgentState = (): "reporting" | "not-reporting" => {
+    const now = Math.floor(Date.now() / 1000);
+    const posts = Object.entries(lastAgentPost)
+      .filter(([k]) => k !== "meeting")
+      .map(([, ts]) => ts);
+    const last = posts.length ? Math.max(...posts) : undefined;
+    return last !== undefined && now - last <= HEARTBEAT_SECONDS * 2
+      ? "reporting" : "not-reporting";
+  };
+  // `agent` after the spread on purpose: the daemon's view of reporting-ness
+  // wins over anything an agent might one day put in that key itself.
+  const captureBlock = () => ({ ...(lastCaptureStats ?? {}), agent: screenAgentState() });
+
   const handlers: Record<string, (p: any) => Promise<unknown> | unknown> = {
     ingest: (p) => { const r = engine.ingest(p); scheduleDrain(); return r; },
     search: (p) => {
@@ -147,7 +175,7 @@ export async function startServer(opts: {
       // Default (no extraStatus wired): there's no download tracking to speak
       // of, so treat the model as already fully downloaded.
       modelDownloadPct: 100, modelDownloaded: true,
-      readers: lastSync, capture: lastCaptureStats ?? { agent: "not-reporting" },
+      readers: lastSync, capture: captureBlock(),
       lastMcpHelloTs,
       ...(opts.extraStatus?.() ?? {}),
     }),

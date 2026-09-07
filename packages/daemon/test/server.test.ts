@@ -208,7 +208,9 @@ describe("daemon rpc", () => {
       skips: { excludedTitle: 2 }, method: { ax: 6, ocr: 1 } };
     await rpcCall(sock, "captureStats", stats);
     const s = await rpcCall(sock, "status", {});
-    expect(s.capture).toEqual(stats);
+    // The posted shape round-trips verbatim, plus `agent`, which the daemon
+    // derives rather than the agent declaring (see screenAgentState).
+    expect(s.capture).toEqual({ ...stats, agent: "reporting" });
   });
 
   it("status.capture defaults to not-reporting before any agent post", async () => {
@@ -512,5 +514,39 @@ describe("browserVisits (meeting title lookup)", () => {
     const { visits: rows } = await rpcCall(sock, "browserVisits",
       { timeFrom: 1900, timeTo: 3000, limit: 10 }) as { visits: unknown[] };
     expect(rows.length).toBe(10);
+  });
+});
+
+// Reporting-ness is the daemon's to state, not the agent's to claim.
+//
+// Lived 2026-09-07: the Swift Stats struct never carried an `agent` field, and
+// the daemon only ever set one in its null fallback. So the moment any agent
+// posted, `capture.agent` was simply ABSENT, every reader defaulted it to
+// "not-reporting", and `shyn diagnose` printed
+//   capture: agent not-reporting · screen tcc: yes · ax tcc: yes
+// contradicting itself inside one line — it cannot know the TCC state of an
+// agent that never reported. Third instance of one pattern, after the missing
+// `ax` key and `meeting.tcc.audio` not meaning what its name says.
+describe("capture.agent reporting state", () => {
+  it("no agent has ever posted → not-reporting", async () => {
+    const s = await rpcCall(sock, "status", {}) as { capture: { agent?: string } };
+    expect(s.capture.agent).toBe("not-reporting");
+  });
+
+  it("a fresh screen-agent post → reporting, with its stats intact", async () => {
+    await rpcCall(sock, "captureStats", { captures: 42, tcc: { ax: true, screen: true } });
+    const s = await rpcCall(sock, "status", {}) as
+      { capture: { agent?: string; captures?: number; tcc?: { ax: boolean } } };
+    expect(s.capture.agent).toBe("reporting");
+    expect(s.capture.captures).toBe(42);
+    expect(s.capture.tcc?.ax).toBe(true);
+  });
+
+  it("only the meeting agent posting does NOT make the screen agent reporting", async () => {
+    // The two agents post into the same merged blob under different top-level
+    // keys. A live meeting agent must never vouch for a dead screen agent.
+    await rpcCall(sock, "captureStats", { meeting: { state: "idle" } });
+    const s = await rpcCall(sock, "status", {}) as { capture: { agent?: string } };
+    expect(s.capture.agent).toBe("not-reporting");
   });
 });

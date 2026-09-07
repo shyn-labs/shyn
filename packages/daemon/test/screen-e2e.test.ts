@@ -64,7 +64,9 @@ describe("screen capture e2e (fake agent → real daemon)", () => {
       skips: { unchanged: 1 }, method: { ax: 3, ocr: 0 }, tcc: { ax: true, screen: false } };
     await rpcCall(sock, "captureStats", stats);
     s = await rpcCall(sock, "status", {});
-    expect(s.capture).toEqual(stats);
+    // Verbatim round-trip plus the daemon-derived `agent`: a fake agent that
+    // just posted is, correctly, reporting.
+    expect(s.capture).toEqual({ ...stats, agent: "reporting" });
 
     // 4. a 31-day-old screen doc → retention timer sweeps it byte-honest
     await rpcCall(sock, "ingest", screenPayload(bucketOld, "TestApp — Old",
