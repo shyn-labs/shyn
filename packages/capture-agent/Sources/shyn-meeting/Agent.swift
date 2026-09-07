@@ -99,8 +99,8 @@ actor MeetingAgent {
             // cancelUntilQuiet, not cancel: the call the user just skipped is
             // still holding the devices — plain cancel re-detected it ~10s
             // later and notified again, defeating the skip.
-            case .stop:   await endSession(transcribe: committed, cfg: cfg); detector.cancelUntilQuiet()
-            case .cancel: await endSession(transcribe: false, cfg: cfg); detector.cancelUntilQuiet()
+            case .stop:   await endSession(transcribe: committed, cfg: cfg); detector.cancelUntilQuiet(now: now)
+            case .cancel: await endSession(transcribe: false, cfg: cfg); detector.cancelUntilQuiet(now: now)
             }
             // `stop` hands transcription off to the background; reflect that
             // rather than flashing idle for a tick.
@@ -154,7 +154,7 @@ actor MeetingAgent {
         // live call is not until it ends. Rescue evidence lifts that once per
         // episode, so a wrong verdict costs 40s rather than the whole meeting.
         if detector.state == .idle, conferencingAppHoldingAudio() {
-            detector.noteRescueEvidence()
+            detector.noteRescueEvidence(now: now)
         }
         let state = detector.step(signal: signal, now: now, config: cfg)
         if state != prev { dbg("state \(prev.rawValue) → \(state.rawValue)") }
@@ -206,6 +206,8 @@ actor MeetingAgent {
                                   rescue: rescue, ageSeconds: age,
                                   graceSeconds: cfg.graceSeconds) {
             case .commit:
+                // Proof the gate works here: clear the purge backoff ladder.
+                detector.noteCommitted()
                 commitSession()
                 await client.track("meeting_capture_committed",
                                    ["rescued": !micVoiced])
@@ -223,7 +225,7 @@ actor MeetingAgent {
                 await client.track("meeting_capture_purged",
                                    ["sys_voiced": sysVoiced, "mic_voiced": micVoiced])
                 await endSession(transcribe: false, cfg: cfg)
-                detector.cancelUntilQuiet()
+                detector.cancelUntilQuiet(now: now)
             }
         }
 
@@ -279,7 +281,7 @@ actor MeetingAgent {
             // and re-notified every ~13s for the whole call.
             logErr("[meeting] recorder start failed: \(error)")
             stats.tcc.audio = false
-            detector.cancelUntilQuiet()
+            detector.cancelUntilQuiet(now: Date().timeIntervalSince1970)
         }
     }
 

@@ -19,7 +19,35 @@ public struct MeetingDetector: Sendable {
     // One rescue-driven re-arm per unbroken audio episode. Spent when used,
     // restored only by a genuinely quiet step (which also ends the episode).
     private var rescueReArmAvailable = true
+    // Consecutive purges with no committed session in between, and the wall
+    // clock before which suppression will not lift no matter what the signals
+    // do. Condition-based suppression alone has no floor: a room whose device
+    // activity flaps produced 26 notifications in 27 minutes, one every 57s,
+    // because every cycle found a "quiet" tick and re-armed (lived
+    // 2026-09-07). A failure repeating identically should get quieter.
+    private var consecutivePurges = 0
+    private var suppressedUntil: Double? = nil
+    private var quietSince: Double? = nil
+    /// Continuous quiet that counts as "the phantom episode really ended", as
+    /// opposed to one flapping sample. Long enough to outlast the dips that
+    /// drove the 57-second loop, short enough that a genuine gap between
+    /// meetings re-arms well before the next one starts.
+    static let quietReArmSeconds = 30.0
     public init() {}
+
+    /// Minimum seconds before suppression may lift, by consecutive purge count.
+    /// The FIRST retry is deliberately free: one wrong 40-second verdict cost
+    /// 57 minutes of a real meeting on 2026-08-31, and the rescue re-arm exists
+    /// so that mistake costs 40s. Backoff only bites once the gate has failed
+    /// repeatedly, which is evidence about the room, not about one bad tick.
+    static func purgeBackoffSeconds(consecutive: Int) -> Double {
+        switch consecutive {
+        case ..<2: return 0          // first purge: unchanged behaviour
+        case 2: return 120
+        case 3: return 300
+        default: return 900          // cap: re-check every 15 min, not every 57s
+        }
+    }
 
     // Audio-based primary trigger.
     //   CONTINUATION (recording): either side keeps it alive — one party
@@ -44,8 +72,23 @@ public struct MeetingDetector: Sendable {
         // the call lasts (observed live: one notification every ~57s). Only a
         // quiet observation ends the episode and re-arms detection.
         if suppressed {
-            if audio { audioSince = nil; return state }
+            if audio { quietSince = nil; audioSince = nil; return state }
+            // A quiet TICK used to be enough to re-arm, and that is the bug: in
+            // a room the start gate needs mic AND system simultaneously, so the
+            // conjunction breaks constantly and every break looked like "the
+            // episode ended". Two things can lift suppression now — the backoff
+            // expiring, or quiet that is actually SUSTAINED, which is real
+            // evidence the phantom is over rather than one flapping sample.
+            quietSince = quietSince ?? now
+            let sustainedQuiet = now - (quietSince ?? now) >= Self.quietReArmSeconds
+            let backoffHolds = (suppressedUntil ?? -.infinity) > now
+            if backoffHolds && !sustainedQuiet { audioSince = nil; return state }
             suppressed = false
+            suppressedUntil = nil
+            quietSince = nil
+            // Sustained quiet ends the episode outright, so the ladder resets:
+            // the next phantom is a new situation, not a continuation.
+            if sustainedQuiet { consecutivePurges = 0 }
         }
         // A quiet step ends the episode: restore the one rescue re-arm.
         if !audio { rescueReArmAvailable = true }
@@ -84,8 +127,20 @@ public struct MeetingDetector: Sendable {
     // For cancels where the episode's signals are known to persist (phantom
     // purge, user skip, recorder failure) — plain cancel() there means instant
     // re-detection and another notification.
-    public mutating func cancelUntilQuiet() {
-        cancel(); suppressed = true
+    public mutating func cancelUntilQuiet(now: Double) {
+        cancel()
+        suppressed = true
+        consecutivePurges += 1
+        let backoff = Self.purgeBackoffSeconds(consecutive: consecutivePurges)
+        suppressedUntil = backoff > 0 ? now + backoff : nil
+    }
+
+    /// A session that actually committed is proof the gate works in this
+    /// environment, so the backoff ladder resets. Without this, a long day of
+    /// real meetings would slowly go deaf on the strength of old failures.
+    public mutating func noteCommitted() {
+        consecutivePurges = 0
+        suppressedUntil = nil
     }
 
     // Lift suppression on rescue evidence, without waiting for silence.
@@ -99,8 +154,12 @@ public struct MeetingDetector: Sendable {
     // resurrect the notification-spam bug cancelUntilQuiet exists to prevent:
     // rescue evidence that stays true through repeated purges would re-notify
     // every ~57s for a whole call.
-    public mutating func noteRescueEvidence() {
-        guard suppressed, rescueReArmAvailable else { return }
+    public mutating func noteRescueEvidence(now: Double) {
+        // Rescue lifts the quiet-lock, never the backoff floor: the whole point
+        // of the floor is that rescue evidence stayed true through 26 straight
+        // purges and re-armed every one of them.
+        guard suppressed, rescueReArmAvailable,
+              (suppressedUntil ?? -.infinity) <= now else { return }
         rescueReArmAvailable = false
         suppressed = false
         audioSince = nil
