@@ -208,7 +208,7 @@ actor MeetingAgent {
             case .commit:
                 // Proof the gate works here: clear the purge backoff ladder.
                 detector.noteCommitted()
-                commitSession()
+                commitSession(cfg: cfg)
                 await client.track("meeting_capture_committed",
                                    ["rescued": !micVoiced])
             case .wait: break
@@ -233,8 +233,15 @@ actor MeetingAgent {
         if state == .recording || manualSession, sessionDir != nil,
            now - Double(sessionStart) > Double(cfg.maxDurationMinutes) * 60 {
             dbg("max duration reached — ending")
+            // Read before endSession, which clears the flag. The two paths end
+            // differently — a call re-commits within a minute, a manual session
+            // is over for good — so the notice cannot be written once.
+            let wasManual = manualSession
             await endSession(transcribe: committed, cfg: cfg)
             detector.cancel()
+            let n = maxDurationNotice(manual: wasManual,
+                                      maxDurationMinutes: cfg.maxDurationMinutes)
+            notify(n.title, n.body)
         }
 
         // Idle window: pick up a session whose transcription failed earlier
@@ -315,10 +322,10 @@ actor MeetingAgent {
         // notified; don't claim a recording that isn't running.
         guard sessionDir != nil else { manualTitle = nil; return }
         manualSession = true
-        commitSession()
+        commitSession(cfg: cfg)
     }
 
-    private func commitSession() {
+    private func commitSession(cfg: MeetingConfig) {
         committed = true
         stats.sessionStartedAt = sessionStart
         stats.sessionApp = sessionAppName
@@ -339,8 +346,13 @@ actor MeetingAgent {
         // A manual recording is named by what the user typed, not by whatever
         // happened to be frontmost — "Recording meeting / Ghostty" for a
         // conversation in a room is nonsense.
-        notify("Recording meeting",
-               "\(manualTitle ?? sessionAppName) — `shyn meeting stop` to end early.")
+        //
+        // The limit is stated HERE, not only when it bites. Knowing a recording
+        // stops at 3h is planning information at the start and an incident
+        // report three hours in.
+        let started = recordingStartedNotice(name: manualTitle ?? sessionAppName,
+                                             maxDurationMinutes: cfg.maxDurationMinutes)
+        notify(started.title, started.body)
         dbg(manualSession ? "committed (manual start)"
                           : "committed (voice verified on both channels)")
     }
