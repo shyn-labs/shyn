@@ -20,6 +20,17 @@ export class EmbedBackendUnavailableError extends Error {
   }
 }
 
+// Raised when the backend was torn down between acquiring it and using it —
+// the narrow window that the in-flight guard cannot cover, because the local
+// reference is already captured. An exception here is the whole win: the same
+// situation used to reach the native layer and segfault.
+export class EmbedderDisposedError extends Error {
+  constructor() {
+    super("embedding backend was disposed while acquiring it");
+    this.name = "EmbedderDisposedError";
+  }
+}
+
 export class ModelNotReadyError extends Error {
   constructor() {
     super("embedding model not ready");
@@ -85,6 +96,12 @@ export class Embedder {
   private backend: EmbedBackend | null = null;
   private loading: Promise<EmbedBackend> | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
+  // Embeds currently inside the native context, and who is waiting for that to
+  // reach zero. Freeing a llama context while a call is inside it is a
+  // segfault, not an exception: seven SIGSEGVs between 2 and 7 September 2026,
+  // every one `AddonContext::GetEmbedding` dereferencing freed memory at 0x7c.
+  private inFlight = 0;
+  private quietWaiters: (() => void)[] = [];
 
   constructor(
     private backendFactory: () => Promise<EmbedBackend>,
@@ -114,20 +131,56 @@ export class Embedder {
     this.idleTimer.unref();
   }
 
+  // CLEARS the idle timer rather than resetting it. Resetting — what touch()
+  // did before the call, which is the bug — left a five-minute fuse burning
+  // underneath every embed. A machine that sleeps mid-embed makes that fuse
+  // fire on wake, straight into a live native call.
+  private beginWork(): void {
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
+    this.inFlight++;
+  }
+
+  // The idle window starts at the LAST completion, so concurrent embeds cannot
+  // let one finisher arm a timer over its still-running siblings.
+  private endWork(): void {
+    this.inFlight--;
+    if (this.inFlight > 0) return;
+    const waiters = this.quietWaiters;
+    this.quietWaiters = [];
+    for (const w of waiters) w();
+    this.touch();
+  }
+
+  private whenQuiet(): Promise<void> {
+    if (this.inFlight === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => { this.quietWaiters.push(resolve); });
+  }
+
   private async embed(text: string): Promise<Int8Array> {
     const backend = await this.acquire();
-    this.touch();
-    return quantizeInt8(await backend.embed(text));
+    this.beginWork();
+    try {
+      // acquire() awaits, so a dispose can land between it resolving and this
+      // line — and `backend` is a local, so the freed object stays reachable.
+      // Fail loudly instead of walking into it.
+      if (this.backend !== backend) throw new EmbedderDisposedError();
+      return quantizeInt8(await backend.embed(text));
+    } finally {
+      this.endWork();
+    }
   }
 
   embedDoc(text: string): Promise<Int8Array> { return this.embed(text); }
   embedQuery(text: string): Promise<Int8Array> { return this.embed(QUERY_PREFIX + text); }
 
   async dispose(): Promise<void> {
-    if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.loading) {
       try { await this.loading; } catch { /* failed load: nothing to dispose */ }
     }
+    // The whole point: never free the context under a live call. Loop rather
+    // than await once, so an embed that starts while we wait is also seen out.
+    while (this.inFlight > 0) await this.whenQuiet();
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
     const b = this.backend;
     this.backend = null;
     if (b) await b.dispose();

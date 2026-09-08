@@ -9,7 +9,8 @@ export { keywordSearch } from "./search-keyword.js";
 export { search } from "./search.js";
 export type { IngestDoc, Hit, SearchQuery, SearchResult } from "./types.js";
 export {
-  Embedder, LlamaBackend, ModelNotReadyError, EmbedBackendUnavailableError, quantizeInt8, QUERY_PREFIX, type EmbedBackend,
+  Embedder, LlamaBackend, ModelNotReadyError, EmbedBackendUnavailableError, EmbedderDisposedError,
+  quantizeInt8, QUERY_PREFIX, type EmbedBackend,
 } from "./embedder.js";
 export { drainEmbedQueue } from "./embed-worker.js";
 export { ensureModel, MODEL_FILE } from "./model-download.js";
