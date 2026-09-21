@@ -201,9 +201,12 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
   transcripts, click **Multilingual** under "Meeting language" in the menu
   bar popover (a ~3GB one-time download that starts immediately; the
   popover says plainly which model your next meeting will use). Same
-  switch by hand: `"meeting": { "whisperModel": "large-v3" }` in
-  `~/Library/Application Support/shyn/capture.json`; `medium` is the
-  middle ground. Config hot-reloads, no restart.
+  switch by hand: `"meeting": { "whisperModel": "large-v3_turbo" }` in
+  `~/Library/Application Support/shyn/capture.json` (any WhisperKit model
+  name works there; the popover shows an unrecognised one as "custom").
+  Config hot-reloads, no restart. Transcription holds idle sleep off while
+  it runs, but a closed lid still sleeps a laptop and pauses it — the popover
+  says so while a transcription is in progress.
 - **Meeting titles are optional and layered**: the calendar event first
   (needs Calendar access), the call window's title second (needs
   Accessibility), plain "app · date" otherwise. Decline everything and
