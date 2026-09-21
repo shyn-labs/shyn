@@ -88,6 +88,14 @@ describe("metaHeader", () => {
     expect(metaHeader({ calTitle: "ARR Standup" })).toBe("Meeting: ARR Standup");
   });
 
+  it("names the time zone the meeting was recorded in", () => {
+    // A trip shows up in every timestamp's offset and nowhere a search can see.
+    expect(metaHeader({ calTitle: "Day 5", tz: "Asia/Singapore", tzOffset: "+08:00" }))
+      .toBe("Meeting: Day 5 · Time zone: Asia/Singapore (+08:00)");
+    expect(metaHeader({ tz: "Asia/Kolkata", tzOffset: "+05:30" }))
+      .toBe("Time zone: Asia/Kolkata (+05:30)");
+  });
+
   it("returns null when there is nothing to add", () => {
     expect(metaHeader(undefined)).toBeNull();
     expect(metaHeader({})).toBeNull();

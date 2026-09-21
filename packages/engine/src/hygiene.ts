@@ -117,7 +117,12 @@ export function metaHeader(meta: Record<string, unknown> | undefined): string | 
   if (!meta) return null;
   const title = typeof meta.calTitle === "string" ? meta.calTitle.trim() : "";
   const attendees = typeof meta.attendees === "string" ? meta.attendees.trim() : "";
-  if (!title && !attendees) return null;
-  const parts = [title && `Meeting: ${title}`, attendees && `Attendees: ${attendees}`];
+  // The zone the Mac was set to while the meeting ran — a trip is otherwise
+  // visible only as an offset inside timestamps, which no search can see.
+  const tz = typeof meta.tz === "string" ? meta.tz.trim() : "";
+  const tzOffset = typeof meta.tzOffset === "string" ? meta.tzOffset.trim() : "";
+  if (!title && !attendees && !tz) return null;
+  const zone = tz && (tzOffset ? `Time zone: ${tz} (${tzOffset})` : `Time zone: ${tz}`);
+  const parts = [title && `Meeting: ${title}`, attendees && `Attendees: ${attendees}`, zone];
   return parts.filter(Boolean).join(" · ");
 }

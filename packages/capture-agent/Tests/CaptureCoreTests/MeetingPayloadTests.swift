@@ -43,3 +43,18 @@ private let START = 1_783_700_000, END = 1_783_701_800
     #expect(p.meta["attendees"] == nil)          // empty list → key absent
     #expect(p.meta["attendeeCount"] == nil)
 }
+
+// "Where was I" at the level the machine already knows for free: the time zone
+// it was set to while the meeting ran. Singapore in September 2026 read +08:00
+// in every timestamp and nowhere a search could find it.
+@Test func payloadCarriesTheTimeZoneItWasRecordedIn() {
+    let sg = TimeZone(identifier: "Asia/Singapore")!
+    let p = meetingPayload(bundleId: nil, appName: "Recording",
+                           startEpoch: START, endEpoch: END, transcript: "hello",
+                           timeZone: sg)
+    #expect(p.meta["tz"] == "Asia/Singapore")
+    #expect(p.meta["tzOffset"] == "+08:00")
+    let kolkata = TimeZone(identifier: "Asia/Kolkata")!
+    #expect(meetingPayload(bundleId: nil, appName: "Recording", startEpoch: START, endEpoch: END,
+                           transcript: "x", timeZone: kolkata).meta["tzOffset"] == "+05:30")
+}
