@@ -686,7 +686,7 @@ Both lines carry the identical channel evidence (`mic=false sys=true`) that
 lost the 31 Aug meeting. The rescue term is the only thing separating them,
 and it decides both correctly.
 
-## Logged (2026-09-01): `meeting.tcc.audio` does not mean what its name says
+## Fixed (0.5.7-alpha): `meeting.tcc.audio` does not mean what its name says
 
 `mic` is a real permission query. `audio` is set to `true` only when a
 pre-roll successfully starts a recording, and defaults to `false` — so on a
@@ -701,10 +701,16 @@ signature was unchanged (`com.shyn.meeting`, `Authority=Shyn Dev`), so the
 grant had persisted, and a synthetic call minutes later showed
 `tcc audio: true` and `sys=true`.
 
-Fix next release, either way round:
-- make `audio` an actual authorization query (as `mic` already is), or
-- rename it to what it reports (`audioCaptureSucceeded`) and give the
-  popover a separate real permission read.
+**Resolution (0.5.7-alpha).** Neither option above was available: macOS has
+no preflight query for System Audio Recording (the CoreAudio process tap
+simply fails), and renaming the wire key buys nothing the wording cannot.
+The flag is now three-state under the same key. Absent = no recording
+attempted since the agent started; `true` = a pre-roll started; `false` = the
+recorder failed to start. `shyn diagnose` prints `untested` for absent, and
+the popover shows a muted "unverified until first meeting" row for absent
+but a real warning ("recording failed", with the Settings pane) for `false`
+— which is the one state that IS an alarm, since every call on the machine
+will fail the same way.
 
 Not urgent — it misreports only in the direction of alarm, never of false
 reassurance. But it fooled a reader with the source open, so it will

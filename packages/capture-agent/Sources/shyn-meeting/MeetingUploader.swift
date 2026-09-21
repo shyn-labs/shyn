@@ -29,8 +29,14 @@ func sweepOrphanAudio(root: URL, olderThanSeconds: Double = 86_400) {
 // meeting", and the user reasonably read unfindable records as "shyn isn't
 // capturing meetings". `shyn status` had nothing to say because this key did
 // not exist. A permission that only degrades naming still has to be visible.
+//
+// `audio` is the odd one out: macOS has no authorization query for System
+// Audio Recording, so it is a recording OUTCOME, not a permission read. nil
+// until a pre-roll is attempted, true when one started, false when the
+// recorder failed to start. It stays nil on the wire (key omitted) so that
+// diagnose and the popover can say "untested" instead of "no" (2026-09-01).
 struct MeetingTcc: Codable, Sendable {
-    var mic: Bool; var audio: Bool; var calendar: Bool = false; var ax: Bool = false
+    var mic: Bool; var audio: Bool? = nil; var calendar: Bool = false; var ax: Bool = false
 }
 
 struct MeetingStats: Codable, Sendable {
@@ -38,7 +44,7 @@ struct MeetingStats: Codable, Sendable {
     var meetingsCaptured: Int = 0
     var lastTranscribedTs: Int = 0
     var modelReady: Bool = false
-    var tcc = MeetingTcc(mic: false, audio: false)
+    var tcc = MeetingTcc(mic: false)
     // Present only while a session is live (recording/transcribing): feeds
     // the status UI's live-meeting card (elapsed timer + app name).
     var sessionStartedAt: Int? = nil

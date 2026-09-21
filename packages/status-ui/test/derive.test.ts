@@ -136,11 +136,14 @@ describe("deriveView state matrix", () => {
 
   it("mic TCC missing → warning with Settings hint; audio-unverified is muted, not warning", () => {
     const vm = deriveView({ ok: true,
-      status: withMeeting({ tcc: { mic: false, audio: false } }) }, baseCtx());
+      status: withMeeting({ tcc: { mic: false } }) }, baseCtx());
     expect(vm.tray).toBe("warning");
     expect(vm.rows.find((r) => r.label === "Meeting agent")!.hint).toContain("Microphone");
+    // "Unverified" is the ABSENT key — a boot that has seen no call yet.
+    // `audio: false` now means a recording failed to start (see the
+    // three-state block below), which is a warning by design.
     const vm2 = deriveView({ ok: true,
-      status: withMeeting({ tcc: { mic: true, audio: false } }) }, baseCtx());
+      status: withMeeting({ tcc: { mic: true } }) }, baseCtx());
     expect(vm2.tray).toBe("healthy");
     expect(vm2.rows.find((r) => r.label === "System audio")).toMatchObject({ tone: "muted" });
   });
@@ -550,5 +553,49 @@ describe("analytics settings toggle", () => {
     // a toggle that silently fails is worse than no toggle.
     const vm = deriveView({ ok: false }, baseCtx({ analyticsEnabled: true }));
     expect(vm.analytics).toBeNull();
+  });
+});
+
+describe("system audio is three-state, not a permission", () => {
+  const withMeeting = (m: object) => healthyStatus({
+    capture: { ...healthyStatus().capture,
+      meeting: { ...healthyStatus().capture.meeting!, ...m } },
+  });
+
+  // Logged 2026-09-01: `tcc.audio` reports whether a pre-roll recording
+  // STARTED, not whether System Audio Recording is granted. The agent boots
+  // without the key. The old code collapsed "never tried" and "tried and
+  // failed" into one muted row — so a recorder that could not start on
+  // every call looked exactly like a quiet morning.
+  it("audio key absent → muted 'unverified' row, tray stays healthy", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ tcc: { mic: true } }) }, baseCtx());
+    expect(vm.tray).toBe("healthy");
+    expect(vm.rows.find((r) => r.label === "System audio"))
+      .toMatchObject({ tone: "muted", value: "unverified until first meeting" });
+  });
+
+  it("audio false → a recording failed to start: warn row with the settings pane, warning tray", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ tcc: { mic: true, audio: false } }) }, baseCtx());
+    expect(vm.tray).toBe("warning");
+    const row = vm.rows.find((r) => r.label === "System audio")!;
+    expect(row).toMatchObject({ tone: "warn", value: "recording failed" });
+    expect(row.hint).toContain("Screen & System Audio Recording");
+  });
+
+  it("audio true → no row", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ tcc: { mic: true, audio: true } }) }, baseCtx());
+    expect(vm.rows.find((r) => r.label === "System audio")).toBeUndefined();
+  });
+
+  it("setup step: absent → self-verifies note; false → names the failure", () => {
+    const absent = deriveView({ ok: true, status: withMeeting({ tcc: { mic: true } }) }, baseCtx());
+    const stepA = absent.setup.kind === "steps" ? absent.setup.steps.find((s) => s.id === "audio") : undefined;
+    expect(stepA?.optionalNote).toContain("verifies itself");
+    const failed = deriveView({ ok: true, status: withMeeting({ tcc: { mic: true, audio: false } }) }, baseCtx());
+    const stepF = failed.setup.kind === "steps" ? failed.setup.steps.find((s) => s.id === "audio") : undefined;
+    expect(stepF?.optionalNote).toContain("failed");
   });
 });

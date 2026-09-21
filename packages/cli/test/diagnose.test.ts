@@ -125,3 +125,28 @@ describe("meeting naming ladder permissions", () => {
     expect(line).toContain("ax tcc: no");
   });
 });
+
+describe("meeting audio tcc is three-state", () => {
+  // Logged 2026-09-01: `audio` is not a permission query. It is set only
+  // when a pre-roll recording starts (true) or fails to start (false), and
+  // the agent starts without the key. `yn()` rendered the missing key as
+  // "no", which read as "System Audio Recording revoked" to a reader with
+  // the source open — and will certainly read that way to a user.
+  it("prints 'untested' when the agent has not attempted a recording yet", async () => {
+    const status = { ...FAKE_STATUS, capture: { ...FAKE_STATUS.capture,
+      meeting: { ...FAKE_STATUS.capture.meeting, tcc: { mic: true, calendar: true, ax: false } } } };
+    const text = await buildDiagnostics(deps({ rpc: async () => status }));
+    const line = text.split("\n").find((l) => l.startsWith("meeting:"))!;
+    expect(line).toContain("audio tcc: untested");
+    expect(line).toContain("mic tcc: yes");
+  });
+
+  it("prints yes/no once a recording has actually been attempted", async () => {
+    const text = await buildDiagnostics(deps());
+    expect(text.split("\n").find((l) => l.startsWith("meeting:"))).toContain("audio tcc: yes");
+    const failed = { ...FAKE_STATUS, capture: { ...FAKE_STATUS.capture,
+      meeting: { ...FAKE_STATUS.capture.meeting, tcc: { mic: true, audio: false } } } };
+    const text2 = await buildDiagnostics(deps({ rpc: async () => failed }));
+    expect(text2.split("\n").find((l) => l.startsWith("meeting:"))).toContain("audio tcc: no");
+  });
+});

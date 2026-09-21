@@ -18,7 +18,7 @@ export type DaemonStatus = {
 export type MeetingBlock = {
   state: string; meetingsCaptured: number; lastTranscribedTs: number;
   modelReady: boolean;
-  tcc: { mic: boolean; audio: boolean; calendar?: boolean; ax?: boolean };  // calendar/ax: agents ≥ stamping
+  tcc: { mic: boolean; audio?: boolean; calendar?: boolean; ax?: boolean };  // audio: absent until a recording is attempted; calendar/ax: agents ≥ stamping
   sessionStartedAt?: number; sessionApp?: string;
   whisperDownloading?: boolean;
   // 0..1 fraction, present only while state === "transcribing"; absent from
@@ -190,10 +190,16 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
           value: `${m.meetingsCaptured} captured${m.modelReady ? "" : " · model not ready"}`,
           tone: "ok",
         });
-        // Live-verification finding: tcc.audio only turns true on the first
-        // successful recording — false at boot is NOT a problem state.
-        if (m.tcc.audio === false)
+        // tcc.audio is a recording outcome, not a permission: absent until a
+        // pre-roll is attempted, true when one started, false when the
+        // recorder failed to start. Only the last is a problem — and it is
+        // one, since every call on the machine will fail the same way.
+        if (m.tcc.audio === undefined)
           rows.push({ label: "System audio", value: "unverified until first meeting", tone: "muted" });
+        else if (m.tcc.audio === false) {
+          rows.push({ label: "System audio", value: "recording failed", tone: "warn", hint: SCREEN_HINT });
+          problems.push("system audio recording failed");
+        }
         // Calendar access is optional (stamping only) — informational, never
         // a warning. Older agents don't report the key: say nothing.
         if (m.tcc.calendar === false)
@@ -305,7 +311,9 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
       : m!.tcc.mic
         ? { id: "audio", title: "Microphone & system audio", state: "done",
             detail: "meetings will be transcribed",
-            optionalNote: m!.tcc.audio ? undefined : "system audio verifies itself at your first meeting" }
+            optionalNote: m!.tcc.audio ? undefined
+              : m!.tcc.audio === false ? `system audio recording failed — check ${SCREEN_HINT}`
+              : "system audio verifies itself at your first meeting" }
         : { id: "audio", title: "Microphone & system audio", state: "todo",
             detail: "allow shyn-meeting to hear your calls",
             action: { kind: "settings", pane: "microphone" },

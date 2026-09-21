@@ -39,6 +39,11 @@ const isErrorLine = (l: string) =>
   l.trim().split(/\s+/, 4).some((t) => ERR_TOKEN_RE.test(t));
 const MAX_ERR_LINES = 10; // 4 logs × 10 + headers stays under the 80-line budget
 const yn = (v: unknown) => (v ? "yes" : "no");
+// `audio` is not a permission query (there is none for System Audio
+// Recording). The agent sets it true when a pre-roll recording starts and
+// false when the recorder fails to start; until either happens the key is
+// absent. Rendering absent as "no" read as a revoked grant (2026-09-01).
+const audioTcc = (v: unknown) => (v === undefined || v === null ? "untested" : yn(v));
 
 function serviceLine(deps: DiagnoseDeps, label: string): string {
   try {
@@ -95,7 +100,7 @@ export async function buildDiagnostics(deps: DiagnoseDeps): Promise<string> {
     // blocks capture, so both were left out — which made a meeting filed as
     // "Google Chrome meeting" undiagnosable from a bug report (lived
     // 2026-09-06: Accessibility denied for months, nothing said so).
-    if (m) lines.push(`meeting: ${m.state} · mic tcc: ${yn(m.tcc?.mic)} · audio tcc: ${yn(m.tcc?.audio)}`
+    if (m) lines.push(`meeting: ${m.state} · mic tcc: ${yn(m.tcc?.mic)} · audio tcc: ${audioTcc(m.tcc?.audio)}`
       + ` · calendar tcc: ${yn(m.tcc?.calendar)} · ax tcc: ${yn(m.tcc?.ax)}`
       + ` · whisper ready: ${yn(m.modelReady)}`);
     lines.push(`mcp: last hello ${s.lastMcpHelloTs ? new Date(s.lastMcpHelloTs * 1000).toISOString() : "never"}`);
