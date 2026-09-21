@@ -31,6 +31,24 @@ import Foundation
     #expect(isConferencingCapableBundleId("com.tinyspeck.slackmacgap"))
 }
 
+@Test func conferencingCapableAcceptsWhatsApp() {
+    // Lived 2026-09-08: a WhatsApp video call was recorded and transcribed,
+    // but committed only because the user happened to SPEAK — WhatsApp was
+    // in neither allowlist, so there was no rescue term, and a listen-only
+    // call would have been purged as a phantom. Worse, conferencingHolder()
+    // returned nil, so the record was named after whatever was frontmost at
+    // preroll and landed titled "release notes / Ghostty" — the same
+    // unfindable-by-its-real-name failure the Zoom case already fixed.
+    //
+    // Holding the MIC is the claim being made here, not being frontmost:
+    // WhatsApp is a chat app that sits open all day, which is exactly why
+    // it stays out of meetingBundleIds (see Slack).
+    #expect(isConferencingCapableBundleId("net.whatsapp.WhatsApp"))
+    #expect(isConferencingCapableBundleId("net.whatsapp.WhatsApp.helper"))
+    // Anchored, as everywhere else: a lookalike suffix must not pass.
+    #expect(!isConferencingCapableBundleId("net.whatsapp.WhatsAppEvil"))
+}
+
 @Test func conferencingCapableRejectsAmbientMicHolders() {
     // The exact processes resident on the machine that lost the meeting:
     // both hold the input device permanently, which is why the DEVICE-level

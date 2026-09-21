@@ -23,6 +23,13 @@ import Foundation
 // prefix match catches. Ambient mic-holders (Granola, Wispr Flow) are
 // deliberately absent — they are the reason the DEVICE-level probe carries
 // almost no information on this machine.
+//
+// WhatsApp joins on the same terms as Slack (2026-09-08): a chat app that
+// is open all day, so it stays out of meetingBundleIds, but one that only
+// holds the mic during an actual call. Its absence here cost a real call
+// twice over — no rescue term, so a listen-only call would have been
+// purged, and a nil holder, so the transcript that did survive was titled
+// after the terminal that happened to be frontmost.
 public let conferencingBundlePrefixes: [String] = [
     "com.google.Chrome",            // + .helper, .helper.renderer
     "com.apple.Safari",
@@ -40,6 +47,7 @@ public let conferencingBundlePrefixes: [String] = [
     "com.cisco.webexmeetingsapp",
     "com.apple.FaceTime",
     "com.tinyspeck.slackmacgap",    // huddles
+    "net.whatsapp.WhatsApp",        // 1:1 + group voice/video calls
 ]
 
 // Helpers whose bundle id shares NO prefix with the app they belong to, so
