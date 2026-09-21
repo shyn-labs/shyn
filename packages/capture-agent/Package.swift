@@ -22,5 +22,10 @@ let package = Package(
         // process entry behind @main precisely to lift that restriction. See
         // the note there before adding top-level code back.
         .testTarget(name: "MeetingAgentTests", dependencies: ["shyn-meeting", "CaptureCore"]),
+        // Same story for shyn-capture, one release later: its Agent actor sat
+        // in main.swift beside top-level code, so "does a tick post stats even
+        // when it captures nothing" was never a test — and was false for three
+        // separate diagnoses (2026-09-06, -07, -21).
+        .testTarget(name: "CaptureAgentTests", dependencies: ["shyn-capture", "CaptureCore"]),
     ]
 )
