@@ -87,6 +87,17 @@ without cutting the GitHub release, for a dry-run.
       the browser reader that feeds the tab rung are all environmental — but
       it is always worth understanding before shipping.
 
+- [ ] **Entry-point changes get a live run, not just tests.** If a commit
+      touches an agent's `Entry.swift` / `@main` or how its loops are started,
+      run the debug binary against a temp `SHYN_HOME` with a fake daemon
+      socket and watch the RPCs: one `captureStats` at start, then `ingest` +
+      `captureStats` per tick (capture), or the equivalent for the meeting
+      agent. Unit tests cannot see this: on 2026-09-21 all 171 passed while a
+      `Task {}` created inside the main-actor run function inherited the actor
+      and queued behind `NSApplication.run()` forever — one heartbeat, then
+      silence. The installed previous binary under the same harness is the
+      control.
+
 ## Notes
 
 - Plan C shipped the packaging basics: `pnpm build:dist` (daemon bundle),
