@@ -104,8 +104,10 @@ actor MeetingAgent {
             case .cancel: await endSession(transcribe: false, cfg: cfg); detector.cancelUntilQuiet(now: now)
             }
             // `stop` hands transcription off to the background; reflect that
-            // rather than flashing idle for a tick.
-            await postStats(state: pendingTranscriptions > 0 ? "transcribing" : "idle")
+            // rather than flashing idle for a tick. `start` is live at once.
+            await postStats(state: reportedMeetingState(
+                detector: detector.state, manualLive: manualSession && sessionDir != nil,
+                pendingTranscriptions: pendingTranscriptions))
             return
         }
 
@@ -253,7 +255,9 @@ actor MeetingAgent {
         // sweep is a burst of ingests and a live call is the wrong moment.
         if state != .recording, cfg.calendarSync { startCalendarSync(now: Int(now)) }
 
-        await postStats(state: pendingTranscriptions > 0 ? "transcribing" : state.rawValue)
+        await postStats(state: reportedMeetingState(
+            detector: state, manualLive: manualSession && sessionDir != nil,
+            pendingTranscriptions: pendingTranscriptions))
     }
 
     // Starts recording at candidate time (grace audio is part of the meeting
@@ -631,7 +635,9 @@ actor MeetingAgent {
 
     func setWhisperDownloading(_ downloading: Bool) async {
         stats.whisperDownloading = downloading ? true : nil
-        await postStats(state: detector.state.rawValue)
+        await postStats(state: reportedMeetingState(
+            detector: detector.state, manualLive: manualSession && sessionDir != nil,
+            pendingTranscriptions: pendingTranscriptions))
     }
 
     // Pre-download the CURRENTLY CONFIGURED Whisper model (spec 2026-07-23):

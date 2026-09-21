@@ -477,8 +477,19 @@ describe("manual recording affordance", () => {
     expect(vm.canRecord).toBe(false);
   });
 
-  it("transcribing → no offer; the recorder is still busy", () => {
-    const vm = deriveView({ ok: true, status: withMeeting({ state: "transcribing" }) }, baseCtx());
+  // Transcription runs alongside the recorder, not instead of it: the agent's
+  // own start guard checks only that no session is open. Gating the offer on
+  // "idle" hid Start recording for the ~30 minutes after every meeting — which
+  // is when the next one begins (lived 2026-09-21, first try of the new form).
+  it("transcribing → still offers a recording; the recorder is free", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ state: "transcribing", transcribeProgress: 0.4 }) }, baseCtx());
+    expect(vm.canRecord).toBe(true);
+    expect(vm.tray).toBe("transcribing");
+  });
+
+  it("candidate (pre-roll running) → no offer", () => {
+    const vm = deriveView({ ok: true, status: withMeeting({ state: "candidate" }) }, baseCtx());
     expect(vm.canRecord).toBe(false);
   });
 

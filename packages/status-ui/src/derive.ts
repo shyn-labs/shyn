@@ -378,10 +378,16 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
 
   // Offer a manual start only when one would actually work: the agent is
   // installed AND reporting (so something is there to consume the control
-  // file), the recorder is free (idle — not recording, not still transcribing),
-  // and the user has not paused capture. Anything else and the button would be
-  // a lie.
-  const canRecord = ctx.installed.meeting && !!m && m.state === "idle" && !paused;
+  // file), the recorder is free, and the user has not paused capture.
+  // Anything else and the button would be a lie.
+  //
+  // "Free" means idle OR transcribing. Transcription runs alongside the
+  // recorder (the agent's start guard checks only that no session is open),
+  // and a long call transcribes for ~30 minutes — gating on idle hid the
+  // button for exactly the window in which the next meeting starts (lived
+  // 2026-09-21). Recording and candidate (pre-roll) are the busy states.
+  const canRecord = ctx.installed.meeting && !!m
+    && (m.state === "idle" || m.state === "transcribing") && !paused;
 
   return { tray, verdict, meeting, canRecord, rows, stats, week, paused, modelChoice, update,
            notice: ctx.notice ?? null, setup, diagnostics,

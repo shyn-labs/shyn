@@ -165,3 +165,17 @@ public struct MeetingDetector: Sendable {
         audioSince = nil
     }
 }
+
+// The one state string the agent posts. The popover keys everything on it —
+// the live card and its Stop button need "recording", the Start recording
+// offer needs the recorder to be free — so a live session must win over
+// everything else, and a running transcription over the detector's idle.
+// Until 2026-09-21 this was the detector's state alone: a manual room
+// recording (which the detector never sees) posted "idle", and a recording
+// that overlapped a transcription posted "transcribing". Both hid Stop.
+public func reportedMeetingState(detector: MeetingState, manualLive: Bool,
+                                 pendingTranscriptions: Int) -> String {
+    if detector == .recording || manualLive { return MeetingState.recording.rawValue }
+    if pendingTranscriptions > 0 { return "transcribing" }
+    return detector.rawValue
+}
