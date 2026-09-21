@@ -196,11 +196,32 @@ describe("analytics toggle row", () => {
 });
 
 describe("manual record button", () => {
+  // 2026-09-21: the button opens a form instead of starting at once. A room
+  // recording's name and roster cannot be inferred — a Singapore bootcamp
+  // session was filed as "ARR Standup · WhatsApp" — so the one moment the
+  // user is already reaching for shyn is when to ask.
   it("renders a record action when canRecord, and not otherwise", () => {
     const on = render(vm({ canRecord: true }), NOW);
-    expect(on).toContain('data-action="meeting-start"');
+    expect(on).toContain('data-action="record-form-open"');
+    expect(on).not.toContain('data-action="meeting-start"');
     const off = render(vm({ canRecord: false }), NOW);
-    expect(off).not.toContain('data-action="meeting-start"');
+    expect(off).not.toContain('data-action="record-form-open"');
+  });
+
+  it("open form: name + attendees inputs, a submit, a close, and no open button", () => {
+    const el = mount(render(vm({ canRecord: true }), NOW, { recordForm: true }));
+    const form = el.querySelector('form[data-form="record"]')!;
+    expect(form).toBeTruthy();
+    expect(form.querySelector('input[name="title"]')).toBeTruthy();
+    expect(form.querySelector('input[name="attendees"]')).toBeTruthy();
+    expect(form.querySelector('button[type="submit"]')!.textContent).toBe("Record");
+    expect(form.querySelector('[data-action="record-form-close"]')).toBeTruthy();
+    expect(el.innerHTML).not.toContain('data-action="record-form-open"');
+  });
+
+  it("the form never renders when recording is not possible", () => {
+    const out = render(vm({ canRecord: false }), NOW, { recordForm: true });
+    expect(out).not.toContain('data-form="record"');
   });
 
   it("labels the action verb-first, without inventing a noun", () => {
@@ -221,6 +242,6 @@ describe("manual record button", () => {
       meeting: { app: "Google Chrome", startedAt: NOW - 120, state: "recording" },
     }), NOW);
     expect(out).toContain('data-action="meeting-stop"');
-    expect(out).not.toContain('data-action="meeting-start"');
+    expect(out).not.toContain('data-action="record-form-open"');
   });
 });

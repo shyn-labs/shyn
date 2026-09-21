@@ -158,3 +158,11 @@ body.onboarding { padding: 4px 0 14px; }
 .seg-toggle.on { border-color: color-mix(in srgb, var(--ok, #3aa76d) 55%, transparent);
   color: var(--ok, #3aa76d); }
 .seg-toggle:hover { background: var(--hover, rgba(127,127,127,.12)); }
+
+/* Record form (manual start): two inputs and a verb, nothing else. */
+.record-form { display: grid; gap: 6px; padding: 4px 16px 8px; }
+.record-form input { width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px;
+  padding: 6px 8px; border: 1px solid var(--hairline); border-radius: 6px;
+  background: var(--lift); color: var(--ink); }
+.record-form input:focus { outline: none; border-color: var(--ink-dim); }
+.record-form-actions { display: grid; grid-template-columns: 1fr auto; gap: 6px; }

@@ -51,7 +51,12 @@ func calendarStamp(startEpoch: Int, endEpoch: Int) async -> CalendarStamp? {
                           start: Int($0.startDate.timeIntervalSince1970),
                           end: Int($0.endDate.timeIntervalSince1970),
                           attendeeCount: $0.attendees?.count ?? 0,
-                          isAllDay: $0.isAllDay)
+                          isAllDay: $0.isAllDay,
+                          // Same read the rescue path makes: an event the user
+                          // declined must not name a meeting they were in.
+                          selfDeclined: ($0.attendees ?? []).contains {
+                              $0.isCurrentUser && $0.participantStatus == .declined
+                          })
     }
     guard let i = matchMeetingEvent(sessionStart: startEpoch, sessionEnd: endEpoch,
                                     candidates: candidates),

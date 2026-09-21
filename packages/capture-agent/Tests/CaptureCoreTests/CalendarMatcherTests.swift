@@ -61,3 +61,21 @@ private let S = 36_000, E = 39_600
     #expect(matchMeetingEvent(sessionStart: S, sessionEnd: S,
                               candidates: [cand(S - 600, S + 600)]) == nil)
 }
+
+// Lived 2026-09-11, Singapore: a manual room recording at a bootcamp overlapped
+// two timed events — the bootcamp day (self only, accepted) and a 24-person
+// standup back home that the user had DECLINED. Attendee count is the first
+// tie-break, so the declined standup won and the transcript was titled after a
+// meeting he was not in. The rescue path already ignores declined events; the
+// naming path did not.
+@Test func declinedEventsNeverTitleAMeetingEvenWhenTheyWouldOtherwiseWin() {
+    let bootcamp = CalendarCandidate(title: "Day 5", start: S - 7200, end: E + 7200,
+                                     attendeeCount: 1, isAllDay: false)
+    let standup = CalendarCandidate(title: "Standup", start: S, end: S + 1800,
+                                    attendeeCount: 24, isAllDay: false, selfDeclined: true)
+    // 30-min session inside both.
+    let i = matchMeetingEvent(sessionStart: S, sessionEnd: S + 1800, candidates: [standup, bootcamp])
+    #expect(i == 1)
+    // Declined is not merely down-ranked: alone, it still matches nothing.
+    #expect(matchMeetingEvent(sessionStart: S, sessionEnd: S + 1800, candidates: [standup]) == nil)
+}

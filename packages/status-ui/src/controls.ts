@@ -62,13 +62,32 @@ export function setMeetingModel(home: string, model: MeetingModel): void {
 }
 
 function writeMeetingControl(home: string, action: "start" | "stop" | "cancel",
-                            title?: string): void {
+                            title?: string, attendees?: string[]): void {
   writeFileSync(join(home, "meeting-control.json"),
-    JSON.stringify({ action, title, ts: Math.floor(Date.now() / 1000) }) + "\n");
+    JSON.stringify({ action, title, attendees: attendees?.length ? attendees : undefined,
+                     ts: Math.floor(Date.now() / 1000) }) + "\n");
 }
-// No title from the menu bar: a popover that closes on blur is the wrong place
-// to type one, and an unnamed manual recording still beats no recording. Name
-// it from the CLI (`shyn meeting start "…"`) when the name matters.
-export const meetingStart = (home: string) => writeMeetingControl(home, "start");
+// The popover's record form supplies both since 2026-09-21 (it used to be
+// "no title from the menu bar" — a room recording filed as "ARR Standup ·
+// WhatsApp" settled that). Both optional; the Swift parser trims and caps.
+export const meetingStart = (home: string, title?: string, attendees?: string[]) =>
+  writeMeetingControl(home, "start", title, attendees);
+
+// The renderer sends one JSON argument with the "meeting-start" action. An
+// older renderer (or a bare click) sends nothing; garbage means nothing.
+export function parseMeetingStartArg(arg: string | undefined): { title?: string; attendees?: string[] } {
+  if (!arg) return {};
+  try {
+    const o = JSON.parse(arg);
+    if (!o || typeof o !== "object") return {};
+    const out: { title?: string; attendees?: string[] } = {};
+    if (typeof o.title === "string" && o.title.trim()) out.title = o.title.trim();
+    if (Array.isArray(o.attendees)) {
+      const a = o.attendees.filter((x: unknown) => typeof x === "string" && x.trim()).map((x: string) => x.trim());
+      if (a.length) out.attendees = a;
+    }
+    return out;
+  } catch { return {}; }
+}
 export const meetingStop = (home: string) => writeMeetingControl(home, "stop");
 export const meetingCancel = (home: string) => writeMeetingControl(home, "cancel");

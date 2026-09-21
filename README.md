@@ -195,7 +195,12 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
   not against malware running as your own user. We say this out loud.
 - **Meetings**: channel-based speaker labels (`Me:` / `Others:`), 10-second
   cancellable grace before any recording, 180-minute hard cap, temp audio
-  byte-purged on ingest. Transcription defaults to Whisper `small`; at that
+  byte-purged on ingest. For a room, a talk or a speakerphone — anything shyn
+  cannot hear itself into — click **Start recording** in the menu bar: a
+  short form asks what it is and who is there, both optional, and the answers
+  become the title and the attendee list (same from the terminal:
+  `shyn meeting start "Day 5 review" --with "Maya R, Dev P"`). Every meeting
+  also records the time zone the Mac was in, so a trip is searchable later. Transcription defaults to Whisper `small`; at that
   size Hindi/Hinglish and other non-English speech often lands as an English
   gist (documented, not hidden). For markedly better multilingual
   transcripts, click **Multilingual** under "Meeting language" in the menu

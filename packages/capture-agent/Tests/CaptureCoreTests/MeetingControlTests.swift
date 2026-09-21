@@ -59,3 +59,24 @@ import Foundation
     #expect(parseMeetingControl(Data(#"{"action":"stop","title":"nope"}"#.utf8))
         == MeetingControl(action: .stop, title: nil))
 }
+
+// 2026-09-21: the menu bar form asks who is in the room. Attendees ride the
+// same control file as the title and land in the document's metadata, so a
+// room recording is findable by who was there — the one thing shyn cannot
+// infer for a room, since every voice is on one channel.
+@Test func parsesStartAttendeesTrimmedDedupedAndCapped() {
+    let c = parseMeetingControl(Data(#"{"action":"start","title":"Day 5","attendees":[" Maya R ","Dev P","","maya r","Sam K"]}"#.utf8))
+    #expect(c?.attendees == ["Maya R", "Dev P", "Sam K"])
+    let long = String(repeating: "x", count: 100)
+    let capped = parseMeetingControl(Data("{\"action\":\"start\",\"attendees\":[\"\(long)\"]}".utf8))
+    #expect(capped?.attendees.first?.count == maxManualAttendeeLength)
+    let many = (1...40).map { "\"P\($0)\"" }.joined(separator: ",")
+    let cut = parseMeetingControl(Data("{\"action\":\"start\",\"attendees\":[\(many)]}".utf8))
+    #expect(cut?.attendees.count == maxManualAttendees)
+}
+
+@Test func attendeesAreEmptyWhenAbsentMalformedOrNotAStart() {
+    #expect(parseMeetingControl(Data(#"{"action":"start"}"#.utf8))?.attendees == [])
+    #expect(parseMeetingControl(Data(#"{"action":"start","attendees":"Maya"}"#.utf8))?.attendees == [])
+    #expect(parseMeetingControl(Data(#"{"action":"stop","attendees":["Maya"]}"#.utf8))?.attendees == [])
+}

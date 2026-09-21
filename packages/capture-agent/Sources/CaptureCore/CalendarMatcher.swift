@@ -11,9 +11,16 @@ public struct CalendarCandidate: Sendable {
     public let end: Int
     public let attendeeCount: Int
     public let isAllDay: Bool
-    public init(title: String, start: Int, end: Int, attendeeCount: Int, isAllDay: Bool) {
+    /// The user declined this event. It cannot name a meeting they were in:
+    /// on 2026-09-11 a declined 24-person standup out-scored the accepted solo
+    /// bootcamp block it overlapped and titled a Singapore room recording
+    /// after a call in Bengaluru. The rescue path had always filtered this.
+    public let selfDeclined: Bool
+    public init(title: String, start: Int, end: Int, attendeeCount: Int, isAllDay: Bool,
+                selfDeclined: Bool = false) {
         self.title = title; self.start = start; self.end = end
         self.attendeeCount = attendeeCount; self.isAllDay = isAllDay
+        self.selfDeclined = selfDeclined
     }
 }
 
@@ -26,7 +33,7 @@ public func matchMeetingEvent(sessionStart: Int, sessionEnd: Int,
     let duration = sessionEnd - sessionStart
     guard duration > 0 else { return nil }
     var best: (score: (Int, Int, Int), index: Int)? = nil
-    for (i, c) in candidates.enumerated() where !c.isAllDay {
+    for (i, c) in candidates.enumerated() where !c.isAllDay && !c.selfDeclined {
         let overlap = min(c.end, sessionEnd) - max(c.start, sessionStart)
         guard overlap * 2 >= duration else { continue }   // ratio >= 0.5, integer-exact
         let score = (c.attendeeCount >= 2 ? 1 : 0, overlap, c.start)

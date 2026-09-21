@@ -10,7 +10,7 @@ import { rpcCall, isDaemonDownError } from "@shyn/daemon/rpc";
 import { extractText, getDocumentProxy } from "unpdf";
 import { installDaemon, uninstallDaemon, installCaptureAgent, installMeetingAgent, installStatusApp, LAUNCHD_LABEL } from "./launchd.js";
 import { pauseCapture, resumeCapture, addExclude } from "./capture-config.js";
-import { requestMeetingStart, requestMeetingStop, requestMeetingCancel } from "./meeting-control.js";
+import { parseMeetingStartArgs, requestMeetingStart, requestMeetingStop, requestMeetingCancel } from "./meeting-control.js";
 import { runSetup } from "./setup.js";
 import { buildDiagnostics, diagnosticsMailtoUrl } from "./diagnose.js";
 
@@ -352,11 +352,12 @@ export async function runCli(argv: string[], print: (s: string) => void = consol
       if (sub === "start") {
         // Everything after the verb is the title, unquoted or quoted alike, so
         // `shyn meeting start field team standup` does what it looks like.
-        const title = rest.slice(1).join(" ").trim() || undefined;
-        requestMeetingStart(shynHome(), title);
+        const { title, attendees } = parseMeetingStartArgs(rest.slice(1));
+        requestMeetingStart(shynHome(), title, attendees);
+        const who = attendees.length ? ` with ${attendees.join(", ")}` : "";
         return print(title
-          ? `recording requested: ${title} — shyn meeting stop to end`
-          : "recording requested — shyn meeting stop to end");
+          ? `recording requested: ${title}${who} — shyn meeting stop to end`
+          : `recording requested${who} — shyn meeting stop to end`);
       }
       if (sub === "stop") { requestMeetingStop(shynHome()); return print("meeting stop requested"); }
       if (sub === "cancel") { requestMeetingCancel(shynHome()); return print("meeting cancel requested"); }

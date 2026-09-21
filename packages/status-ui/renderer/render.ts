@@ -23,7 +23,9 @@ const rowHtml = (r: Row) => `
     ${r.hint ? `<div class="hint">${esc(r.hint)}</div>` : ""}
   </div>`;
 
-export function render(vm: ViewModel, nowSec: number): string {
+export type RenderUi = { recordForm: boolean };
+
+export function render(vm: ViewModel, nowSec: number, ui: RenderUi = { recordForm: false }): string {
   const live = vm.meeting ? `
   <div class="live ${vm.meeting.state}">
     <div class="live-head">
@@ -46,9 +48,22 @@ export function render(vm: ViewModel, nowSec: number): string {
   // rows — calls a meeting. It is also frequently not a conversation: a talk
   // or a lecture is the ordinary case for a button that exists because the
   // room never voiced the far-side channel.
-  const record = vm.canRecord
-    ? `<button data-action="meeting-start" class="wide">Start recording</button>`
-    : "";
+  //
+  // Since 2026-09-21 the button opens a form rather than starting at once:
+  // a room recording has no tab and rarely a fitting calendar entry, so the
+  // name and the roster have to come from the one person who knows them.
+  // Both fields optional — a blank submit records exactly as before.
+  const record = !vm.canRecord ? ""
+    : ui.recordForm
+      ? `<form data-form="record" class="record-form" autocomplete="off">
+      <input name="title" type="text" placeholder="What is this? (optional)" maxlength="120" autofocus>
+      <input name="attendees" type="text" placeholder="Who's in the room, comma separated (optional)" maxlength="600">
+      <div class="record-form-actions">
+        <button type="submit" class="wide">Record</button>
+        <button type="button" data-action="record-form-close" class="ghost">Cancel</button>
+      </div>
+    </form>`
+      : `<button data-action="record-form-open" class="wide">Start recording</button>`;
 
   const controls = vm.paused
     ? `<button data-action="resume" class="wide">Resume capture</button>`

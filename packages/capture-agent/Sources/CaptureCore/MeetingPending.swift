@@ -31,14 +31,17 @@ public struct PendingSession: Codable, Sendable {
     /// re-derive it from, so losing it here loses it for good. Optional with a
     /// default so sidecars written by older agents still decode.
     public var manualTitle: String?
+    /// Who the user said was in the room. Same lifecycle as manualTitle.
+    public var manualAttendees: [String]?
 
     public init(start: Int, end: Int, bundleId: String?, appName: String,
                 windowTitle: String?, reason: String, attempts: Int = 1,
-                manualTitle: String? = nil) {
+                manualTitle: String? = nil, manualAttendees: [String] = []) {
         self.start = start; self.end = end; self.bundleId = bundleId
         self.appName = appName; self.windowTitle = windowTitle
         self.reason = reason; self.attempts = attempts
         self.manualTitle = manualTitle
+        self.manualAttendees = manualAttendees.isEmpty ? nil : manualAttendees
     }
 }
 

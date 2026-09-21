@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
+import { meetingStart,
   pauseCapture, resumeCapture, readPausedUntil, meetingStop, meetingCancel,
   readMeetingModel, setMeetingModel,
 } from "../src/controls.js";
@@ -89,5 +89,22 @@ describe("controls: meeting-control.json contract (matches cli meeting-control)"
     meetingCancel(h);
     c = JSON.parse(readFileSync(join(h, "meeting-control.json"), "utf8"));
     expect(c.action).toBe("cancel");
+  });
+});
+
+describe("meetingStart with a name and a roster", () => {
+  // Cross-language contract with parseMeetingControl (Swift): title is an
+  // optional string, attendees an optional array of strings; absent keys are
+  // omitted rather than written as null or [].
+  it("writes title and attendees when given, omits them when not", () => {
+    const home = mkdtempSync(join(tmpdir(), "shyn-ctl-"));
+    meetingStart(home, "Day 5", ["Maya R", "Dev P"]);
+    const raw = readFileSync(join(home, "meeting-control.json"), "utf8");
+    expect(JSON.parse(raw)).toMatchObject({ action: "start", title: "Day 5", attendees: ["Maya R", "Dev P"] });
+    meetingStart(home);
+    const bare = readFileSync(join(home, "meeting-control.json"), "utf8");
+    expect(JSON.parse(bare).action).toBe("start");
+    expect(bare).not.toContain("title");
+    expect(bare).not.toContain("attendees");
   });
 });

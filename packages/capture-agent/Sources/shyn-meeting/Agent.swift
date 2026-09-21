@@ -79,6 +79,7 @@ actor MeetingAgent {
     // forgotten manual recording would run until the disk filled.
     private var manualSession = false
     private var manualTitle: String? = nil
+    private var manualAttendees: [String] = []
     private var lastCalendarSync = 0
     private var calendarTask: Task<Void, Never>? = nil
 
@@ -94,7 +95,7 @@ actor MeetingAgent {
             // gate entirely, which is the whole point: a room puts every voice
             // on the mic and nothing on the system channel, so sysVoiced can
             // never be true and the gate would purge it every time.
-            case .start:  await startManualSession(title: control.title, cfg: cfg)
+            case .start:  await startManualSession(title: control.title, attendees: control.attendees, cfg: cfg)
             // stop during an unverified pre-roll discards (nothing to keep).
             // cancelUntilQuiet, not cancel: the call the user just skipped is
             // still holding the devices — plain cancel re-detected it ~10s
@@ -258,7 +259,7 @@ actor MeetingAgent {
     // Starts recording at candidate time (grace audio is part of the meeting
     // when it commits, purged otherwise). Deliberately NO "Recording"
     // notification and no stats.session* here — those are commit-time.
-    private func startPreroll(cfg: MeetingConfig, meetingAppFrontmost: Bool) async {
+    private func startPreroll(cfg: MeetingConfig, meetingAppFrontmost: Bool, manual: Bool = false) async {
         let start = Int(Date().timeIntervalSince1970)
         let dir = meetingTmp.appendingPathComponent("session-\(start)")
         // Identity comes from the app HOLDING THE AUDIO, not the app in
@@ -269,7 +270,10 @@ actor MeetingAgent {
         // titled "Ghostty"). Falls back to frontmost when nothing
         // conferencing-capable holds audio.
         let holder = conferencingAppHoldingAudioId()
-        let info = await MainActor.run { frontmostAppInfo(preferring: holder) }
+        let front = await MainActor.run { frontmostAppInfo(preferring: holder) }
+        // A manual session has no app unless something conferencing-capable
+        // actually holds the audio (CaptureCore/ManualSession.swift).
+        let info = manual ? manualSessionApp(holder: holder, frontmost: front) : front
         do {
             recorder.meter.reset()
             try await recorder.start(sessionDir: dir)
@@ -302,7 +306,7 @@ actor MeetingAgent {
     // channel stays silent, so farSideLabel returns .unattributed downstream:
     // the transcript ships unprefixed with a note saying speakers could not be
     // told apart, rather than asserting "Me:" over a whole room.
-    private func startManualSession(title: String?, cfg: MeetingConfig) async {
+    private func startManualSession(title: String?, attendees: [String], cfg: MeetingConfig) async {
         guard cfg.enabled else {
             logErr("[meeting] start ignored — meeting capture is disabled in config")
             notify("Recording not started", "Meeting capture is turned off in shyn's settings.")
@@ -313,14 +317,16 @@ actor MeetingAgent {
         // recorder on the same devices.
         guard sessionDir == nil, !(await recorder.recording) else {
             if let title { manualTitle = title }
+            if !attendees.isEmpty { manualAttendees = attendees }
             logErr("[meeting] start ignored — a session is already recording")
             return
         }
         manualTitle = title
-        await startPreroll(cfg: cfg, meetingAppFrontmost: false)
+        manualAttendees = attendees
+        await startPreroll(cfg: cfg, meetingAppFrontmost: false, manual: true)
         // startPreroll clears sessionDir on failure and has already logged and
         // notified; don't claim a recording that isn't running.
-        guard sessionDir != nil else { manualTitle = nil; return }
+        guard sessionDir != nil else { manualTitle = nil; manualAttendees = []; return }
         manualSession = true
         commitSession(cfg: cfg)
     }
@@ -341,7 +347,7 @@ actor MeetingAgent {
                 start: sessionStart, end: 0, bundleId: sessionBundleId,
                 appName: sessionAppName, windowTitle: sessionWindowTitle,
                 reason: "interrupted while recording", attempts: 0,
-                manualTitle: manualTitle), in: dir)
+                manualTitle: manualTitle, manualAttendees: manualAttendees), in: dir)
         }
         // A manual recording is named by what the user typed, not by whatever
         // happened to be frontmost — "Recording meeting / Ghostty" for a
@@ -380,15 +386,17 @@ actor MeetingAgent {
         prerollStart = nil
         committed = false
         let wasManualTitle = manualTitle
+        let wasManualAttendees = manualAttendees
         manualSession = false
         manualTitle = nil
+        manualAttendees = []
         sessionMeetingAppFrontmost = false
         stats.sessionStartedAt = nil
         stats.sessionApp = nil
         guard transcribe else { purgeAudio(sessionDir: dir); dbg("canceled — audio purged"); return }
         startTranscription(dir: dir, urls: urls, start: start, end: end,
                            bundleId: bundleId, appName: appName, windowTitle: windowTitle,
-                           manualTitle: wasManualTitle, cfg: cfg)
+                           manualTitle: wasManualTitle, manualAttendees: wasManualAttendees, cfg: cfg)
     }
 
     // Kicks off a transcription, chained onto any in-flight one so only a
@@ -398,6 +406,7 @@ actor MeetingAgent {
     private func startTranscription(dir: URL, urls: (mic: URL, system: URL),
                                     start: Int, end: Int, bundleId: String?, appName: String,
                                     windowTitle: String?, manualTitle: String?,
+                                    manualAttendees: [String] = [],
                                     cfg: MeetingConfig) {
         if pendingTranscriptions == 0 { transcribeProgress = 0 }   // don't snap a running % back to 0
         pendingTranscriptions += 1
@@ -406,7 +415,7 @@ actor MeetingAgent {
             await prev?.value
             await self.runTranscription(dir: dir, urls: urls, start: start, end: end,
                                         bundleId: bundleId, appName: appName, windowTitle: windowTitle,
-                                        manualTitle: manualTitle, cfg: cfg)
+                                        manualTitle: manualTitle, manualAttendees: manualAttendees, cfg: cfg)
         }
     }
 
@@ -416,6 +425,7 @@ actor MeetingAgent {
     private func runTranscription(dir: URL, urls: (mic: URL, system: URL),
                                   start: Int, end: Int, bundleId: String?, appName: String,
                                   windowTitle: String?, manualTitle: String?,
+                                  manualAttendees: [String] = [],
                                   cfg: MeetingConfig) async {
         defer { finishTranscription() }
         let outcome = await transcribeMeeting(mic: urls.mic, system: urls.system,
@@ -432,7 +442,7 @@ actor MeetingAgent {
             // model is present. Bounded by maxPendingAttempts and the 24h sweep.
             keepForRetry(dir: dir, start: start, end: end, bundleId: bundleId,
                          appName: appName, windowTitle: windowTitle, reason: reason,
-                         manualTitle: manualTitle)
+                         manualTitle: manualTitle, manualAttendees: manualAttendees)
             // Only the failure CLASS, never the reason string: it can carry a
             // model path or a URL. The daemon would scrub it anyway; not
             // sending it at all is the stronger guarantee.
@@ -493,7 +503,8 @@ actor MeetingAgent {
         let payload = meetingPayload(bundleId: bundleId, appName: appName,
                                      startEpoch: start, endEpoch: end, transcript: transcript,
                                      eventTitle: chosen.title,
-                                     attendees: stamp?.attendees ?? [])
+                                     attendees: meetingAttendees(manual: manualAttendees,
+                                                                 calendar: stamp?.attendees ?? []))
         if await ship(payload) {
             purgeAudio(sessionDir: dir)   // byte-honest: audio gone on ingest ack
             stats.meetingsCaptured += 1
@@ -511,7 +522,7 @@ actor MeetingAgent {
     // are counted so a present-but-unusable model cannot spin the ANE forever.
     private func keepForRetry(dir: URL, start: Int, end: Int, bundleId: String?,
                               appName: String, windowTitle: String?, reason: String,
-                              manualTitle: String?) {
+                              manualTitle: String?, manualAttendees: [String] = []) {
         let attempts = (readPendingSession(in: dir)?.attempts ?? 0) + 1
         guard attempts <= maxPendingAttempts else {
             logErr("[meeting] transcription failed \(attempts)x — giving up, purging \(dir.lastPathComponent)")
@@ -520,7 +531,7 @@ actor MeetingAgent {
         }
         let pending = PendingSession(start: start, end: end, bundleId: bundleId, appName: appName,
                                      windowTitle: windowTitle, reason: reason, attempts: attempts,
-                                     manualTitle: manualTitle)
+                                     manualTitle: manualTitle, manualAttendees: manualAttendees)
         if writePendingSession(pending, in: dir) {
             logErr("[meeting] transcription failed (attempt \(attempts)): \(reason) — audio kept for retry")
         } else {
@@ -549,7 +560,7 @@ actor MeetingAgent {
                                   system: dir.appendingPathComponent("system.wav")),
                            start: p.start, end: end, bundleId: p.bundleId,
                            appName: p.appName, windowTitle: p.windowTitle,
-                           manualTitle: p.manualTitle, cfg: cfg)
+                           manualTitle: p.manualTitle, manualAttendees: p.manualAttendees ?? [], cfg: cfg)
     }
 
     // Ships calendar events as documents. Failures are logged and dropped: a

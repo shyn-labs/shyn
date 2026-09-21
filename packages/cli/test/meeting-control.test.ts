@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { requestMeetingStart, requestMeetingStop, requestMeetingCancel } from "../src/meeting-control.js";
+import { requestMeetingStart, requestMeetingStop, requestMeetingCancel, parseMeetingStartArgs } from "../src/meeting-control.js";
 
 describe("meeting control", () => {
   it("stop and cancel write a consumable control file", () => {
@@ -40,5 +40,23 @@ describe("meeting control", () => {
     const raw = readFileSync(join(home, "meeting-control.json"), "utf8");
     expect(JSON.parse(raw).action).toBe("start");
     expect(raw).not.toContain("title");
+  });
+});
+
+describe("meeting start with attendees", () => {
+  it("writes the roster as an array, omitted when empty", () => {
+    const home = mkdtempSync(join(tmpdir(), "shyn-mc-"));
+    requestMeetingStart(home, "Day 5", ["Maya R", "Dev P"]);
+    expect(JSON.parse(readFileSync(join(home, "meeting-control.json"), "utf8")))
+      .toMatchObject({ action: "start", title: "Day 5", attendees: ["Maya R", "Dev P"] });
+    requestMeetingStart(home, "Day 5", []);
+    expect(readFileSync(join(home, "meeting-control.json"), "utf8")).not.toContain("attendees");
+  });
+
+  it("parses `shyn meeting start <title words> --with a, b`", () => {
+    expect(parseMeetingStartArgs(["Day", "5", "bootcamp", "--with", "Maya R, Dev P"]))
+      .toEqual({ title: "Day 5 bootcamp", attendees: ["Maya R", "Dev P"] });
+    expect(parseMeetingStartArgs(["--with", "Maya R"])).toEqual({ title: undefined, attendees: ["Maya R"] });
+    expect(parseMeetingStartArgs([])).toEqual({ title: undefined, attendees: [] });
   });
 });
