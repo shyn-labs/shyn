@@ -17,6 +17,23 @@ import CaptureCore
 // collapsing the two (as this did until 2026-08-05) destroys recordings.
 func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
                        onProgress: @escaping @Sendable (Double) async -> Void = { _ in }) async -> TranscriptionOutcome {
+    // Idle sleep stays off for the whole decode (a 25-minute job took 4h40m of
+    // wall time on 2026-09-05 because the Mac slept under it). Both clocks are
+    // logged below: uptime stops during sleep, Date does not, the gap is sleep.
+    let wallStart = Date(), awakeStart = ProcessInfo.processInfo.systemUptime
+    let timing = {
+        transcribeTimingLine(awakeSec: ProcessInfo.processInfo.systemUptime - awakeStart,
+                             wallSec: Date().timeIntervalSince(wallStart))
+    }
+    return await withSystemAwake(reason: "shyn: transcribing a meeting") {
+        await transcribeChannels(mic: mic, system: system, model: model, modelDir: modelDir,
+                                 onProgress: onProgress, timing: timing)
+    }
+}
+
+private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: URL,
+                                onProgress: @escaping @Sendable (Double) async -> Void,
+                                timing: () -> String) async -> TranscriptionOutcome {
     do {
         // downloadBase keeps CoreML models out of ~/Documents (WhisperKit's
         // default), which is TCC-protected for a headless agent.
@@ -70,7 +87,7 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
         // is the entire reason it exists (an undatable failure line is what
         // made the 15 Jul model outage impossible to place).
         FileHandle.standardError.write(Data(
-            logLine("[transcriber] kept \(kept.count) segments; dropped \(reasons)").utf8))
+            logLine("[transcriber] kept \(kept.count) segments; dropped \(reasons); \(timing())").utf8))
         await onProgress(1.0)
         // Nothing DECODED and every channel errored: infra, not silence. The
         // test is on `segs`, not `kept`, on purpose — a decode that produced
@@ -84,7 +101,7 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
         return .segments(kept)
     } catch {
         // WhisperKit init: model missing, download offline, unsupported device.
-        FileHandle.standardError.write(Data(logLine("[transcriber] failed: \(error)").utf8))
+        FileHandle.standardError.write(Data(logLine("[transcriber] failed: \(error); \(timing())").utf8))
         return .failure("\(error)")
     }
 }

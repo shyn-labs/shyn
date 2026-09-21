@@ -599,3 +599,27 @@ describe("system audio is three-state, not a permission", () => {
     expect(stepF?.optionalNote).toContain("failed");
   });
 });
+
+describe("transcribing says what a sleeping Mac does to it", () => {
+  const withMeeting = (m: object) => healthyStatus({
+    capture: { ...healthyStatus().capture,
+      meeting: { ...healthyStatus().capture.meeting!, ...m } },
+  });
+
+  // A closed lid pauses WhisperKit; the agent cannot prevent that on a
+  // portable, so the popover has to say it while it matters and not after.
+  it("transcribing → Meeting agent row carries the keep-the-lid-open hint", () => {
+    const vm = deriveView({ ok: true,
+      status: withMeeting({ state: "transcribing", transcribeProgress: 0.4 }) }, baseCtx());
+    const row = vm.rows.find((r) => r.label === "Meeting agent")!;
+    expect(row.value).toBe("transcribing · 40%");
+    expect(row.hint).toContain("lid");
+  });
+
+  it("recording and idle → no lid hint", () => {
+    const rec = deriveView({ ok: true, status: withMeeting({ state: "recording" }) }, baseCtx());
+    expect(rec.rows.find((r) => r.label === "Meeting agent")?.hint ?? "").not.toContain("lid");
+    const idle = deriveView({ ok: true, status: healthyStatus() }, baseCtx());
+    expect(idle.rows.find((r) => r.label === "Meeting agent")?.hint ?? "").not.toContain("lid");
+  });
+});

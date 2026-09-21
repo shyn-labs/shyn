@@ -123,6 +123,7 @@ export const CLAUDE_ADD_COMMAND =
 
 const START_HINT = "start it: shyn install (or pnpm --filter @shyn/daemon start)";
 const MIC_HINT = "System Settings → Privacy & Security → Microphone";
+const LID_HINT = "keep the lid open until this finishes — a sleeping Mac pauses transcription";
 const SCREEN_HINT = "System Settings → Privacy & Security → Screen & System Audio Recording";
 const SILENT_HINT = "agent installed but silent — crashed or quarantined? (see known-issues.md)";
 
@@ -177,6 +178,9 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
           label: "Meeting agent",
           value: m.state === "transcribing" ? transcribeLabel(m.transcribeProgress).row : m.state,
           tone: m.state === "recording" ? "err" : "ok",
+          // The agent holds idle sleep off while it decodes, but a closed lid
+          // sleeps a portable regardless — say so while it matters.
+          ...(m.state === "transcribing" ? { hint: LID_HINT } : {}),
         });
         // Live card is recording-only: the Swift agent clears sessionStartedAt/
         // sessionApp in endSession BEFORE posting state "transcribing", so a
