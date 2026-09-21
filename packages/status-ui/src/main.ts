@@ -262,6 +262,9 @@ if (!app.requestSingleInstanceLock()) {
       display.workArea.x + display.workArea.width - WIN.width - 8);
     w.setPosition(x, display.workArea.y + 4);
     w.show();
+    // Belt to the render-process-gone braces: if the renderer is dead when
+    // the user opens the popover, reload rather than show an empty frame.
+    if (w.webContents.isCrashed()) { w.webContents.reload(); return; }
     if (lastVm) w.webContents.send("view", lastVm);
   }
 
@@ -278,6 +281,28 @@ if (!app.requestSingleInstanceLock()) {
       },
     });
     void win.loadFile(join(DIST, "index.html"));
+    // The popover's renderer can die while hidden — Chromium reclaims it
+    // under memory pressure, or a GPU fault takes it. Electron keeps the
+    // BrowserWindow, so the next click showed a 320×440 frosted rectangle
+    // with nothing in it and no way back short of restarting the app (lived
+    // 2026-09-21; reproduced with Page.crash over CDP). Say why, then reload;
+    // did-finish-load below repaints from the last view.
+    win.webContents.on("render-process-gone", (_e, details) => {
+      console.error(`popover renderer gone: ${details.reason} (exit ${details.exitCode}) — reloading`);
+      live(win)?.webContents.reload();
+    });
+    // A fresh renderer (first load or reload) has nothing to show until the
+    // next poll tick; hand it the last view at once so an open popover is
+    // never blank for three seconds — or forever, after a reload.
+    win.webContents.on("did-finish-load", () => {
+      const w = live(win);
+      if (w && lastVm) w.webContents.send("view", lastVm);
+    });
+    // Renderer console lines are otherwise invisible: no DevTools on a menu
+    // bar app, and the sandboxed page cannot write status.log itself.
+    win.webContents.on("console-message", (_e, level, message) => {
+      if (level >= 2) console.error(`popover renderer [${level}]: ${message}`);
+    });
     win.on("blur", () => live(win)?.hide());
     tray.on("click", toggleWindow);
 
