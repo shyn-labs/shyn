@@ -57,10 +57,14 @@ public func withSystemAwake<T>(holder: any SleepHolder = ProcessInfoSleepHolder.
 // Awake time comes from the monotonic clock, which does not advance while
 // the machine sleeps; wall time from the calendar clock, which does. Their
 // gap is the sleep. Sub-2s skew is clock noise and is not reported.
-public func transcribeTimingLine(awakeSec: Double, wallSec: Double) -> String {
+// modelLoadSec, when known, is the fixed cost of bringing Whisper up — about
+// a minute and a half for large-v3_turbo — which otherwise hides inside
+// "awake" and makes a 10-second recording look like it decoded for 1m41s.
+public func transcribeTimingLine(awakeSec: Double, wallSec: Double, modelLoadSec: Double? = nil) -> String {
     var line = "took \(fmtDuration(awakeSec)) awake · \(fmtDuration(wallSec)) wall"
     let asleep = wallSec - awakeSec
     if asleep >= 2 { line += " · asleep \(fmtDuration(asleep))" }
+    if let load = modelLoadSec { line += " · model load \(fmtDuration(load))" }
     return line
 }
 

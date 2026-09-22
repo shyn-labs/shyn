@@ -88,6 +88,30 @@ public func voicedChunks(samples: [Float], sampleRate: Int,
     return out
 }
 
+// Silence and a threshold miss are different failures with different costs.
+// The whole-channel fallback exists for the miss — energy that never sustains
+// for 250ms — and is cheap insurance. Running it on a channel with no energy
+// at all (a room recording's system channel) decodes an hour of nothing for
+// an hour of meeting; on 2026-09-22 it spent 1m45s on 90s of zeros.
+public enum ChannelVerdict: Equatable, Sendable { case silent, noSustainedVoice, voiced }
+
+public func channelVerdict(samples: [Float], sampleRate: Int,
+                           frameMs: Int = 20, threshold: Float = 0.01) -> ChannelVerdict {
+    if !voicedChunks(samples: samples, sampleRate: sampleRate, frameMs: frameMs, threshold: threshold).isEmpty {
+        return .voiced
+    }
+    let frame = max(1, sampleRate * frameMs / 1000)
+    var peak: Float = 0
+    var i = 0
+    while i + frame <= samples.count {
+        var sum: Float = 0
+        for j in i..<(i + frame) { sum += samples[j] * samples[j] }
+        peak = max(peak, (sum / Float(frame)).squareRoot())
+        i += frame
+    }
+    return peak < threshold / 2 ? .silent : .noSustainedVoice
+}
+
 public func sliceSamples(_ samples: [Float], chunk: VoicedChunk, sampleRate: Int) -> [Float] {
     let s = max(0, Int(chunk.startSec * Double(sampleRate)))
     let e = min(samples.count, Int(chunk.endSec * Double(sampleRate)))
@@ -101,9 +125,17 @@ public func voicedSeconds(_ chunks: [VoicedChunk]) -> Double {
 // The measurement line: what fraction of each channel actually carried voice,
 // how many chunks the decoder saw, and how many it ran at once. Every call
 // reports its own achievable speedup instead of an estimate.
-public func transcribeCoverageLine(micVoicedSec: Double, micTotalSec: Double,
-                                   systemVoicedSec: Double, systemTotalSec: Double,
+// A nil voiced figure means the segmenter found no voice on that channel and
+// it was decoded whole — a fallback, not voice, and the line says so (lived
+// on the first room recording after 0.5.13: a silent system channel read as
+// "0m10s voiced of 0m10s").
+public func transcribeCoverageLine(micVoicedSec: Double?, micTotalSec: Double,
+                                   systemVoicedSec: Double?, systemTotalSec: Double,
+                                   micSkippedSilent: Bool = false, systemSkippedSilent: Bool = false,
                                    chunks: Int, workers: Int) -> String {
-    "mic \(fmtDuration(micVoicedSec)) voiced of \(fmtDuration(micTotalSec)) · "
-    + "system \(fmtDuration(systemVoicedSec)) · \(chunks) chunks · \(workers) workers"
+    let fallback = { (skipped: Bool) in skipped ? "silent, skipped" : "no voice found, decoded whole" }
+    let mic = micVoicedSec.map { "\(fmtDuration($0)) voiced of \(fmtDuration(micTotalSec))" }
+        ?? fallback(micSkippedSilent)
+    let sys = systemVoicedSec.map { fmtDuration($0) } ?? fallback(systemSkippedSilent)
+    return "mic \(mic) · system \(sys) · \(chunks) chunks · \(workers) workers"
 }

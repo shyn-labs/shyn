@@ -50,3 +50,12 @@ final class RecordingSleepHolder: SleepHolder, @unchecked Sendable {
     // Sub-2s skew is clock noise, not sleep — say nothing about it.
     #expect(line == "took 24m50s awake · 24m51s wall")
 }
+
+// A 10-second recording took 1m41s: the Whisper model load is a fixed cost
+// of about a minute and a half that the line was hiding inside "awake".
+@Test func timingLineSeparatesModelLoadFromDecoding() {
+    let line = transcribeTimingLine(awakeSec: 101, wallSec: 101, modelLoadSec: 90)
+    #expect(line == "took 1m41s awake · 1m41s wall · model load 1m30s")
+    // Without the load figure the line is unchanged (older call sites, tests).
+    #expect(transcribeTimingLine(awakeSec: 101, wallSec: 101) == "took 1m41s awake · 1m41s wall")
+}

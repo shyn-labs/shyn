@@ -22,15 +22,20 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
     // wall time on 2026-09-05 because the Mac slept under it). Both clocks are
     // logged below: uptime stops during sleep, Date does not, the gap is sleep.
     let wallStart = Date(), awakeStart = ProcessInfo.processInfo.systemUptime
+    let loadBox = LoadTimeBox()
     let timing = {
         transcribeTimingLine(awakeSec: ProcessInfo.processInfo.systemUptime - awakeStart,
-                             wallSec: Date().timeIntervalSince(wallStart))
+                             wallSec: Date().timeIntervalSince(wallStart),
+                             modelLoadSec: loadBox.seconds)
     }
     return await withSystemAwake(reason: "shyn: transcribing a meeting") {
         await transcribeChannels(mic: mic, system: system, model: model, modelDir: modelDir,
-                                 chunked: chunked, onProgress: onProgress, timing: timing)
+                                 chunked: chunked, onProgress: onProgress, timing: timing, loadBox: loadBox)
     }
 }
+
+// Records how long WhisperKit took to come up, for the timing line.
+final class LoadTimeBox: @unchecked Sendable { var seconds: Double? = nil }
 
 // Decoders run this many chunks at once. WhisperKit's macOS default is 16;
 // each worker carries its own KV cache on a ~3GB model, and memory pressure
@@ -40,11 +45,13 @@ let transcribeWorkers = 4
 private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: URL,
                                 chunked: Bool,
                                 onProgress: @escaping @Sendable (Double) async -> Void,
-                                timing: () -> String) async -> TranscriptionOutcome {
+                                timing: () -> String, loadBox: LoadTimeBox) async -> TranscriptionOutcome {
     do {
+        let loadStart = ProcessInfo.processInfo.systemUptime
         // downloadBase keeps CoreML models out of ~/Documents (WhisperKit's
         // default), which is TCC-protected for a headless agent.
         let pipe = try await WhisperKit(WhisperKitConfig(model: model, downloadBase: modelDir))
+        loadBox.seconds = ProcessInfo.processInfo.systemUptime - loadStart
         // No chunking. WhisperKit's `.vad` chunking returned ZERO segments for
         // our two-channel WAVs (verified 2026-07-28: turbo+VAD = 0 segments vs
         // 30 clean segments without it on the same audio), so the whole channel
@@ -66,14 +73,26 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
             opts.concurrentWorkerCount = transcribeWorkers
             var arrays: [[Float]] = []
             var meta: [(speaker: Speaker, offset: Double)] = []
-            var voiced: [Speaker: (Double, Double)] = [:]
+            var voiced: [Speaker: (Double?, Double)] = [:]   // nil voiced = decoded whole or skipped
+            var skipped: Set<Speaker> = []
             for (url, speaker) in channels {
                 do {
                     let samples = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
                     let totalSec = Double(samples.count) / 16_000
                     var chunks = voicedChunks(samples: samples, sampleRate: 16_000)
-                    if chunks.isEmpty { chunks = [VoicedChunk(startSec: 0, endSec: totalSec)] }
-                    voiced[speaker] = (voicedSeconds(chunks), totalSec)
+                    var fallback = false
+                    if chunks.isEmpty {
+                        switch channelVerdict(samples: samples, sampleRate: 16_000) {
+                        case .silent:
+                            // No energy at all: nothing to decode, and decoding it
+                            // anyway costs the length of the meeting.
+                            skipped.insert(speaker); voiced[speaker] = (nil, totalSec); continue
+                        default:
+                            fallback = true
+                            chunks = [VoicedChunk(startSec: 0, endSec: totalSec)]
+                        }
+                    }
+                    voiced[speaker] = (fallback ? nil : voicedSeconds(chunks), totalSec)
                     for c in chunks {
                         arrays.append(sliceSamples(samples, chunk: c, sampleRate: 16_000))
                         meta.append((speaker, c.startSec))
@@ -100,9 +119,11 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
                 }
             }
             if failed > 0 { channelErrors.append("\(failed) of \(arrays.count) chunks failed to decode") }
-            let m = voiced[.me] ?? (0, 0), o = voiced[.others] ?? (0, 0)
+            let m = voiced[.me] ?? (nil, 0), o = voiced[.others] ?? (nil, 0)
             coverage = "; " + transcribeCoverageLine(micVoicedSec: m.0, micTotalSec: m.1,
                                                      systemVoicedSec: o.0, systemTotalSec: o.1,
+                                                     micSkippedSilent: skipped.contains(.me),
+                                                     systemSkippedSilent: skipped.contains(.others),
                                                      chunks: arrays.count, workers: transcribeWorkers)
         }
         for (idx, (url, speaker)) in channels.enumerated() where !chunked {

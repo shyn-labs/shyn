@@ -71,3 +71,35 @@ private func approx(_ a: Double, _ b: Double, tol: Double = 0.06) -> Bool { abs(
                                       chunks: 63, workers: 4)
     #expect(line == "mic 18m12s voiced of 51m30s · system 24m05s · 63 chunks · 4 workers")
 }
+
+// Lived on the first manual recording after 0.5.13 shipped: a room recording
+// has a silent system channel, the segmenter found nothing, the channel was
+// decoded whole as designed — and the line said "system 0m10s voiced of
+// 0m10s". A fallback is not voice; the line must say which it was.
+@Test func coverageLineSaysWhenAChannelWasDecodedWholeForLackOfVoice() {
+    let line = transcribeCoverageLine(micVoicedSec: 10, micTotalSec: 10,
+                                      systemVoicedSec: nil, systemTotalSec: 10,
+                                      chunks: 2, workers: 4)
+    #expect(line == "mic 0m10s voiced of 0m10s · system no voice found, decoded whole · 2 chunks · 4 workers")
+}
+
+
+// The whole-channel fallback exists for a threshold MISS: energy is there but
+// never sustains. A channel with no energy at all is silence — a room
+// recording's system channel — and decoding it whole cost 1m45s for 90s of
+// nothing on 2026-09-22, and would cost an hour for an hour. Tell them apart.
+@Test func aChannelWithNoEnergyIsSilentNotAThresholdMiss() {
+    #expect(channelVerdict(samples: silence(30), sampleRate: SR) == .silent)
+    // Energy present but never sustained: ambiguous, keep the fallback.
+    let clicks = (0..<20).flatMap { _ in tone(0.05, amp: 0.3) + silence(1.0) }
+    #expect(channelVerdict(samples: clicks, sampleRate: SR) == .noSustainedVoice)
+    // Real speech-like sustain: voiced.
+    #expect(channelVerdict(samples: silence(2) + tone(2) + silence(2), sampleRate: SR) == .voiced)
+}
+
+@Test func coverageLineSaysWhenAChannelWasSkippedAsSilent() {
+    let line = transcribeCoverageLine(micVoicedSec: 10, micTotalSec: 90,
+                                      systemVoicedSec: nil, systemTotalSec: 90,
+                                      systemSkippedSilent: true, chunks: 1, workers: 4)
+    #expect(line == "mic 0m10s voiced of 1m30s · system silent, skipped · 1 chunks · 4 workers")
+}
