@@ -13,6 +13,11 @@ public struct MeetingConfig: Codable, Sendable {
     // sync is the transport), and a memory of your days without your schedule
     // in it is the gap this closes.
     public var calendarSync = true
+    // Decode only the voiced stretches of each channel, in chunks Whisper can
+    // run concurrently (CaptureCore/AudioSegmenter.swift). Off = the pre-0.5.13
+    // whole-channel decode, kept as the escape hatch if a threshold ever
+    // misses speech on someone's hardware.
+    public var chunkedTranscription = true
     // NOTE: `echoCancellation` existed in 0.4.18 and was REMOVED in 0.4.19 along
     // with the voice-processing code it gated. A live-degrading feature behind a
     // default-on flag is worse than no feature; a dead flag that silently does
@@ -29,6 +34,7 @@ public struct MeetingConfig: Codable, Sendable {
         whisperModel = try c.decodeIfPresent(String.self, forKey: .whisperModel) ?? "small"
         excludeApps = try c.decodeIfPresent([String].self, forKey: .excludeApps) ?? []
         calendarSync = try c.decodeIfPresent(Bool.self, forKey: .calendarSync) ?? true
+        chunkedTranscription = try c.decodeIfPresent(Bool.self, forKey: .chunkedTranscription) ?? true
     }
     public static let defaults = MeetingConfig()
 

@@ -209,9 +209,14 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
   switch by hand: `"meeting": { "whisperModel": "large-v3_turbo" }` in
   `~/Library/Application Support/shyn/capture.json` (any WhisperKit model
   name works there; the popover shows an unrecognised one as "custom").
-  Config hot-reloads, no restart. Transcription holds idle sleep off while
-  it runs, but a closed lid still sleeps a laptop and pauses it — the popover
-  says so while a transcription is in progress.
+  Config hot-reloads, no restart. Transcription decodes only the voiced
+  stretches of each channel, several at a time (`"chunkedTranscription":
+  false` restores the whole-channel decode); the log line for every meeting
+  reports how much of each channel carried voice. It holds idle sleep off
+  while it runs, but a closed lid still sleeps a laptop and pauses it — the
+  popover says so while a transcription is in progress. To time or compare
+  decoders on your own files: `shyn-meeting transcribe mic.wav system.wav
+  [--whole]` (binary inside the staged `shyn-meeting.app`).
 - **Meeting titles are optional and layered**: the calendar event first
   (needs Calendar access), the call window's title second (needs
   Accessibility), plain "app · date" otherwise. Decline everything and

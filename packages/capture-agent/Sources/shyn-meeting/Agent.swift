@@ -435,6 +435,7 @@ actor MeetingAgent {
         let outcome = await transcribeMeeting(mic: urls.mic, system: urls.system,
                                               model: cfg.whisperModel,
                                               modelDir: whisperModelDir,
+                                              chunked: cfg.chunkedTranscription,
                                               onProgress: { p in await self.updateTranscribeProgress(p) })
         let segs: [TranscriptSegment]
         switch outcome {

@@ -25,7 +25,39 @@ struct MeetingMain {
             exit(1)
         }
         if CommandLine.arguments.contains("selftest") { await runSelfTest() }
+        if CommandLine.arguments.contains("transcribe") { await runTranscribeFile() }
         runAgent()
+    }
+
+    // transcribe <mic.wav> <system.wav> [--whole]: run the real transcriber on
+    // two channel files and print the segments and the timing line. Recordings
+    // are purged after transcription, so this is the only way to compare the
+    // chunked and whole-channel decoders on the same audio, or to time a
+    // model, without a live meeting. Diagnostic entry; never returns.
+    @available(macOS 14.2, *)
+    private static func runTranscribeFile() async -> Never {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "transcribe"), args.count > i + 2 else {
+            FileHandle.standardError.write(Data("usage: shyn-meeting transcribe <mic.wav> <system.wav> [--whole]\n".utf8))
+            exit(2)
+        }
+        let cfg = MeetingConfig.load(from: configPath)
+        let chunked = !args.contains("--whole")
+        let t0 = Date()
+        let outcome = await transcribeMeeting(mic: URL(fileURLWithPath: args[i + 1]),
+                                              system: URL(fileURLWithPath: args[i + 2]),
+                                              model: cfg.whisperModel, modelDir: whisperModelDir,
+                                              chunked: chunked)
+        switch outcome {
+        case .failure(let reason):
+            print("FAILED: \(reason)"); exit(1)
+        case .segments(let segs):
+            for s in segs.sorted(by: { $0.start < $1.start }) {
+                print(String(format: "%7.2f  %@: %@", s.start, s.speaker.rawValue, s.text))
+            }
+            print("mode=\(chunked ? "chunked" : "whole") model=\(cfg.whisperModel) segments=\(segs.count) wall=\(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
+            exit(0)
+        }
     }
 
     // selftest: exercise the meeting wire path (assemble → payload → ingest →

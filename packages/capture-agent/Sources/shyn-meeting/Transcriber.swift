@@ -16,6 +16,7 @@ import CaptureCore
 // The caller purges audio on silence and keeps it for retry on failure, so
 // collapsing the two (as this did until 2026-08-05) destroys recordings.
 func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
+                       chunked: Bool = true,
                        onProgress: @escaping @Sendable (Double) async -> Void = { _ in }) async -> TranscriptionOutcome {
     // Idle sleep stays off for the whole decode (a 25-minute job took 4h40m of
     // wall time on 2026-09-05 because the Mac slept under it). Both clocks are
@@ -27,11 +28,17 @@ func transcribeMeeting(mic: URL, system: URL, model: String, modelDir: URL,
     }
     return await withSystemAwake(reason: "shyn: transcribing a meeting") {
         await transcribeChannels(mic: mic, system: system, model: model, modelDir: modelDir,
-                                 onProgress: onProgress, timing: timing)
+                                 chunked: chunked, onProgress: onProgress, timing: timing)
     }
 }
 
+// Decoders run this many chunks at once. WhisperKit's macOS default is 16;
+// each worker carries its own KV cache on a ~3GB model, and memory pressure
+// during transcription is what killed the popover renderer on 2026-09-21.
+let transcribeWorkers = 4
+
 private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: URL,
+                                chunked: Bool,
                                 onProgress: @escaping @Sendable (Double) async -> Void,
                                 timing: () -> String) async -> TranscriptionOutcome {
     do {
@@ -42,7 +49,7 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
         // our two-channel WAVs (verified 2026-07-28: turbo+VAD = 0 segments vs
         // 30 clean segments without it on the same audio), so the whole channel
         // is transcribed. The speed win comes from the turbo model, not VAD.
-        let opts = DecodingOptions(task: .transcribe, skipSpecialTokens: true)
+        var opts = DecodingOptions(task: .transcribe, skipSpecialTokens: true)
         // Only the channels that actually recorded; drives the progress denominator.
         let channels = [(mic, Speaker.me), (system, Speaker.others)]
             .filter { FileManager.default.fileExists(atPath: $0.0.path) }
@@ -50,7 +57,55 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
         var dropped = (annotation: 0, repeated: 0)
         var segs: [TranscriptSegment] = []
         var channelErrors: [String] = []
-        for (idx, (url, speaker)) in channels.enumerated() {
+        var coverage = ""
+        if chunked {
+            // Voiced chunks only, both channels in one concurrent batch
+            // (CaptureCore/AudioSegmenter.swift). A channel the segmenter
+            // finds nothing in is decoded whole, exactly as before — a
+            // threshold miss must never cost a transcript.
+            opts.concurrentWorkerCount = transcribeWorkers
+            var arrays: [[Float]] = []
+            var meta: [(speaker: Speaker, offset: Double)] = []
+            var voiced: [Speaker: (Double, Double)] = [:]
+            for (url, speaker) in channels {
+                do {
+                    let samples = try AudioProcessor.loadAudioAsFloatArray(fromPath: url.path)
+                    let totalSec = Double(samples.count) / 16_000
+                    var chunks = voicedChunks(samples: samples, sampleRate: 16_000)
+                    if chunks.isEmpty { chunks = [VoicedChunk(startSec: 0, endSec: totalSec)] }
+                    voiced[speaker] = (voicedSeconds(chunks), totalSec)
+                    for c in chunks {
+                        arrays.append(sliceSamples(samples, chunk: c, sampleRate: 16_000))
+                        meta.append((speaker, c.startSec))
+                    }
+                } catch { channelErrors.append("\(speaker.rawValue): \(error)") }
+            }
+            let onWindow: TranscriptionCallback = { _ in
+                let f = pipe.progress.fractionCompleted
+                Task { await onProgress(f) }
+                return nil
+            }
+            let results = await pipe.transcribe(audioArrays: arrays, decodeOptions: opts, callback: onWindow)
+            var failed = 0
+            for (i, rs) in results.enumerated() {
+                guard let rs else { failed += 1; continue }
+                for r in rs {
+                    for s in r.segments {
+                        let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if text.isEmpty { continue }
+                        if isNonSpeechAnnotation(text) { dropped.annotation += 1; continue }
+                        segs.append(TranscriptSegment(start: meta[i].offset + Double(s.start),
+                                                      speaker: meta[i].speaker, text: text))
+                    }
+                }
+            }
+            if failed > 0 { channelErrors.append("\(failed) of \(arrays.count) chunks failed to decode") }
+            let m = voiced[.me] ?? (0, 0), o = voiced[.others] ?? (0, 0)
+            coverage = "; " + transcribeCoverageLine(micVoicedSec: m.0, micTotalSec: m.1,
+                                                     systemVoicedSec: o.0, systemTotalSec: o.1,
+                                                     chunks: arrays.count, workers: transcribeWorkers)
+        }
+        for (idx, (url, speaker)) in channels.enumerated() where !chunked {
             // WhisperKit fires this per decode window; read its Progress into a
             // single 0…1 fraction and hand only the Double (Sendable) to the
             // actor — the non-Sendable pipe never crosses an isolation boundary.
@@ -87,13 +142,15 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
         // is the entire reason it exists (an undatable failure line is what
         // made the 15 Jul model outage impossible to place).
         FileHandle.standardError.write(Data(
-            logLine("[transcriber] kept \(kept.count) segments; dropped \(reasons); \(timing())").utf8))
+            logLine("[transcriber] kept \(kept.count) segments; dropped \(reasons); \(timing())\(coverage)").utf8))
         await onProgress(1.0)
         // Nothing DECODED and every channel errored: infra, not silence. The
         // test is on `segs`, not `kept`, on purpose — a decode that produced
         // segments which the filters then removed is a genuinely empty meeting
         // (.segments([]), caller purges), not a failure to keep audio for.
-        if segs.isEmpty, !channelErrors.isEmpty, channelErrors.count == channels.count {
+        let allFailed = chunked ? (segs.isEmpty && !channelErrors.isEmpty)
+                                : (segs.isEmpty && !channelErrors.isEmpty && channelErrors.count == channels.count)
+        if allFailed {
             FileHandle.standardError.write(Data(
                 logLine("[transcriber] all channels failed: \(channelErrors.joined(separator: "; "))").utf8))
             return .failure(channelErrors.joined(separator: "; "))
