@@ -49,8 +49,16 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
     do {
         let loadStart = ProcessInfo.processInfo.systemUptime
         // downloadBase keeps CoreML models out of ~/Documents (WhisperKit's
-        // default), which is TCC-protected for a headless agent.
-        let pipe = try await WhisperKit(WhisperKitConfig(model: model, downloadBase: modelDir))
+        // default), which is TCC-protected for a headless agent. The folder is
+        // named and downloads are OFF: the model is on disk by the time a
+        // session reaches transcription (the pending queue holds it otherwise),
+        // and with downloads on WhisperKit consults the model hub on every
+        // load — a network round trip inside "model load" that swung between
+        // 9s and 49s on the same binary (2026-09-22), and one a transcriber
+        // that promises to stay on the machine should never make.
+        let pipe = try await WhisperKit(WhisperKitConfig(model: model, downloadBase: modelDir,
+                                                         modelFolder: whisperModelFolder(model: model, modelDir: modelDir),
+                                                         download: false))
         loadBox.seconds = ProcessInfo.processInfo.systemUptime - loadStart
         // No chunking. WhisperKit's `.vad` chunking returned ZERO segments for
         // our two-channel WAVs (verified 2026-07-28: turbo+VAD = 0 segments vs
@@ -191,8 +199,34 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
 // True once the CoreML model files exist locally (status reporting; the
 // first transcription triggers the download otherwise).
 func whisperModelPresent(model: String, modelDir: URL) -> Bool {
-    let dir = modelDir
-        .appendingPathComponent("models/argmaxinc/whisperkit-coreml/openai_whisper-\(model)")
     return FileManager.default.fileExists(
-        atPath: dir.appendingPathComponent("TextDecoder.mlmodelc").path)
+        atPath: whisperModelFolder(model: model, modelDir: modelDir) + "/TextDecoder.mlmodelc")
+}
+
+// Brings Whisper up exactly the way transcribeMeeting does and lets it go,
+// so macOS specializes the Core ML models to this chip now and caches the
+// result. Without it the first transcription after every upgrade paid ~90s
+// itself (2026-09-22: 100s cold, 13s warm on the same file). WhisperKit's
+// own `prewarm` mode (load each model, unload) was tried first and left 40s
+// of it behind — the full load path specializes more than the sequential
+// one does — so this is the real init, ~3GB for about a minute and a half,
+// at startup, off the critical path. Returns seconds taken, or nil.
+func prewarmWhisper(model: String, modelDir: URL) async -> Double? {
+    let t0 = ProcessInfo.processInfo.systemUptime
+    do {
+        // With download off, WhisperKit needs the folder spelled out — the same
+        // one whisperModelPresent checks.
+        _ = try await WhisperKit(WhisperKitConfig(model: model, downloadBase: modelDir,
+                                                  modelFolder: whisperModelFolder(model: model, modelDir: modelDir),
+                                                  download: false))
+        return ProcessInfo.processInfo.systemUptime - t0
+    } catch {
+        FileHandle.standardError.write(Data(logLine("[meeting] whisper prewarm failed: \(error)").utf8))
+        return nil
+    }
+}
+
+// The one place the on-disk layout of a WhisperKit model is spelled out.
+func whisperModelFolder(model: String, modelDir: URL) -> String {
+    modelDir.appendingPathComponent("models/argmaxinc/whisperkit-coreml/openai_whisper-\(model)").path
 }

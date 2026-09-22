@@ -68,7 +68,7 @@ public func transcribeTimingLine(awakeSec: Double, wallSec: Double, modelLoadSec
     return line
 }
 
-func fmtDuration(_ seconds: Double) -> String {
+public func fmtDuration(_ seconds: Double) -> String {
     let s = Int(seconds.rounded())
     let h = s / 3600, m = (s % 3600) / 60, r = s % 60
     return h > 0 ? String(format: "%dh%02dm%02ds", h, m, r) : String(format: "%dm%02ds", m, r)

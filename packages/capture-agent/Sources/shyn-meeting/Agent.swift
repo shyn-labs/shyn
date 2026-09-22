@@ -665,6 +665,31 @@ actor MeetingAgent {
         predownloadGate.finished(success: success, now: Int(Date().timeIntervalSince1970))
         await setWhisperDownloading(false)
     }
+
+    // Specialize the Core ML models to this chip now, not at the first meeting
+    // after an upgrade (CaptureCore/PrewarmGate.swift, Transcriber.swift).
+    private var prewarmGate = PrewarmGate()
+
+    func maybeKickPrewarm() async {
+        let cfg = MeetingConfig.load(from: configPath)
+        let dir = URL(fileURLWithPath: home + "/models/whisperkit")
+        let idle = sessionDir == nil && pendingTranscriptions == 0
+        guard prewarmGate.shouldKick(model: cfg.whisperModel,
+                                     present: whisperModelPresent(model: cfg.whisperModel, modelDir: dir),
+                                     idle: idle) else { return }
+        let model = cfg.whisperModel
+        Task.detached(priority: .background) {
+            let took = await prewarmWhisper(model: model, modelDir: dir)
+            await self.finishPrewarm(model: model, took: took)
+        }
+    }
+
+    private func finishPrewarm(model: String, took: Double?) {
+        prewarmGate.finished(model: model)
+        if let took {
+            logErr("[meeting] whisper prewarm (\(model)) took \(fmtDuration(took)) — first transcription will not pay it")
+        }
+    }
 }
 
 @available(macOS 14.2, *)
@@ -702,6 +727,7 @@ actor MeetingAgent {
         while true {
             await agent.tick()
             await agent.maybeKickPredownload()
+            await agent.maybeKickPrewarm()
             try? await Task.sleep(for: .seconds(3))
         }
     }

@@ -26,7 +26,20 @@ struct MeetingMain {
         }
         if CommandLine.arguments.contains("selftest") { await runSelfTest() }
         if CommandLine.arguments.contains("transcribe") { await runTranscribeFile() }
+        if CommandLine.arguments.contains("prewarm") { await runPrewarm() }
         runAgent()
+    }
+
+    // prewarm: specialize the configured model's Core ML files to this chip
+    // and exit. What the agent does at startup; here to time it and to prove
+    // the cache survives across processes of the same binary.
+    @available(macOS 14.2, *)
+    private static func runPrewarm() async -> Never {
+        let cfg = MeetingConfig.load(from: configPath)
+        if let took = await prewarmWhisper(model: cfg.whisperModel, modelDir: whisperModelDir) {
+            print("prewarm OK: \(cfg.whisperModel) in \(String(format: "%.1f", took))s"); exit(0)
+        }
+        exit(1)
     }
 
     // transcribe <mic.wav> <system.wav> [--whole]: run the real transcriber on
