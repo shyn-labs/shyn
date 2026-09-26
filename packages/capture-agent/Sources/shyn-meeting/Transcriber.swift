@@ -122,6 +122,7 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
                         if text.isEmpty { continue }
                         if isNonSpeechAnnotation(text) { dropped.annotation += 1; continue }
                         segs.append(TranscriptSegment(start: meta[i].offset + Double(s.start),
+                                                      end: meta[i].offset + Double(s.end),
                                                       speaker: meta[i].speaker, text: text))
                     }
                 }
@@ -152,7 +153,8 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
                     let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if text.isEmpty { continue }
                     if isNonSpeechAnnotation(text) { dropped.annotation += 1; continue }
-                    segs.append(TranscriptSegment(start: Double(s.start), speaker: speaker, text: text))
+                    segs.append(TranscriptSegment(start: Double(s.start), end: Double(s.end),
+                                                  speaker: speaker, text: text))
                 }
             }
         }

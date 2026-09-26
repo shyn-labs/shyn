@@ -38,3 +38,19 @@ import Foundation
     // A parenthesised phrase is part of a meeting name, not a profile.
     #expect(!isProfileSuffix("Roadmap review (eng only)"))
 }
+
+// Lived 2026-09-24: with the calendar rung down, Chrome's recording indicator
+// became part of a meeting's name.
+@Test func stripsChromeTabStateSuffixes() {
+    #expect(cleanMeetingWindowTitle(
+        "Meet - Sam / Alex - Camera and microphone recording - Google Chrome \u{2013} Sam (example.com)")
+        == "Sam / Alex")
+    #expect(cleanMeetingWindowTitle("Meet - Weekly Ops Review \u{2013} Audio playing") == "Weekly Ops Review")
+    #expect(cleanMeetingWindowTitle(
+        "Meet - Weekly Ops Review - High memory usage - 1,008 MB - Google Chrome") == "Weekly Ops Review")
+    #expect(cleanMeetingWindowTitle("Meet - Camera and microphone recording") == nil)
+}
+
+@Test func keepsNumbersThatAreNotMemorySizes() {
+    #expect(cleanMeetingWindowTitle("Q3 plan - 2026 MB review") == "Q3 plan - 2026 MB review")
+}

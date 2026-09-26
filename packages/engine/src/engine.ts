@@ -88,8 +88,17 @@ export class Engine {
   }) {
     const conds: string[] = []; const params: unknown[] = [];
     // An explicit window wins; `hours` only applies when timeFrom is absent.
+    //
+    // `hours` is a LOOKBACK, so it also ends at now. Calendar sync ships events
+    // up to a month ahead with their start time as ts; with no upper bound,
+    // "the last 7 days" came back led by a page of next month's events (lived
+    // 2026-09-26: 100 rows reaching 25 Oct, the actual week pushed off the page).
+    const now = Math.floor(Date.now() / 1000);
     if (p.timeFrom !== undefined) { conds.push("ts >= ?"); params.push(p.timeFrom); }
-    else { conds.push("ts >= ?"); params.push(Math.floor(Date.now() / 1000) - (p.hours ?? 24) * 3600); }
+    else {
+      conds.push("ts >= ?"); params.push(now - (p.hours ?? 24) * 3600);
+      if (p.timeTo === undefined) { conds.push("ts <= ?"); params.push(now); }
+    }
     if (p.timeTo !== undefined) { conds.push("ts <= ?"); params.push(p.timeTo); }
     if (p.sources?.length) {
       conds.push(`source IN (${p.sources.map(() => "?").join(",")})`);

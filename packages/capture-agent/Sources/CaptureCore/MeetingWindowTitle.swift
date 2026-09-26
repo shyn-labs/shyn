@@ -19,6 +19,26 @@ let windowTitleFurniture: Set<String> = [
     "slack", "call", "new tab", "untitled",
 ]
 
+// Chrome appends tab STATE to the window title, and a call tab is exactly the
+// tab that carries it: "Meet - Sprint Review - Camera and microphone recording
+// - Google Chrome". Lived 2026-09-24: a 1:1 shipped titled "Sam / Alex - Camera
+// and microphone recording" (the calendar rung was down: the invite
+// had moved that morning). Compared lowercased, whole component.
+let chromeTabStateFurniture: Set<String> = [
+    "camera and microphone recording", "camera recording", "microphone recording",
+    "audio playing", "audio muted", "screen sharing", "sharing this tab",
+    "sharing your screen", "high memory usage", "network error",
+]
+
+// Chrome's memory warning carries its own " - " separator:
+// "... - High memory usage - 857 MB - Google Chrome". Once split, the size is
+// a component on its own, and it is never part of a meeting name.
+func isMemorySizeComponent(_ component: String) -> Bool {
+    let parts = component.split(separator: " ")
+    guard parts.count == 2, ["kb", "mb", "gb"].contains(parts[1].lowercased()) else { return false }
+    return Double(parts[0].replacingOccurrences(of: ",", with: "")) != nil
+}
+
 // " – Sam (example.com)" style Chrome profile suffix: a name followed by a
 // parenthesised domain. Never part of a meeting name.
 func isProfileSuffix(_ component: String) -> Bool {
@@ -36,6 +56,8 @@ public func cleanMeetingWindowTitle(_ raw: String?) -> String? {
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .filter { !$0.isEmpty }
         .filter { !windowTitleFurniture.contains($0.lowercased()) }
+        .filter { !chromeTabStateFurniture.contains($0.lowercased()) }
+        .filter { !isMemorySizeComponent($0) }
         .filter { !isProfileSuffix($0) }
     guard !parts.isEmpty else { return nil }
     let title = parts.joined(separator: " - ")

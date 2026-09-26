@@ -202,3 +202,18 @@ private func event(_ title: String, attendees: Int, minutes: Int,
     // recording would justify itself and the gate would never purge anything.
     #expect(!callEvidence(inputHolders: ["com.shyn.meeting"], outputHolders: []))
 }
+
+// Lived 2026-09-24: dictation in a terminal started the pre-roll, a Chrome call
+// joined, and the record stayed filed under the terminal.
+@Test func refilesATerminalSessionUnderTheConferencingHolder() {
+    #expect(conferencingUpgrade(current: "com.mitchellh.ghostty", holderNow: "com.google.Chrome")
+            == "com.google.Chrome")
+    #expect(conferencingUpgrade(current: nil, holderNow: "us.zoom.xos") == "us.zoom.xos")
+}
+
+@Test func neverRefilesAwayFromAConferencingApp() {
+    // A Zoom call where a browser tab grabs the mic stays a Zoom call.
+    #expect(conferencingUpgrade(current: "us.zoom.xos", holderNow: "com.google.Chrome") == nil)
+    #expect(conferencingUpgrade(current: "com.google.Chrome", holderNow: "com.google.Chrome") == nil)
+    #expect(conferencingUpgrade(current: "com.mitchellh.ghostty", holderNow: nil) == nil)
+}

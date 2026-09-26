@@ -98,6 +98,23 @@ public func conferencingHolder(from bundleIds: [String]) -> String? {
     bundleIds.first { isConferencingCapableBundleId($0) }
 }
 
+/// Should a session filed under one app be re-filed under the conferencing
+/// app that holds the mic now? Returns the bundle id to adopt, or nil.
+///
+/// Identity is read at PRE-ROLL, and pre-roll can start before the call does.
+/// Lived 2026-09-24: voice dictation into a terminal held the mic, a call
+/// joined in Chrome a minute later, and the gate committed on Chrome's
+/// evidence — but the record stayed filed under Ghostty, named after the
+/// terminal tab. By commit, the app on the call is known; use it.
+///
+/// Only ever upgrades FROM a non-conferencing app. A session already filed
+/// under Zoom does not jump to Chrome because a tab grabbed the mic mid-call.
+public func conferencingUpgrade(current: String?, holderNow: String?) -> String? {
+    guard let holderNow, holderNow != current else { return nil }
+    if let current, isConferencingCapableBundleId(current) { return nil }
+    return holderNow
+}
+
 /// Is a call actually happening, judged from who holds which audio streams?
 ///
 /// INPUT ONLY, and the reason matters. Reading the OUTPUT stream made any

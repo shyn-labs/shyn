@@ -73,6 +73,26 @@ describe("Engine facade", () => {
     await e.close();
   });
 
+  // Calendar events are ingested ahead of time with ts = event start. A
+  // lookback ("last N hours") must not return them (lived 2026-09-26: a
+  // 7-day lookback came back led by next month's calendar).
+  it("keeps future-dated documents out of an hours lookback", async () => {
+    const embedder = new Embedder(async () => (<EmbedBackend>{
+      embed: async () => new Float32Array(EMBEDDING_DIM), dispose: async () => {},
+    }));
+    const e = new Engine({
+      dbPath: join(mkdtempSync(join(tmpdir(), "shyn-")), "t.db"),
+      keyProvider: new StaticKeyProvider(null), embedder,
+    });
+    const now = Math.floor(Date.now() / 1000);
+    e.ingest({ source: "calendar", uri: "cal://past", title: "past", ts: now - 3600, text: "standup" });
+    e.ingest({ source: "calendar", uri: "cal://future", title: "future", ts: now + 7 * 86400, text: "offsite" });
+    expect(e.recent({ hours: 24 }).map((d) => d.uri)).toEqual(["cal://past"]);
+    // An explicit window can still look ahead: that is asking for the future.
+    expect(e.recent({ timeFrom: now, timeTo: now + 30 * 86400 }).map((d) => d.uri)).toEqual(["cal://future"]);
+    await e.close();
+  });
+
   // Reconstructing a specific past window (live finding 2026-08-05: a day
   // replay could only sample it via ranked search) needs an explicit window,
   // chronological order, and paging that does not silently truncate.

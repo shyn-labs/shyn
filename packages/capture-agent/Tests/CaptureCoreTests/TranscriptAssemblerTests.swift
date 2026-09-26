@@ -47,6 +47,38 @@ import Foundation
             == "Others: Why are you doing this for the previous seasons?")
 }
 
+// Lived 2026-09-24 (chunked transcription): one long far-side answer, echoed
+// on the mic as two shorter pieces starting 6s and 14s into it. Both used to
+// ship as "Me:". Shape from that transcript, wording paraphrased.
+@Test func dropsMicEchoPiecesStartingInsideALongFarSideSegment() {
+    let segs = [
+        TranscriptSegment(start: 40.0, end: 62.0, speaker: .others,
+                          text: "We started with a basic review of the current setup and what the plan is, "
+                              + "they want to add an audit framework as well, and right now there is no "
+                              + "directory service at all, only an endpoint agent and the mail suite"),
+        TranscriptSegment(start: 46.0, end: 52.0, speaker: .me,
+                          text: "the current setup and what the plan is, they want to add an audit"),
+        TranscriptSegment(start: 54.0, end: 61.0, speaker: .me,
+                          text: "right now there is no directory service, only an endpoint agent and the mail suite"),
+        TranscriptSegment(start: 63.0, end: 66.0, speaker: .me,
+                          text: "Yeah, that's right. So tell me what you would do first"),
+    ]
+    let kept = dropEchoDuplicates(segs)
+    #expect(kept.count == 2)
+    #expect(kept.last?.text.hasPrefix("Yeah, that's right") == true)
+}
+
+@Test func keepsMicSpeechAfterALongFarSideSegmentEnds() {
+    // Same words, but said well after the far side stopped: a genuine repeat.
+    let segs = [
+        TranscriptSegment(start: 0.0, end: 20.0, speaker: .others,
+                          text: "there is no directory service at all only an endpoint agent and the mail suite"),
+        TranscriptSegment(start: 40.0, end: 45.0, speaker: .me,
+                          text: "so no directory service, only an endpoint agent and the mail suite"),
+    ]
+    #expect(dropEchoDuplicates(segs).count == 2)
+}
+
 @Test func keepsShortAffirmationsFromBothSides() {
     // "Yes, absolutely." on both channels: under echoMinTokens, so left alone.
     // Noise beats deleting a real "yes" that both people said.
@@ -161,4 +193,20 @@ private func s(_ who: Speaker, _ t: String, _ at: Double) -> TranscriptSegment {
     #expect(farSideLabel([], others: ["Sam"]) == .others)          // nothing to label
     let segs = [s(.me, "hello", 0), s(.others, "hi", 1)]
     #expect(farSideLabel(segs, others: ["   "]) == .others)        // blank name is no name
+}
+
+// Lived 2026-09-22: a named, attended call shipped as "Thank you." / "you".
+@Test func flagsARecordingThatHeardAlmostNothing() {
+    let segs = [TranscriptSegment(start: 3, speaker: .me, text: "Thank you."),
+                TranscriptSegment(start: 900, speaker: .others, text: "you")]
+    let note = negligibleSpeechNote(segs, durationSeconds: 1800)
+    #expect(note?.hasPrefix("shyn heard almost no speech: 3 words in 30 min") == true)
+}
+
+@Test func leavesOrdinaryAndShortRecordingsAlone() {
+    let talk = [TranscriptSegment(start: 0, speaker: .me,
+                                  text: "let us go through the audit pipeline numbers for this week")]
+    #expect(negligibleSpeechNote(talk, durationSeconds: 1800) == nil)
+    #expect(negligibleSpeechNote([TranscriptSegment(start: 0, speaker: .me, text: "testing")],
+                                 durationSeconds: 20) == nil)
 }

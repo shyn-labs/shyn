@@ -4,10 +4,14 @@ public enum Speaker: String, Sendable { case me = "Me", others = "Others" }
 
 public struct TranscriptSegment: Sendable {
     public let start: Double
+    /// When the segment stops, if the decoder said. Echo matching needs it: a
+    /// far-side segment can run 20s, and its echo on the mic starts wherever
+    /// Whisper chose to split the quieter copy, not at the same instant.
+    public let end: Double?
     public let speaker: Speaker
     public let text: String
-    public init(start: Double, speaker: Speaker, text: String) {
-        self.start = start; self.speaker = speaker; self.text = text
+    public init(start: Double, end: Double? = nil, speaker: Speaker, text: String) {
+        self.start = start; self.end = end; self.speaker = speaker; self.text = text
     }
 }
 
@@ -21,6 +25,13 @@ public struct TranscriptSegment: Sendable {
 // Directional on purpose: the system tap records other processes' OUTPUT,
 // which cannot contain the user's own voice, so when the two channels agree
 // the mic copy is the echo and the system copy is the truth.
+//
+// Matched against the far-side segment's whole SPAN, not its start (lived
+// 2026-09-24/25, two calls on 0.5.13+): chunked transcription splits
+// the two channels at different points, so one 20-second far-side sentence
+// came back as two or three mic segments starting well inside it. Start-to-
+// start within 2.5s caught the first piece at best, and the rest shipped as
+// "Me:" — whole answers credited to the wrong person.
 //
 // Knobs tuned against that transcript — Whisper rewords across channels
 // ("trying to do it for the old years" vs "doing this for the past years"),
@@ -51,6 +62,10 @@ public func dropEchoDuplicates(_ segments: [TranscriptSegment]) -> [TranscriptSe
     let others = segments.filter { $0.speaker == .others }.sorted { $0.start < $1.start }
     guard !others.isEmpty else { return segments }
     let otherTokens = others.map { normalizedTokens($0.text) }
+    let otherEnds = others.map { max($0.end ?? $0.start, $0.start) }
+    // The longest far-side span bounds how far back a segment that still
+    // covers this mic start can have begun, which keeps the sweep monotonic.
+    let longestSpan = zip(others, otherEnds).map { $1 - $0.start }.max() ?? 0
 
     // Mic segments walked in time order so the system-channel window only ever
     // advances (single sweep, not an n×m scan of a three-hour meeting).
@@ -64,10 +79,11 @@ public func dropEchoDuplicates(_ segments: [TranscriptSegment]) -> [TranscriptSe
         let tokens = normalizedTokens(seg.text)
         guard tokens.count >= echoMinTokens else { continue }
         while windowStart < others.count,
-              others[windowStart].start < seg.start - echoWindowSeconds { windowStart += 1 }
+              others[windowStart].start < seg.start - echoWindowSeconds - longestSpan { windowStart += 1 }
         var j = windowStart
         while j < others.count, others[j].start <= seg.start + echoWindowSeconds {
-            if otherTokens[j].count >= echoMinTokens,
+            if otherEnds[j] >= seg.start - echoWindowSeconds,
+               otherTokens[j].count >= echoMinTokens,
                overlapCoefficient(tokens, otherTokens[j]) >= echoOverlapThreshold {
                 echoes.insert(i)
                 break
@@ -155,4 +171,27 @@ public func speakerNote(_ farSide: FarSideLabel) -> String? {
     case .named, .others:
         return nil
     }
+}
+
+// A recording that heard next to nothing. Lived 2026-09-22: a manually started
+// call shipped as a 120-character document — "Thank you." / "you", Whisper's
+// stock phrases for silence — with the typed attendees attached, so it looked
+// like a real meeting record until opened. Most likely the call audio went
+// through another device. Kept, not dropped (the user asked for it and named
+// it), but it says what happened instead of passing for a transcript.
+let negligibleSpeechWords = 10
+let negligibleSpeechMinSeconds = 60
+
+/// One line saying the recording caught almost no speech, or nil when it is
+/// an ordinary transcript. Short sessions are exempt: a 20-second test is
+/// allowed to be short.
+public func negligibleSpeechNote(_ segments: [TranscriptSegment], durationSeconds: Int) -> String? {
+    guard durationSeconds >= negligibleSpeechMinSeconds else { return nil }
+    let words = segments.reduce(0) { n, s in
+        n + s.text.split(whereSeparator: { $0.isWhitespace }).count
+    }
+    guard words < negligibleSpeechWords else { return nil }
+    let minutes = max(1, durationSeconds / 60)
+    return "shyn heard almost no speech: \(words) word\(words == 1 ? "" : "s") in \(minutes) min. "
+         + "The call audio may have gone through another device, or the mic was muted."
 }

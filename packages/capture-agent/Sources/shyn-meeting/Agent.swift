@@ -211,6 +211,7 @@ actor MeetingAgent {
             case .commit:
                 // Proof the gate works here: clear the purge backoff ladder.
                 detector.noteCommitted()
+                await refileUnderConferencingHolder()
                 commitSession(cfg: cfg)
                 await client.track("meeting_capture_committed",
                                    ["rescued": !micVoiced])
@@ -333,6 +334,21 @@ actor MeetingAgent {
         guard sessionDir != nil else { manualTitle = nil; manualAttendees = []; return }
         manualSession = true
         commitSession(cfg: cfg)
+    }
+
+    // Pre-roll may have filed the session under whatever held the mic before
+    // the call began (a dictation tool in a terminal). At commit the gate has
+    // just seen the call, so the app on it is known: re-file under it and
+    // re-read its window, the old title being the terminal's. Manual sessions
+    // skip this: they are named by the user.
+    private func refileUnderConferencingHolder() async {
+        guard let up = conferencingUpgrade(current: sessionBundleId,
+                                           holderNow: conferencingAppHoldingAudioId()) else { return }
+        let info = await MainActor.run { frontmostAppInfo(preferring: up) }
+        guard info.bundleId == up else { return }   // holder not a running app: keep what we had
+        dbg("re-filed \(sessionBundleId ?? "nil") → \(up) at commit")
+        sessionBundleId = info.bundleId; sessionAppName = info.name
+        sessionWindowTitle = await MainActor.run { meetingWindowTitle(bundleId: up) }
     }
 
     private func commitSession(cfg: MeetingConfig) {
@@ -462,6 +478,10 @@ actor MeetingAgent {
         // to infer it — an unlabelled transcript with no explanation is its own
         // small mystery.
         if let note = speakerNote(label) { transcript = "[\(note)]\n\n" + transcript }
+        if !transcript.isEmpty, let note = negligibleSpeechNote(segs, durationSeconds: end - start) {
+            transcript = "[\(note)]\n\n" + transcript
+            logErr("[meeting] near-silent recording (\(end - start)s) — shipped with a note")
+        }
         guard !transcript.isEmpty else {
             // Decode ran and heard nothing — genuine silence, drop the session.
             purgeAudio(sessionDir: dir); dbg("empty transcript — dropped"); return
