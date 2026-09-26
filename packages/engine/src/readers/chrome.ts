@@ -9,23 +9,39 @@ import { copyAndOpen, copyFailureReason } from "./sqlite-copy.js";
 const FDA_HINT =
   "Chrome history could not be read — if this persists, grant the shyn daemon Full Disk Access";
 
-function defaultHistoryPaths(): string[] {
+// Listing the Chrome folder is itself TCC-gated. Without Full Disk Access the
+// scandir throws EPERM, and it used to throw straight out of the constructor:
+// the daemon died at startup over one reader it could have run without
+// (lived 2026-09-26, the e2e suite from a terminal lacking the grant). Denied
+// is reported, not thrown, so available() can say why.
+function defaultHistoryPaths(): { paths: string[]; denied: boolean } {
   const root = join(homedir(), "Library", "Application Support", "Google", "Chrome");
-  if (!existsSync(root)) return [];
-  return readdirSync(root)
+  if (!existsSync(root)) return { paths: [], denied: false };
+  let entries: string[];
+  try { entries = readdirSync(root); }
+  catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EPERM" || code === "EACCES") return { paths: [], denied: true };
+    throw err;
+  }
+  const paths = entries
     .filter((d) => d === "Default" || d.startsWith("Profile "))
     .map((d) => join(root, d, "History"))
     .filter(existsSync);
+  return { paths, denied: false };
 }
 
 export class ChromeHistoryReader implements Reader {
   name = "chrome";
   private paths: string[];
+  private denied = false;
   constructor(opts?: { historyPaths?: string[] }) {
-    this.paths = opts?.historyPaths ?? defaultHistoryPaths();
+    if (opts?.historyPaths) { this.paths = opts.historyPaths; }
+    else { ({ paths: this.paths, denied: this.denied } = defaultHistoryPaths()); }
   }
 
   async available(): Promise<ReaderAvailability> {
+    if (this.denied) return { ok: false, reason: FDA_HINT };
     const found = this.paths.filter(existsSync);
     if (found.length === 0) return { ok: false, reason: "no Chrome history found" };
     // existsSync alone can lie: a path can exist but still fail to copy/open
