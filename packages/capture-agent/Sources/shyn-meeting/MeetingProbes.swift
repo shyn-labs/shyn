@@ -34,7 +34,10 @@ private func deviceRunningSomewhere(_ dev: AudioObjectID) -> Bool {
 
 func micActive() -> Bool {
     guard let dev = defaultDevice(selector: kAudioHardwarePropertyDefaultInputDevice) else { return false }
-    return deviceRunningSomewhere(dev)
+    // Device flag first (cheap), then attribute it: a dictation tool holding
+    // the mic is not a call. See DictationApps.swift.
+    guard deviceRunningSomewhere(dev) else { return false }
+    return micInUseByNonDictation(deviceRunning: true, inputHolders: inputHolderBundleIds())
 }
 
 func systemAudioActive() -> Bool {
@@ -129,6 +132,14 @@ private func processRunningFlag(_ obj: AudioObjectID,
     var size = UInt32(MemoryLayout<UInt32>.size)
     guard AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, &running) == noErr else { return false }
     return running != 0
+}
+
+/// Bundle ids of every process currently holding an input stream. Read-only,
+/// same class of property read as the rest of this file.
+func inputHolderBundleIds() -> [String] {
+    audioProcessObjects().compactMap { obj in
+        processRunningFlag(obj, kAudioProcessPropertyIsRunningInput) ? processBundleId(obj) : nil
+    }
 }
 
 /// True when a conferencing-capable app currently holds the MICROPHONE.
