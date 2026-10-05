@@ -261,3 +261,9 @@ private func seg(_ s: Double, _ e: Double, _ who: Speaker, _ text: String, voice
     let segs = [seg(0, 1, .me, "a"), seg(1, 2, .others, "b")]
     #expect(farSideLabel(segs, others: [], diarized: false) == farSideLabel(segs, others: []))
 }
+
+@Test func inPersonUncoveredMicLineHasNoPrefix() {
+    let segs = [seg(0, 1, .me, "shall we", voice: 1), seg(1, 2, .me, "mumbled"),
+                seg(2, 3, .me, "yes", voice: 2)]
+    #expect(assembleTranscript(segs, farSide: .speakers) == "Speaker 1: shall we\nmumbled\nSpeaker 2: yes")
+}

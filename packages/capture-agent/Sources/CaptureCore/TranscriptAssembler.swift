@@ -190,10 +190,14 @@ public func assembleTranscript(_ segments: [TranscriptSegment],
             .map { "\($0.speaker == .others ? who : Speaker.me.rawValue): \($0.text)" }
             .joined(separator: "\n")
     case .speakers:
+        // Mic diarized (in person): every voice is on the mic, so an uncovered
+        // mic line gets no prefix rather than a false "Me:".
+        let micDiarized = ordered.contains { $0.speaker == .me && $0.voice != nil }
         return ordered
             .map { s in
-                let who = s.voice.map { "Speaker \($0)" } ?? s.speaker.rawValue
-                return "\(who): \(s.text)"
+                if let v = s.voice { return "Speaker \(v): \(s.text)" }
+                if micDiarized && s.speaker == .me { return s.text }
+                return "\(s.speaker.rawValue): \(s.text)"
             }
             .joined(separator: "\n")
     case .others:
