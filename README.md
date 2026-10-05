@@ -185,6 +185,7 @@ pnpm shyn search "that one thing"   # search from the terminal
 pnpm shyn pause 30m                 # pause all capture (2h, until-tomorrow too); resume to undo
 pnpm shyn exclude com.1password.1password   # never capture an app
 pnpm shyn meeting status                    # live meeting controls (stop | cancel too)
+shyn voice forget-self   # delete shyn's sample of your voice
 ```
 
 …or skip the terminal entirely and click the ☀️ in your menu bar.
@@ -217,6 +218,14 @@ pnpm shyn meeting status                    # live meeting controls (stop | canc
   popover says so while a transcription is in progress. To time or compare
   decoders on your own files: `shyn-meeting transcribe mic.wav system.wav
   [--whole]` (binary inside the staged `shyn-meeting.app`).
+  **Speaker separation** (menu bar, "Speaker separation"). On calls, the other
+  side is split into `Speaker 1`, `Speaker 2`…; your microphone stays `Me:`,
+  and a 1:1 with a single voice keeps the attendee's name. In person, everyone
+  on your microphone is separated, and shyn picks out which one is you. Be
+  clear on the default: speaker separation is off until you turn it on.
+  shyn stores a voiceprint of your own voice only, to tell you apart in in-person meetings.
+  It learns it from your calls; `shyn voice forget-self` deletes it.
+  Other people's voices are used to number them and then discarded.
 - **Meeting titles are optional and layered**: the calendar event first
   (needs Calendar access), the call window's title second (needs
   Accessibility), plain "app · date" otherwise. Decline everything and

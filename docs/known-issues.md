@@ -715,3 +715,10 @@ will fail the same way.
 Not urgent — it misreports only in the direction of alarm, never of false
 reassurance. But it fooled a reader with the source open, so it will
 certainly fool a user reading the menu bar.
+
+## Speaker separation (v1)
+
+- **Hybrid rooms:** on a call, everyone sharing your microphone is `Me`; the mic is not separated on calls.
+- More than 8 distinct voices are merged.
+- `Speaker 1` in one meeting is unrelated to `Speaker 1` in another.
+- A segment that spans a change of speaker gets one label.

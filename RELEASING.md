@@ -87,6 +87,11 @@ without cutting the GitHub release, for a dry-run.
       the browser reader that feeds the tab rung are all environmental — but
       it is always worth understanding before shipping.
 
+- [ ] **`pnpm check:diarization` green** (AMI ES2004a DER <= 15%; spike baseline 11.7% with
+      1.0s bridging). Needs the AMI clip under `~/Library/Application Support/shyn-spike/ami`
+      and the diarizer models (`shyn-meeting diarize <wav> --download` once). Manual gate,
+      like the evals.
+
 - [ ] **Entry-point changes get a live run, not just tests.** If a commit
       touches an agent's `Entry.swift` / `@main` or how its loops are started,
       run the debug binary against a temp `SHYN_HOME` with a fake daemon
