@@ -91,7 +91,16 @@ export async function startServer(opts: {
   const captureBlock = () => ({ ...(lastCaptureStats ?? {}), agent: screenAgentState() });
 
   const handlers: Record<string, (p: any) => Promise<unknown> | unknown> = {
-    ingest: (p) => { const r = engine.ingest(p); scheduleDrain(); return r; },
+    ingest: (p) => {
+      const r = p?.source === "meeting" && (p.speakers || p.selfSample)
+        ? engine.ingestMeeting(p) : engine.ingest(p);
+      scheduleDrain(); return r;
+    },
+    "voice.forgetSelf": (p) => {
+      if (p?.confirm !== true)
+        throw Object.assign(new Error("voice.forgetSelf requires confirm: true"), { code: -32001 });
+      return engine.forgetSelfVoice();
+    },
     search: (p) => {
       // Counting is never on the search critical path — a failed bump must
       // not fail the search (spec: failures to count are swallowed).

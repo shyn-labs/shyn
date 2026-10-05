@@ -3,6 +3,9 @@ import { openDatabase } from "./storage.js";
 import type { KeyProvider } from "./keys.js";
 import type { Embedder } from "./embedder.js";
 import { ingestDocument } from "./ingest.js";
+import {
+  addSelfSample, selfSamples, forgetSelf, decodeEmbedding, chooseSelf, relabelInPerson, NO_SELF_PROFILE_NOTE,
+} from "./voice.js";
 import { search as runSearch } from "./search.js";
 import { forget as runForget, type ForgetSelector } from "./forget.js";
 import { sweepScreenRetention, sweepMeetingRetention } from "./retention.js";
@@ -20,6 +23,9 @@ import type { IngestDoc, SearchQuery, SearchResult } from "./types.js";
 export const RECENT_MAX_LIMIT = 500;
 import { getStats, type StatsResult } from "./stats.js";
 import { bumpCounter, dayKey } from "./counters.js";
+
+export type WireSpeaker = { label: string; channel: "system" | "mic"; embedding: string; speechSec: number };
+export type WireSample = { embedding: string; speechSec: number };
 
 export type EngineStatus = {
   documents: number; chunks: number; vectors: number;
@@ -45,6 +51,38 @@ export class Engine {
   }
 
   ingest(doc: IngestDoc) { return ingestDocument(this.db, doc); }
+
+  /** Meeting ingest with diarization extras. Stores ONLY the user's own sample;
+   *  far-side and in-person embeddings are used to label, then dropped here.
+   *  Diarization never costs a transcript: any voice-side failure is logged and
+   *  the document is ingested with its incoming text unchanged. */
+  ingestMeeting(p: IngestDoc & { speakers?: WireSpeaker[]; selfSample?: WireSample }) {
+    const { speakers, selfSample, ...doc } = p;
+    try {
+      let text = doc.text;
+      if (selfSample?.embedding && selfSample.speechSec >= 30) {
+        addSelfSample(this.db, decodeEmbedding(selfSample.embedding), selfSample.speechSec, doc.ts);
+      }
+      const mic = (speakers ?? []).filter((s) => s.channel === "mic");
+      if (mic.length > 0) {
+        const samples = selfSamples(this.db);
+        if (samples.length === 0) {
+          // No profile yet: numbered speakers plus a note saying why.
+          text = `[${NO_SELF_PROFILE_NOTE}]\n\n${text}`;
+        } else {
+          // Ambiguous match: chooseSelf is null, text unchanged, no note.
+          const self = chooseSelf(mic.map((s) => ({ label: s.label, embedding: decodeEmbedding(s.embedding) })), samples);
+          text = relabelInPerson(text, self, mic.map((s) => s.label));
+        }
+      }
+      doc.text = text;
+    } catch (err) {
+      console.error("[voice] diarization failed; ingesting the transcript unchanged", err);
+    }
+    return ingestDocument(this.db, doc);
+  }
+
+  forgetSelfVoice() { return forgetSelf(this.db); }
   search(q: SearchQuery): Promise<SearchResult> { return runSearch(this.db, this.embedder, q); }
   forget(sel: ForgetSelector) { return runForget(this.db, sel); }
   stats(p: { days?: number } = {}): StatsResult { return getStats(this.db, p); }

@@ -116,4 +116,50 @@ describe("meeting transcription e2e (fake agent → real daemon)", () => {
     expect(hit.title).toBe(title);
     expect(hit.uri).toBe(uri);
   });
+
+  it("diarized in-person meeting: Me resolved from the self sample, embeddings never stored", async () => {
+    const f32 = (...xs: number[]) => Buffer.from(Float32Array.from(xs).buffer).toString("base64");
+    // A call teaches the user's voice.
+    await rpcCall(sock, "ingest", { ...meetingPayload("meeting://us.zoom.xos/2026-10-05-1000", "Zoom call",
+      "Me: morning\nSpeaker 1: hi", now - 3600, now - 1800),
+      speakers: [{ label: "S1", channel: "system", embedding: f32(0, 1, 0), speechSec: 40 }],
+      selfSample: { embedding: f32(1, 0, 0), speechSec: 45 } });
+    // An in-person session: S2 is the user.
+    const uri = "meeting://call/2026-10-05-1100";
+    await rpcCall(sock, "ingest", { ...meetingPayload(uri, "Recording",
+      "Speaker 1: shall we\nSpeaker 2: yes let us\nSpeaker 3: agreed", now - 1200, now),
+      speakers: [{ label: "S1", channel: "mic", embedding: f32(0, 1, 0), speechSec: 20 },
+                 { label: "S2", channel: "mic", embedding: f32(0.98, 0.02, 0), speechSec: 30 },
+                 { label: "S3", channel: "mic", embedding: f32(0, 0, 1), speechSec: 10 }] });
+    const doc = await rpcCall(sock, "document", { uri });
+    expect(doc.text).toContain("Speaker 1: shall we\nMe: yes let us\nSpeaker 2: agreed");
+    expect(JSON.stringify(doc)).not.toContain(f32(0, 1, 0));   // no embedding leaks into stored text
+  });
+
+  it("in-person before any self sample: numbered speakers plus a note", async () => {
+    const f32 = (...xs: number[]) => Buffer.from(Float32Array.from(xs).buffer).toString("base64");
+    const uri = "meeting://call/2026-10-05-0900";
+    await rpcCall(sock, "ingest", { ...meetingPayload(uri, "Recording", "Speaker 1: hi\nSpeaker 2: hello", now - 600, now),
+      speakers: [{ label: "S1", channel: "mic", embedding: f32(1, 0), speechSec: 20 },
+                 { label: "S2", channel: "mic", embedding: f32(0, 1), speechSec: 20 }] });
+    const doc = await rpcCall(sock, "document", { uri });
+    expect(doc.text).toContain("no sample of your voice yet");
+    expect(doc.text).toContain("Speaker 1: hi\nSpeaker 2: hello");
+  });
+
+  it("an ingest without speakers is untouched (wire byte-identical when diarization is off)", async () => {
+    const uri = "meeting://us.zoom.xos/2026-10-05-1200";
+    await rpcCall(sock, "ingest", meetingPayload(uri, "Zoom call", "Me: a\nOthers: b", now - 600, now));
+    const doc = await rpcCall(sock, "document", { uri });
+    expect(doc.text).toContain("Me: a\nOthers: b");
+  });
+
+  it("voice.forgetSelf needs confirm and removes the self profile", async () => {
+    const f32 = (...xs: number[]) => Buffer.from(Float32Array.from(xs).buffer).toString("base64");
+    await rpcCall(sock, "ingest", { ...meetingPayload("meeting://us.zoom.xos/2026-10-05-1300", "Zoom call",
+      "Me: hi\nSpeaker 1: yo", now - 600, now),
+      selfSample: { embedding: f32(1, 0, 0), speechSec: 45 } });
+    await expect(rpcCall(sock, "voice.forgetSelf", {})).rejects.toThrow(/confirm/);
+    expect(await rpcCall(sock, "voice.forgetSelf", { confirm: true })).toEqual({ removed: 1 });
+  });
 });
