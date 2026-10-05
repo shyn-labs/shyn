@@ -74,6 +74,7 @@ public func cosine(_ a: [Float], _ b: [Float]) -> Float {
 
 public struct EmbeddingError: Error, CustomStringConvertible {
     public let description: String
+    public init(description: String) { self.description = description }
 }
 
 /// WeSpeaker's Core ML model takes a FIXED 10 s input and silently truncates

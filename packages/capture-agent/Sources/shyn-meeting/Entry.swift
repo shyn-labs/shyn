@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CaptureCore
+import WhisperKit
 
 // Process entry point, kept in its own file and behind @main so the rest of
 // the target has NO top-level code.
@@ -27,6 +28,7 @@ struct MeetingMain {
         if CommandLine.arguments.contains("selftest") { await runSelfTest() }
         if CommandLine.arguments.contains("transcribe") { await runTranscribeFile() }
         if CommandLine.arguments.contains("prewarm") { await runPrewarm() }
+        if CommandLine.arguments.contains("diarize") { await runDiarizeFile() }
         runAgent()
     }
 
@@ -70,6 +72,43 @@ struct MeetingMain {
             }
             print("mode=\(chunked ? "chunked" : "whole") model=\(cfg.whisperModel) segments=\(segs.count) wall=\(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
             exit(0)
+        }
+    }
+
+    // diarize <wav> [--download] [--rttm]: one channel -> turns + per-speaker
+    // speech seconds. --download fetches the models first (diagnostic only; the
+    // agent never downloads while transcribing). --rttm prints the turns as RTTM
+    // so the release gate can score them. Diagnostic entry; never returns.
+    @available(macOS 14.2, *)
+    private static func runDiarizeFile() async -> Never {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "diarize"), args.count > i + 1 else {
+            FileHandle.standardError.write(Data("usage: shyn-meeting diarize <wav> [--download] [--rttm]\n".utf8))
+            exit(2)
+        }
+        let path = args[i + 1]
+        if args.contains("--download") { _ = await downloadDiarizerModels(dir: diarizerModelDir) }
+        do {
+            let samples = try AudioProcessor.loadAudioAsFloatArray(fromPath: path)
+            let t0 = Date()
+            let d = try await diarizeChannel(samples: samples, dir: diarizerModelDir)
+            if args.contains("--rttm") {
+                let uri = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+                for t in d.turns {
+                    print(String(format: "SPEAKER %@ 1 %.3f %.3f <NA> <NA> spk%d <NA> <NA>",
+                                 uri, t.start, t.end - t.start, t.speaker))
+                }
+                exit(0)
+            }
+            for t in d.turns { print(String(format: "%8.2f %8.2f  S%d", t.start, t.end, t.speaker)) }
+            for (s, e) in d.embeddings.sorted(by: { $0.key < $1.key }) {
+                print(String(format: "speaker S%d speech=%.1fs dim=%d", s, e.speechSec, e.embedding.count))
+            }
+            print(String(format: "turns=%d speakers=%d wall=%.1fs", d.turns.count, d.embeddings.count,
+                         Date().timeIntervalSince(t0)))
+            exit(0)
+        } catch {
+            FileHandle.standardError.write(Data("diarize failed: \(error)\n".utf8)); exit(1)
         }
     }
 
