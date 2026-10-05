@@ -68,3 +68,38 @@ private func t(_ s: Int, _ a: Double, _ b: Double) -> DiarizedTurn { DiarizedTur
     // 1.0f = 0x3F800000 → bytes 00 00 80 3F
     #expect(encodeEmbedding([1]) == Data([0, 0, 0x80, 0x3F]).base64EncodedString())
 }
+
+// Review: on speakers without echo cancellation the far side bleeds into the mic, and one
+// contaminated self-sample can later give a false Me. Mic speech that overlaps any far-side
+// turn is not the user's alone, so it must not reach the self-sample.
+private func pieces(_ r: [(Double, Double)]) -> [[Double]] { r.map { [$0.0, $0.1] } }
+private func vc(_ a: Double, _ b: Double) -> VoicedChunk { VoicedChunk(startSec: a, endSec: b) }
+
+@Test func excludingOverlapKeepsChunksThatNothingOverlaps() {
+    let out = excludingOverlap([vc(0, 5), vc(10, 12)], turns: [t(0, 6, 9), t(1, 20, 30)])
+    #expect(pieces(out) == [[0, 5], [10, 12]])
+}
+
+@Test func excludingOverlapDropsAFullyCoveredChunk() {
+    let out = excludingOverlap([vc(2, 4), vc(10, 12)], turns: [t(0, 1, 5)])
+    #expect(pieces(out) == [[10, 12]])
+}
+
+@Test func excludingOverlapTrimsBothEnds() {
+    let out = excludingOverlap([vc(2, 10)], turns: [t(0, 0, 4), t(1, 8, 12)])
+    #expect(pieces(out) == [[4, 8]])
+}
+
+@Test func excludingOverlapSplitsAChunkAroundATurnInTheMiddle() {
+    let out = excludingOverlap([vc(0, 10)], turns: [t(0, 4, 6)])
+    #expect(pieces(out) == [[0, 4], [6, 10]])
+}
+
+@Test func excludingOverlapHandlesOverlappingAndUnsortedTurns() {
+    let out = excludingOverlap([vc(0, 10)], turns: [t(1, 6, 8), t(0, 2, 7), t(1, 1, 3)])
+    #expect(pieces(out) == [[0, 1], [8, 10]])
+}
+
+@Test func excludingOverlapWithNoTurnsIsTheIdentity() {
+    #expect(pieces(excludingOverlap([vc(1, 2)], turns: [])) == [[1, 2]])
+}

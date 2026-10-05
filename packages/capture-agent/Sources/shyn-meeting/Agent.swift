@@ -49,14 +49,27 @@ func notify(_ title: String, _ body: String) {
 ///
 /// A free function, like `transcribeMeeting`, so the WAV decodes and the
 /// per-channel analysis run off the MeetingAgent actor and tick() stays free.
-func diarizeMeeting(_ segs: [TranscriptSegment], urls: (mic: URL, system: URL), cfg: MeetingConfig)
+///
+/// A native crash, jetsam kill or Swift trap inside the diarizer never reaches
+/// keepForRetry, so a `diarizing` breadcrumb in the session dir stands in for the
+/// attempt count: written before diarizing, removed on every path out. Found on
+/// entry, it means the last run never came back, so this one ships Me/Others.
+func diarizeMeeting(_ segs: [TranscriptSegment], urls: (mic: URL, system: URL),
+                    sessionDir: URL, cfg: MeetingConfig)
     async -> (segs: [TranscriptSegment], speakers: [SpeakerPayload]?, selfSample: VoiceSamplePayload?) {
     let plan = diarizationPlan(enabled: cfg.diarization,
-                               modelsReady: diarizerModelsReady(dir: diarizerModelDir), segments: segs)
+                               modelsReady: diarizerModelsReady(dir: diarizerModelDir), segments: segs,
+                               crashedLastAttempt: diarizingBreadcrumbExists(in: sessionDir))
     guard case .diarize(let channel) = plan else {
-        if case .skip(let why) = plan, why != "off" { logErr("[diarizer] skipped: \(why)") }
+        if case .skip(let why) = plan, why != "off" {
+            logErr(why == "crashed last attempt"
+                   ? "[diarizer] skipped: crashed during the last attempt"
+                   : "[diarizer] skipped: \(why)")
+        }
         return (segs, nil, nil)
     }
+    markDiarizing(in: sessionDir)
+    defer { clearDiarizingBreadcrumb(in: sessionDir) }
     let channelURL = channel == .others ? urls.system : urls.mic
     let micURL = urls.mic
     let wire = channel == .others ? "system" : "mic"
@@ -70,11 +83,12 @@ func diarizeMeeting(_ segs: [TranscriptSegment], urls: (mic: URL, system: URL), 
                 var selfSample: VoiceSamplePayload? = nil
                 if channel == .others {
                     let mic = try AudioProcessor.loadAudioAsFloatArray(fromPath: micURL.path)
-                    let chunks = voicedChunks(samples: mic, sampleRate: 16_000)
-                    let voiced = voicedSeconds(chunks)
+                    // Mic speech over a far-side turn may be that voice bleeding into the
+                    // mic (speakers, hybrid room): it is not a clean sample of the user.
+                    let ranges = excludingOverlap(voicedChunks(samples: mic, sampleRate: 16_000), turns: d.turns)
+                    let voiced = ranges.reduce(0) { $0 + ($1.1 - $1.0) }
                     if voiced >= selfSampleMinSeconds {
-                        let e = try await embedSpeech(samples: mic, ranges: chunks.map { ($0.startSec, $0.endSec) },
-                                                      dir: diarizerModelDir)
+                        let e = try await embedSpeech(samples: mic, ranges: ranges, dir: diarizerModelDir)
                         selfSample = VoiceSamplePayload(embedding: encodeEmbedding(e), speechSec: voiced)
                     }
                 }
@@ -96,7 +110,11 @@ func diarizeMeeting(_ segs: [TranscriptSegment], urls: (mic: URL, system: URL), 
                           selfSample == nil ? "" : "; self sample"))
             // No speakers found: keep today's labels and ship no far-side speakers.
             guard !speakers.isEmpty else { return (segs, nil, selfSample) }
-            return (assignVoices(segs, channel: channel, turns: d.turns), speakers, selfSample)
+            let assigned = assignVoices(segs, channel: channel, turns: d.turns)
+            // No segment got a voice (no turn overlaps any word): nothing is numbered, so
+            // ship nil speakers rather than have the daemon explain numbering that is absent.
+            guard assigned.contains(where: { $0.voice != nil }) else { return (segs, nil, selfSample) }
+            return (assigned, speakers, selfSample)
         }
     } catch {
         logErr("[diarizer] failed, shipping without speakers: \(error)")
@@ -536,7 +554,7 @@ actor MeetingAgent {
         }
         // Stamp first: the far-side roster decides how speakers are labelled.
         let stampEarly = await calendarStamp(startEpoch: start, endEpoch: end)
-        let diar = await diarizeMeeting(segs, urls: urls, cfg: cfg)
+        let diar = await diarizeMeeting(segs, urls: urls, sessionDir: dir, cfg: cfg)
         let label = farSideLabel(diar.segs, others: stampEarly?.others ?? [], diarized: diar.speakers != nil)
         var transcript = assembleTranscript(diar.segs, farSide: label)
         // Tell the reader when the labels are unusual rather than leaving them

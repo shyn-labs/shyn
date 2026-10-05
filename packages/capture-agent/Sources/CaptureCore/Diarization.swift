@@ -107,3 +107,24 @@ public func encodeEmbedding(_ v: [Float]) -> String {
     for f in v { withUnsafeBytes(of: f.bitPattern.littleEndian) { d.append(contentsOf: $0) } }
     return d.base64EncodedString()
 }
+
+/// The parts of `chunks` that no turn covers, as (start, end) pairs in time order.
+/// Used for the user's self-sample: mic speech that overlaps a far-side turn may be
+/// the far side bleeding into the mic, so it is subtracted before embedding and
+/// before the 30 s check. Turns may overlap each other and arrive unsorted.
+public func excludingOverlap(_ chunks: [VoicedChunk], turns: [DiarizedTurn]) -> [(Double, Double)] {
+    let cuts = turns.filter { $0.end > $0.start }.sorted { $0.start < $1.start }
+    var out: [(Double, Double)] = []
+    for chunk in chunks {
+        var from = chunk.startSec
+        for cut in cuts {
+            if cut.end <= from { continue }
+            if cut.start >= chunk.endSec { break }
+            if cut.start > from { out.append((from, cut.start)) }
+            from = max(from, cut.end)
+            if from >= chunk.endSec { break }
+        }
+        if from < chunk.endSec { out.append((from, chunk.endSec)) }
+    }
+    return out
+}

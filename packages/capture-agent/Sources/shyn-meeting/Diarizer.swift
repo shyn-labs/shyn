@@ -160,7 +160,9 @@ func embedSpeech(samples: [Float], ranges: [(Double, Double)], dir: URL) async t
 
 private func slice(_ s: [Float], ranges: [(Double, Double)]) -> [Float] {
     ranges.flatMap { r -> ArraySlice<Float> in
-        let a = max(0, Int(r.0 * 16_000)), b = min(s.count, Int(r.1 * 16_000))
+        // Int(Double) traps on NaN, infinity or overflow: skip such a range rather than crash.
+        guard r.0.isFinite, r.1.isFinite, r.0 >= 0, r.1 >= r.0, r.1 < 1e9 else { return [] }
+        let a = min(s.count, Int(r.0 * 16_000)), b = min(s.count, Int(r.1 * 16_000))
         return a < b ? s[a..<b] : []
     }
 }
