@@ -162,12 +162,14 @@ actor MeetingAgent {
         let state = detector.step(signal: signal, now: now, config: cfg)
         if state != prev { dbg("state \(prev.rawValue) → \(state.rawValue)") }
 
-        switch (prev, state) {
-        case (_, .candidate) where prev != .candidate:
+        // A live manual session owns the recorder: detectorAction ignores every
+        // transition under it (CaptureCore/ManualSession.swift).
+        switch detectorAction(prev: prev, state: state, manualLive: manualSession && sessionDir != nil) {
+        case .startPreroll:
             notify("Meeting detected",
                    "Recording starts in \(cfg.graceSeconds)s — `shyn meeting cancel` to skip.")
             await startPreroll(cfg: cfg, meetingAppFrontmost: frontmost)
-        case (.candidate, .idle):
+        case .discardPreroll:
             // Signals died during the grace window (call ended, device
             // released). Without this teardown the pre-roll leaked FOREVER:
             // every stop path requires .recording, so nothing ever stopped the
@@ -175,10 +177,10 @@ actor MeetingAgent {
             // after a call ended, growing 12MB/min with the agent "idle").
             logErr("[meeting] candidate dropped during grace — pre-roll discarded")
             await endSession(transcribe: false, cfg: cfg)
-        case (.recording, .ended):
+        case .endSession:
             // An unverified pre-roll that reaches .ended is a phantom: purge.
             await endSession(transcribe: committed, cfg: cfg)
-        default: break
+        case .none: break
         }
 
         // Commit gate: the detector says .recording, but the session only
