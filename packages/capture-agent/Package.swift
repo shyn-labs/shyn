@@ -8,12 +8,15 @@ let package = Package(
         // Pinned to the exact version the SP3 spike validated
         // (spikes/meeting-probe/README.md) — API shapes differ across minors.
         .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "1.1.0"),
+        // Diarization + speaker embeddings only (spec 2026-10-05). ASR stays WhisperKit.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.17.5"),
     ],
     targets: [
         .target(name: "CaptureCore"),
         .executableTarget(name: "shyn-capture", dependencies: ["CaptureCore"]),
         .executableTarget(name: "shyn-meeting", dependencies: [
             "CaptureCore", .product(name: "WhisperKit", package: "WhisperKit"),
+            .product(name: "FluidAudio", package: "FluidAudio"),
         ]),
         .testTarget(name: "CaptureCoreTests", dependencies: ["CaptureCore"]),
         // shyn-meeting carries the meeting lifecycle — over half the Swift in
