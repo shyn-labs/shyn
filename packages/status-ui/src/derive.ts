@@ -21,6 +21,9 @@ export type MeetingBlock = {
   tcc: { mic: boolean; audio?: boolean; calendar?: boolean; ax?: boolean };  // audio: absent until a recording is attempted; calendar/ax: agents ≥ stamping
   sessionStartedAt?: number; sessionApp?: string;
   whisperDownloading?: boolean;
+  // Posted only while meeting.diarization is on.
+  diarizerDownloading?: boolean;
+  diarizerReady?: boolean;
   // 0..1 fraction, present only while state === "transcribing"; absent from
   // older agents. Drives the "· NN%" suffix on the transcribing verdict/row.
   transcribeProgress?: number;
@@ -73,6 +76,9 @@ export type ViewModel = {
   week: Row[];
   paused: boolean;
   modelChoice: ModelChoice | null;
+  // Speaker separation toggle. Always shown (a config switch, not agent state);
+  // note only reflects the speaker-model download while it is on.
+  diarization: { on: boolean; note: string | null };
   // In-app update row (spec 2026-07-24): null = nothing to show (current,
   // opted out, offline, or daemon down). canRun=false → copy-command fallback.
   update: { version: string; state: "available" | "updating" | "failed"; canRun: boolean } | null;
@@ -94,6 +100,7 @@ export type DeriveContext = {
   now: number;                 // epoch seconds
   claudeCommand: string;       // claude mcp add command, shim-aware
   meetingModel: string;        // capture.json meeting.whisperModel ("small" default)
+  meetingDiarization: boolean; // capture.json meeting.diarization (false default)
   // main.ts owns the update-check timer + in-flight state; derive stays pure.
   update: { latest: string | null; updating: boolean; failed: boolean; brewFound: boolean };
   notice?: Notice | null;
@@ -132,7 +139,8 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
     return {
       tray: "warning", verdict: "daemon not running", meeting: null, canRecord: false,
       rows: [{ label: "Daemon", value: "unreachable", tone: "err", hint: START_HINT }],
-      stats: [], week: [], paused: false, modelChoice: null, update: null,
+      stats: [], week: [], paused: false, modelChoice: null,
+      diarization: { on: ctx.meetingDiarization, note: null }, update: null,
       // A notice still shows with the daemon down — "upgrade, your build is
       // broken" is exactly the case where the daemon may not be running.
       notice: ctx.notice ?? null,
@@ -278,6 +286,14 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
     modelChoice = { selected, busy, ...(note !== undefined ? { note } : {}) };
   }
 
+  const diarization = {
+    on: ctx.meetingDiarization,
+    note: !ctx.meetingDiarization ? null
+      : m?.diarizerDownloading ? "Downloading speaker model…"
+      : m?.diarizerReady === false ? "Speaker model not downloaded yet"
+      : null,
+  };
+
   // Update row: updating/failed outrank available so a mid-upgrade check
   // can't flip the row back; anything ambiguous (bad tag, no check yet)
   // stays null — silence over noise.
@@ -389,7 +405,7 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
   const canRecord = ctx.installed.meeting && !!m
     && (m.state === "idle" || m.state === "transcribing") && !paused;
 
-  return { tray, verdict, meeting, canRecord, rows, stats, week, paused, modelChoice, update,
+  return { tray, verdict, meeting, canRecord, rows, stats, week, paused, modelChoice, diarization, update,
            notice: ctx.notice ?? null, setup, diagnostics,
            analytics: ctx.analyticsEnabled === undefined
              ? null : { enabled: ctx.analyticsEnabled } };

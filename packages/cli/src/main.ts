@@ -188,6 +188,19 @@ async function cmdForget(args: string[], print: (s: string) => void) {
   print(`forgotten: ${r.documents} document(s)`);
 }
 
+async function cmdVoiceForgetSelf(print: (s: string) => void) {
+  if (!process.stdin.isTTY) {
+    print("aborted: voice forget-self requires an interactive terminal to confirm"); return;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  print("This deletes shyn's sample of your own voice. In-person meetings go back to Speaker 1, 2…");
+  const answer = await new Promise<string>((res) => rl.question("Type 'yes' to confirm: ", res));
+  rl.close();
+  if (answer.trim() !== "yes") { print("aborted"); return; }
+  const r = await rpcCall(sock(), "voice.forgetSelf", { confirm: true });
+  print(r.removed ? "your voice sample is deleted" : "no voice sample was stored");
+}
+
 async function cmdSync(args: string[], print: (s: string) => void) {
   const full = args.includes("--full");
   if (full) print("full backfill: re-walking ALL history (watermarks reset — this can take a while)");
@@ -363,11 +376,15 @@ export async function runCli(argv: string[], print: (s: string) => void = consol
       if (sub === "cancel") { requestMeetingCancel(shynHome()); return print("meeting cancel requested"); }
       return print("usage: shyn meeting <status|start [title]|stop|cancel>");
     }
+    if (cmd === "voice") {
+      if (rest[0] === "forget-self") return await cmdVoiceForgetSelf(print);
+      return print("usage: shyn voice forget-self");
+    }
     if (cmd === "exclude") {
       if (!rest[0]) return print("usage: shyn exclude <bundle-id|title-regex>");
       addExclude(cfgPath(), rest[0]); return print(`excluded: ${rest[0]}`);
     }
-    print("usage: shyn <ingest <path> | status | search <query> | show <uri> [--source <source>] | export <path> | import <path> | stats [--days N] | diagnose [--mail] | forget [--source|--doc|--from|--to] | sync [--full] | install | uninstall [--purge] | setup | pause [30m|2h|until-tomorrow] | resume | exclude <bundle-id|title-regex> | meeting <status|start [title]|stop|cancel>>");
+    print("usage: shyn <ingest <path> | status | search <query> | show <uri> [--source <source>] | export <path> | import <path> | stats [--days N] | diagnose [--mail] | forget [--source|--doc|--from|--to] | sync [--full] | install | uninstall [--purge] | setup | pause [30m|2h|until-tomorrow] | resume | exclude <bundle-id|title-regex> | meeting <status|start [title]|stop|cancel> | voice forget-self>");
   } catch (err) {
     if (isDaemonDownError(err)) print(DAEMON_DOWN_MESSAGE);
     else print(`error: ${(err as Error).message}`);

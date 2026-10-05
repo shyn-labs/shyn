@@ -18,7 +18,7 @@ const NOW_STEPS: SetupStep[] = [
 const vm = (setup: ViewModel["setup"]): ViewModel => ({
   tray: "healthy", verdict: "all systems go", meeting: null, canRecord: false,
   rows: [], stats: [], week: [], paused: false,
-  modelChoice: null, update: null, notice: null, setup,
+  modelChoice: null, diarization: { on: false, note: null }, update: null, notice: null, setup,
   diagnostics: false, analytics: null,
 });
 

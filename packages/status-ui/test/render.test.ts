@@ -11,6 +11,7 @@ const vm = (over: Partial<ViewModel> = {}): ViewModel => ({
   stats: [{ label: "Index", value: "16,951 docs · 41,000 vectors", tone: "muted" }],
   week: [],
   paused: false, modelChoice: { selected: "standard", busy: false },
+  diarization: { on: false, note: null },
   update: null,
   notice: null,
   setup: { kind: "complete" }, diagnostics: false, analytics: null, ...over,
@@ -44,7 +45,7 @@ describe("render", () => {
   it("section micro-labels present for rows and stats", () => {
     const el = mount(render(vm(), NOW));
     const labels = [...el.querySelectorAll(".section-lab")].map((n) => n.textContent);
-    expect(labels).toEqual(["Health", "Index", "Meeting language"]);
+    expect(labels).toEqual(["Health", "Index", "Meeting language", "Speaker separation"]);
   });
 
   it("live meeting card: app, elapsed from startedAt, stop/cancel actions", () => {
@@ -243,5 +244,21 @@ describe("manual record button", () => {
     }), NOW);
     expect(out).toContain('data-action="meeting-stop"');
     expect(out).not.toContain('data-action="record-form-open"');
+  });
+
+  it("renders the speaker separation toggle with its download note", () => {
+    const html = render(vm({ diarization: { on: true, note: "Downloading speaker model…" } }), NOW);
+    expect(html).toContain('data-action="meeting-diarization"');
+    expect(html).toContain("Speaker separation");
+    expect(html).toContain("Downloading speaker model…");
+  });
+
+  it("speaker separation toggle selects the current state and renders with no meeting agent", () => {
+    const el = mount(render(vm({ modelChoice: null, diarization: { on: false, note: null } }), NOW));
+    const btns = [...el.querySelectorAll('[data-action="meeting-diarization"]')] as HTMLButtonElement[];
+    expect(btns.map((b) => b.dataset.arg)).toEqual(["off", "on"]);
+    expect(btns[0].classList.contains("selected")).toBe(true);
+    expect(btns[1].classList.contains("selected")).toBe(false);
+    expect(el.textContent).not.toContain("Downloading speaker model");
   });
 });

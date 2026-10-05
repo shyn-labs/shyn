@@ -88,6 +88,16 @@ describe("shyn cli", () => {
     expect(out.join("\n")).toMatch(/interactive terminal/);
   });
 
+  it("voice forget-self refuses without an interactive terminal", async () => {
+    await runCli(["voice", "forget-self"], print);
+    expect(out.join("\n")).toContain("requires an interactive terminal");
+  });
+
+  it("voice with no subcommand prints usage", async () => {
+    await runCli(["voice"], print);
+    expect(out.join("\n")).toContain("usage: shyn voice forget-self");
+  });
+
   it("prints a friendly message when no daemon is running", async () => {
     const noDaemonDir = mkdtempSync(join(tmpdir(), "shyn-nodaemon-"));
     const prevHome = process.env.SHYN_HOME;

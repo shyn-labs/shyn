@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveView, type DaemonStatus, type DeriveContext, CLAUDE_ADD_COMMAND } from "../src/derive.js";
+import { deriveView, type DaemonStatus, type DeriveContext, type MeetingBlock, CLAUDE_ADD_COMMAND } from "../src/derive.js";
 
 export const NOW = 1_783_700_000;
 
@@ -9,6 +9,7 @@ export const baseCtx = (over: Partial<DeriveContext> = {}): DeriveContext => ({
   now: NOW,
   claudeCommand: CLAUDE_ADD_COMMAND,
   meetingModel: "small",
+  meetingDiarization: false,
   update: { latest: null, updating: false, failed: false, brewFound: true },
   ...over,
 });
@@ -382,6 +383,30 @@ describe("meeting model choice (language-framed setting)", () => {
       { ok: true, status: withMeeting({ modelReady: true }) },
       baseCtx({ meetingModel: "large-v3_turbo" }));
     expect(vm.modelChoice).toEqual({ selected: "multilingual", busy: false });
+  });
+
+  it("diarization: off → no note even when the agent reports a missing model", () => {
+    const vm = deriveView(
+      { ok: true, status: withMeeting({ modelReady: true, diarizerReady: false }) },
+      baseCtx({ meetingDiarization: false }));
+    expect(vm.diarization).toEqual({ on: false, note: null });
+  });
+
+  it("diarization: on + downloading / not downloaded / ready / not reporting", () => {
+    const d = (meeting: Partial<MeetingBlock>) => deriveView(
+      { ok: true, status: withMeeting({ modelReady: true, ...meeting }) },
+      baseCtx({ meetingDiarization: true })).diarization;
+    expect(d({ diarizerDownloading: true, diarizerReady: false }))
+      .toEqual({ on: true, note: "Downloading speaker model…" });
+    expect(d({ diarizerReady: false }))
+      .toEqual({ on: true, note: "Speaker model not downloaded yet" });
+    expect(d({ diarizerReady: true })).toEqual({ on: true, note: null });
+    expect(d({})).toEqual({ on: true, note: null });
+  });
+
+  it("diarization: still present when the daemon is down", () => {
+    const vm = deriveView({ ok: false }, baseCtx({ meetingDiarization: true }));
+    expect(vm.diarization).toEqual({ on: true, note: null });
   });
 
   it("legacy large-v3 config still maps to multilingual (pre-turbo installs)", () => {

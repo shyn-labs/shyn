@@ -14,7 +14,7 @@ import { live } from "./live.js";
 import { deriveView, type TrayState, type ViewModel, CLAUDE_ADD_COMMAND } from "./derive.js";
 import {
   pauseCapture, resumeCapture, readPausedUntil, meetingStart, parseMeetingStartArg, meetingStop, meetingCancel,
-  readMeetingModel, setMeetingModel,
+  readMeetingModel, setMeetingModel, readMeetingDiarization, setMeetingDiarization,
   type PauseSpec, type MeetingModel,
 } from "./controls.js";
 import {
@@ -206,6 +206,7 @@ if (!app.requestSingleInstanceLock()) {
       installed: installedAgents(),
       pausedUntil: readPausedUntil(home),
       meetingModel: readMeetingModel(home),
+      meetingDiarization: readMeetingDiarization(home),
       update: { latest: updLatest, updating: updUpdating, failed: updFailed,
                 brewFound: findBrew() !== null },
       // Two suppressions, both learned from shipping a notice without them:
@@ -331,6 +332,7 @@ if (!app.requestSingleInstanceLock()) {
           if (arg === "small" || arg === "large-v3_turbo") setMeetingModel(home, arg as MeetingModel);
           else console.error("unknown meeting model:", arg);
         }
+        else if (name === "meeting-diarization") setMeetingDiarization(home, arg === "on");
         else if (name === "run-update") startUpgrade(updLatest, false);
         else if (name === "dismiss-notice") { if (typeof arg === "string") dismissNotice(home, arg); }
         else if (name === "open-onboarding") showOnboarding();

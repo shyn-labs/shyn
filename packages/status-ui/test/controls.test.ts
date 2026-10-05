@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { meetingStart,
   pauseCapture, resumeCapture, readPausedUntil, meetingStop, meetingCancel,
-  readMeetingModel, setMeetingModel,
+  readMeetingModel, setMeetingModel, readMeetingDiarization, setMeetingDiarization,
 } from "../src/controls.js";
 
 const NOW = 1_783_700_000;
@@ -106,5 +106,25 @@ describe("meetingStart with a name and a roster", () => {
     expect(JSON.parse(bare).action).toBe("start");
     expect(bare).not.toContain("title");
     expect(bare).not.toContain("attendees");
+  });
+});
+
+describe("controls: meeting.diarization contract (matches MeetingConfig.load)", () => {
+  it("default off, toggles, keeps other keys", () => {
+    const h = home();
+    expect(readMeetingDiarization(h)).toBe(false);
+    setMeetingModel(h, "large-v3_turbo");
+    setMeetingDiarization(h, true);
+    const cfg = JSON.parse(readFileSync(join(h, "capture.json"), "utf8"));
+    expect(cfg.meeting).toEqual({ whisperModel: "large-v3_turbo", diarization: true });
+    expect(readMeetingDiarization(h)).toBe(true);
+    setMeetingDiarization(h, false);
+    expect(readMeetingDiarization(h)).toBe(false);
+  });
+
+  it("a non-boolean diarization value reads as off", () => {
+    const h = home();
+    writeFileSync(join(h, "capture.json"), JSON.stringify({ meeting: { diarization: "yes" } }));
+    expect(readMeetingDiarization(h)).toBe(false);
   });
 });

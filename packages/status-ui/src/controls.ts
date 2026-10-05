@@ -61,6 +61,20 @@ export function setMeetingModel(home: string, model: MeetingModel): void {
   writeCfg(home, { ...cfg, meeting: { ...meeting, whisperModel: model } });
 }
 
+// Speaker separation (capture.json meeting.diarization — hot-reloaded by the
+// Swift agent; MeetingConfig defaults to false, and only literal `true` counts).
+export function readMeetingDiarization(home: string): boolean {
+  const m = readCfg(home).meeting;
+  return !!(m && typeof m === "object" && (m as Record<string, unknown>).diarization === true);
+}
+
+export function setMeetingDiarization(home: string, on: boolean): void {
+  const cfg = readCfg(home);
+  const meeting = cfg.meeting && typeof cfg.meeting === "object"
+    ? (cfg.meeting as Record<string, unknown>) : {};
+  writeCfg(home, { ...cfg, meeting: { ...meeting, diarization: on } });
+}
+
 function writeMeetingControl(home: string, action: "start" | "stop" | "cancel",
                             title?: string, attendees?: string[]): void {
   writeFileSync(join(home, "meeting-control.json"),

@@ -89,6 +89,19 @@ export function render(vm: ViewModel, nowSec: number, ui: RenderUi = { recordFor
     ${mc.note ? `<div class="seg-hint model-note">${esc(mc.note)}</div>` : ""}
   </section>` : "";
 
+  // Plain config switch, so unlike the language section it does not wait for
+  // the meeting agent to report.
+  const d = vm.diarization;
+  const diarSection = `
+  <section class="stats"><h2 class="section-lab">Speaker separation</h2>
+    <div class="seg">
+      <button data-action="meeting-diarization" data-arg="off" class="${d.on ? "" : "selected"}">Off</button>
+      <button data-action="meeting-diarization" data-arg="on" class="${d.on ? "selected" : ""}">On</button>
+    </div>
+    <div class="seg-hint">Labels Speaker 1, 2… · stores a voiceprint of your own voice only</div>
+    ${d.note ? `<div class="seg-hint model-note">${esc(d.note)}</div>` : ""}
+  </section>`;
+
   // Always reachable: a friend's problem ("search feels wrong") often has
   // no warning state — exactly when they need the mail button. Warning
   // states get the prominent pair; healthy gets one quiet row.
@@ -160,6 +173,7 @@ export function render(vm: ViewModel, nowSec: number, ui: RenderUi = { recordFor
   <section class="stats"><h2 class="section-lab">Index</h2>${vm.stats.map(rowHtml).join("")}</section>
   ${vm.week.length ? `<section class="stats"><h2 class="section-lab">This week</h2>${vm.week.map(rowHtml).join("")}</section>` : ""}
   ${modelSection}
+  ${diarSection}
   ${analyticsRow ? `<section class="stats"><h2 class="section-lab">Privacy</h2>${analyticsRow}</section>` : ""}
   <footer>${controls}${diagnostics}</footer>`;
 }
