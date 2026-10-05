@@ -7,7 +7,7 @@ let package = Package(
     dependencies: [
         // Pinned to the exact version the SP3 spike validated
         // (spikes/meeting-probe/README.md) — API shapes differ across minors.
-        .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "0.18.0"),
+        .package(url: "https://github.com/argmaxinc/WhisperKit", exact: "1.1.0"),
     ],
     targets: [
         .target(name: "CaptureCore"),

@@ -4,7 +4,7 @@ import CaptureCore
 
 // WhisperKit transcription of the two channel WAVs into speaker-labeled
 // segments (mic → Me, system → Others). Spike-validated API shapes
-// (WhisperKit 0.18.0): WhisperKit(WhisperKitConfig(model:)), array-returning
+// (WhisperKit 0.18.0, still holding on 1.1.0): WhisperKit(WhisperKitConfig(model:)), array-returning
 // transcribe(audioPath:decodeOptions:), TranscriptionResult.segments.
 // Language auto-detect on purpose: on Hindi/Hinglish speech Whisper emits an
 // English gist — recorded spike decision, more searchable than mangled
@@ -107,8 +107,12 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
                     }
                 } catch { channelErrors.append("\(speaker.rawValue): \(error)") }
             }
+            // TranscriptionCallback is @Sendable (WhisperKit 1.x): capture the
+            // Progress, not the non-Sendable pipe. WhisperKit only swaps it
+            // after a call finishes, so this is the one the batch reports into.
+            let progress = pipe.progress
             let onWindow: TranscriptionCallback = { _ in
-                let f = pipe.progress.fractionCompleted
+                let f = progress.fractionCompleted
                 Task { await onProgress(f) }
                 return nil
             }
@@ -138,10 +142,12 @@ private func transcribeChannels(mic: URL, system: URL, model: String, modelDir: 
         for (idx, (url, speaker)) in channels.enumerated() where !chunked {
             // WhisperKit fires this per decode window; read its Progress into a
             // single 0…1 fraction and hand only the Double (Sendable) to the
-            // actor — the non-Sendable pipe never crosses an isolation boundary.
+            // actor — the non-Sendable pipe never crosses an isolation boundary,
+            // which WhisperKit 1.x enforces (the callback is @Sendable).
+            let progress = pipe.progress
             let onWindow: TranscriptionCallback = { _ in
                 let f = overallTranscribeProgress(
-                    channelsDone: idx, channelFraction: pipe.progress.fractionCompleted, totalChannels: total)
+                    channelsDone: idx, channelFraction: progress.fractionCompleted, totalChannels: total)
                 Task { await onProgress(f) }
                 return nil
             }
