@@ -3,7 +3,7 @@
   "name": "day.shyn/shyn",
   "title": "shyn",
   "description": "Local-first ambient memory for your Mac \u2014 pages, meetings, notes, encrypted on-device.",
-  "version": "0.5.16-alpha",
+  "version": "0.5.17-alpha",
   "repository": {
     "url": "https://github.com/shyn-labs/shyn",
     "source": "github"
@@ -12,8 +12,8 @@
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/shyn-labs/homebrew-tap/releases/download/v0.5.16-alpha/shyn.mcpb",
-      "fileSha256": "729ddbc3300889491098b251f6d10d9bbaacb84502e6de294164b015375e64f0",
+      "identifier": "https://github.com/shyn-labs/homebrew-tap/releases/download/v0.5.17-alpha/shyn.mcpb",
+      "fileSha256": "cdb3c1a3b122458d4f1f9976666fe72482a16c0cdaaa57912b62e249f52b124d",
       "transport": {
         "type": "stdio"
       }
