@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS embed_queue (
   attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, value TEXT NOT NULL);
-INSERT OR IGNORE INTO meta(k, value) VALUES ('schema_version', '5');
+INSERT OR IGNORE INTO meta(k, value) VALUES ('schema_version', '6');
 INSERT OR IGNORE INTO meta(k, value)
   VALUES ('embedding_model', 'qwen3-embedding-0.6b-q8_0');
 
@@ -80,12 +80,29 @@ CREATE TABLE IF NOT EXISTS coverage (
   ts INTEGER PRIMARY KEY,
   agents TEXT NOT NULL DEFAULT ''
 );
+
+-- v6: speaker diarization (spec 2026-10-05). v1 only ever holds the user's own
+-- profile (is_self = 1); the shape is v2's so v2 needs no migration.
+CREATE TABLE IF NOT EXISTS voice_profiles (
+  id INTEGER PRIMARY KEY,
+  name TEXT,
+  is_self INTEGER NOT NULL DEFAULT 0,
+  created_ts INTEGER NOT NULL,
+  updated_ts INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS voice_samples (
+  id INTEGER PRIMARY KEY,
+  profile_id INTEGER NOT NULL REFERENCES voice_profiles(id) ON DELETE CASCADE,
+  embedding BLOB NOT NULL,
+  speech_sec REAL NOT NULL,
+  ts INTEGER NOT NULL
+);
 `;
 
 // Versions this build can open: older ones are migrated forward by migrate(),
 // the newest is what SCHEMA writes. Add the new value here in the same commit
 // that bumps SCHEMA, or a reopen of a freshly created DB is refused.
-export const KNOWN_SCHEMA_VERSIONS = ["1", "2", "3", "4", "5"];
+export const KNOWN_SCHEMA_VERSIONS = ["1", "2", "3", "4", "5", "6"];
 
 const VEC_SCHEMA = `
 CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(
@@ -164,6 +181,13 @@ function migrate(db: Database.Database): void {
       // above). Nothing to transform: an upgraded DB simply has no coverage
       // history before this point, which reads correctly as "not observed".
       db.prepare("UPDATE meta SET value='5' WHERE k='schema_version'").run();
+      continue;
+    }
+
+    if (version === "5") {
+      // v6 adds voice_profiles / voice_samples (created idempotently by SCHEMA
+      // above). Nothing to transform: no voice was ever stored before v6.
+      db.prepare("UPDATE meta SET value='6' WHERE k='schema_version'").run();
       continue;
     }
 

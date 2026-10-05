@@ -38,7 +38,7 @@ describe("openDatabase", () => {
   it("supports keyless mode for tests", () => {
     const db = openDatabase({ dbPath: tmpDb(), key: null });
     expect(db.prepare("SELECT value FROM meta WHERE k='schema_version'").get())
-      .toEqual({ value: "5" });
+      .toEqual({ value: "6" });
     db.close();
   });
 
@@ -63,7 +63,7 @@ describe("openDatabase", () => {
     db.close();
 
     const db2 = openDatabase({ dbPath, key: null });
-    expect((db2.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("5");
+    expect((db2.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("6");
     const hit = db2.prepare("SELECT count(*) c FROM chunks_fts WHERE chunks_fts MATCH 'legacy'").get() as any;
     expect(hit.c).toBe(1);
     db2.close();
@@ -96,7 +96,7 @@ describe("openDatabase", () => {
     ins.run("(1) Inbox", 1000, "h1"); ins.run("(2) Inbox", 2000, "h2"); ins.run("(3) Inbox", 3000, "h3");
     db.close();
     const db2 = openDatabase({ dbPath, key: null });
-    expect((db2.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("5");
+    expect((db2.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("6");
     const rows = db2.prepare("SELECT title FROM documents WHERE uri='https://d.example'").all() as any[];
     expect(rows).toEqual([{ title: "(3) Inbox" }]); // newest kept
     // unique index enforced
@@ -120,7 +120,7 @@ describe("openDatabase", () => {
 
     db = openDatabase({ dbPath, key: null });
     const v = db.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as { value: string };
-    expect(v.value).toBe("5");
+    expect(v.value).toBe("6");
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='counters'").get()).toBeTruthy();
     expect((db.prepare("SELECT COUNT(*) c FROM documents").get() as { c: number }).c).toBe(1);
     db.close();
@@ -140,11 +140,41 @@ describe("openDatabase", () => {
     db.close();
 
     db = openDatabase({ dbPath, key: null });
-    expect((db.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("5");
+    expect((db.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("6");
     expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='coverage'").get()).toBeTruthy();
     // An upgraded DB has no coverage history, which reads correctly as
     // "not observed" rather than as an error.
     expect((db.prepare("SELECT COUNT(*) c FROM coverage").get() as any).c).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) c FROM documents").get() as any).c).toBe(1);
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("v6 has the voice tables on a fresh database", () => {
+    const d = openDatabase({ dbPath: join(mkdtempSync(join(tmpdir(), "shyn-")), "t.db"), key: null });
+    expect((d.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("6");
+    d.prepare("SELECT id, name, is_self, created_ts, updated_ts FROM voice_profiles").all();
+    d.prepare("SELECT id, profile_id, embedding, speech_sec, ts FROM voice_samples").all();
+  });
+
+  it("a v5 database upgrades to v6 with voice tables", () => {
+    const dir = mkdtempSync(join(tmpdir(), "shyn-mig6-"));
+    const dbPath = join(dir, "t.db");
+    let db = openDatabase({ dbPath, key: null });
+    db.prepare(
+      "INSERT INTO documents (source, uri, title, ts, content_hash, meta_json) VALUES ('file','/a','',1,'h','{}')"
+    ).run();
+    // Force the marker back to a v5 DB (voices tables don't yet exist before v6).
+    db.prepare("DROP TABLE IF EXISTS voice_samples").run();
+    db.prepare("DROP TABLE IF EXISTS voice_profiles").run();
+    db.prepare("UPDATE meta SET value='5' WHERE k='schema_version'").run();
+    db.close();
+
+    db = openDatabase({ dbPath, key: null });
+    expect((db.prepare("SELECT value FROM meta WHERE k='schema_version'").get() as any).value).toBe("6");
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='voice_profiles'").get()).toBeTruthy();
+    expect(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='voice_samples'").get()).toBeTruthy();
+    expect((db.prepare("SELECT COUNT(*) c FROM voice_samples").get() as any).c).toBe(0);
     expect((db.prepare("SELECT COUNT(*) c FROM documents").get() as any).c).toBe(1);
     db.close();
     rmSync(dir, { recursive: true, force: true });
