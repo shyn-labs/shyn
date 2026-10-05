@@ -59,3 +59,18 @@ import Testing
     #expect(micInUseByNonDictation(deviceRunning: true, inputHolders: ["us.zoom.xos"], excluded: [""]))
     #expect(micInUseByNonDictation(deviceRunning: true, inputHolders: [], excluded: ["us.zoom.xos"]))
 }
+
+// An app using Apple's speech recognition does not hold the mic alone: the
+// system speech service holds its own input stream beside it. The 2026-10-05
+// probe while an excluded tutor app listened read exactly these two holders,
+// so the exclusion matched and the mic still counted, twice in one evening.
+@Test func systemSpeechServiceIsNotAMic() {
+    #expect(!micInUseByNonDictation(deviceRunning: true, inputHolders: ["com.apple.CoreSpeech"]))
+    #expect(!micInUseByNonDictation(deviceRunning: true, inputHolders: ["com.apple.CoreSpeech", "com.example.tutor"],
+                                    excluded: ["com.example.tutor"]))
+}
+
+@Test func aCallStillCountsAlongsideSystemSpeech() {
+    // Live captions or dictation during a call: the call app holds its own stream.
+    #expect(micInUseByNonDictation(deviceRunning: true, inputHolders: ["com.apple.CoreSpeech", "us.zoom.xos"]))
+}

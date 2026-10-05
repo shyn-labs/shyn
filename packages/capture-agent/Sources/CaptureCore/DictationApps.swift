@@ -14,6 +14,10 @@ public let dictationBundlePrefixes: [String] = [
     "com.pais.handy",               // Handy (observed 2026-09-30)
     "com.electron.wispr-flow",      // Wispr Flow (installed, id read from Info.plist)
     "com.superduper.superwhisper",  // Superwhisper (unverified)
+    // Apple's speech service (macOS Dictation, Siri, any app on the Speech
+    // framework) holds its OWN input stream beside the app using it, so
+    // excluding that app is not enough (observed 2026-10-05).
+    "com.apple.CoreSpeech",
 ]
 
 /// The agent's own bundle id. Its pre-roll and recording hold an input stream
