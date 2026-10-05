@@ -56,6 +56,9 @@ describe("choosing Me in an in-person session", () => {
   it("is null when two speakers are too close to call", () => {
     expect(chooseSelf([{ label: "S1", embedding: unit(1, 0.1, 0) }, { label: "S2", embedding: unit(1, 0.12, 0) }], [me])).toBeNull();
   });
+  it("is null when a speaker's vector length differs from the sample's (no truncated comparison)", () => {
+    expect(chooseSelf([{ label: "S1", embedding: unit(1, 0, 0, 0) }], [unit(1, 0, 0)])).toBeNull();
+  });
   it("is null below threshold and with no samples", () => {
     expect(chooseSelf([{ label: "S1", embedding: other }], [me])).toBeNull();
     expect(chooseSelf([{ label: "S1", embedding: me }], [])).toBeNull();
@@ -70,10 +73,6 @@ describe("relabelling in-person lines", () => {
   });
   it("leaves every Speaker N alone when Me is not certain", () => {
     expect(relabelInPerson("Speaker 1: hello", null, ["S1"])).toBe("Speaker 1: hello");
-  });
-  it("is idempotent on a retried payload (same text in, same text out)", () => {
-    const once = relabelInPerson(text, "S2", ["S1", "S2", "S3"]);
-    expect(relabelInPerson(text, "S2", ["S1", "S2", "S3"])).toBe(once);
   });
 });
 
@@ -114,6 +113,71 @@ describe("Engine.ingestMeeting never costs a transcript", () => {
     const doc = e.document({ uri: "meeting://call/corrupt" } as never) as { text: string };
     expect(doc.text).toContain("Speaker 1: hi\nSpeaker 2: hello");
     expect(doc.text).not.toContain("Me:");
+    await e.close();
+  });
+});
+
+describe("Engine.ingestMeeting self samples", () => {
+  const f32 = (...xs: number[]) => Buffer.from(Float32Array.from(xs).buffer).toString("base64");
+  const mk = () => {
+    const embedder = new Embedder(async () => (<EmbedBackend>{
+      embed: async () => { const v = new Float32Array(EMBEDDING_DIM); v[0] = 1; return v; },
+      dispose: async () => {},
+    }));
+    const e = new Engine({
+      dbPath: join(mkdtempSync(join(tmpdir(), "shyn-")), "t.db"),
+      keyProvider: new StaticKeyProvider(null), embedder,
+    });
+    return { e, d: (e as any).db as ReturnType<typeof db> };
+  };
+  const call = (text: string, ts = 1000) => ({
+    source: "meeting" as const, uri: "meeting://us.zoom.xos/2026-10-05-1000", title: "Zoom call", ts, text,
+    speakers: [{ label: "S1", channel: "system" as const, embedding: f32(0, 1, 0), speechSec: 40 }],
+    selfSample: { embedding: f32(1, 0, 0), speechSec: 45 },
+  });
+
+  it("a retried call payload is deduped, stores identical text and exactly one sample", async () => {
+    const { e, d } = mk();
+    const first = e.ingestMeeting(call("Me: morning\nSpeaker 1: hi"));
+    const second = e.ingestMeeting(call("Me: morning\nSpeaker 1: hi"));
+    expect(first.deduped).toBe(false);
+    expect(second.deduped).toBe(true);
+    expect(selfSamples(d)).toHaveLength(1);
+    const t = (e.document({ uri: call("").uri }) as { text: string }).text;
+    expect(t).toContain("Me: morning\nSpeaker 1: hi");
+    await e.close();
+  });
+
+  it("a re-transcription (same uri and ts, new text) still leaves exactly one sample", async () => {
+    const { e, d } = mk();
+    e.ingestMeeting(call("Me: morning\nSpeaker 1: hi"));
+    const r = e.ingestMeeting(call("Me: morning\nSpeaker 1: hi there, shall we start"));
+    expect(r.deduped).toBe(false);
+    expect(selfSamples(d)).toHaveLength(1);
+    const t = (e.document({ uri: call("").uri }) as { text: string }).text;
+    expect(t).toContain("shall we start");
+    await e.close();
+  });
+
+  it("a different call (new ts) adds a second sample", async () => {
+    const { e, d } = mk();
+    e.ingestMeeting(call("Me: one", 1000));
+    e.ingestMeeting({ ...call("Me: two", 2000), uri: "meeting://us.zoom.xos/2026-10-05-1100" });
+    expect(selfSamples(d)).toHaveLength(2);
+    await e.close();
+  });
+
+  it("never stores a self sample from an in-person session (mic speakers)", async () => {
+    const { e, d } = mk();
+    const r = e.ingestMeeting({
+      source: "meeting", uri: "meeting://call/in-person", title: "Recording", ts: 1000,
+      text: "Speaker 1: hi\nSpeaker 2: hello",
+      speakers: [{ label: "S1", channel: "mic", embedding: f32(0, 1, 0), speechSec: 20 },
+                 { label: "S2", channel: "mic", embedding: f32(1, 0, 0), speechSec: 20 }],
+      selfSample: { embedding: f32(1, 0, 0), speechSec: 45 },
+    });
+    expect(r.rejected).toBeFalsy();
+    expect(selfSamples(d)).toHaveLength(0);
     await e.close();
   });
 });

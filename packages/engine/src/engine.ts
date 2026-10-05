@@ -52,34 +52,42 @@ export class Engine {
 
   ingest(doc: IngestDoc) { return ingestDocument(this.db, doc); }
 
-  /** Meeting ingest with diarization extras. Stores ONLY the user's own sample;
-   *  far-side and in-person embeddings are used to label, then dropped here.
-   *  Diarization never costs a transcript: any voice-side failure is logged and
-   *  the document is ingested with its incoming text unchanged. */
+  /** Meeting ingest with diarization extras. Stores ONLY the user's own sample,
+   *  and only from calls; far-side and in-person embeddings are used to label,
+   *  then dropped here. Diarization never costs a transcript: any voice-side
+   *  failure is logged and the document is ingested with its incoming text
+   *  unchanged. */
   ingestMeeting(p: IngestDoc & { speakers?: WireSpeaker[]; selfSample?: WireSample }) {
     const { speakers, selfSample, ...doc } = p;
+    const mic = (speakers ?? []).filter((s) => s.channel === "mic");
     try {
-      let text = doc.text;
-      if (selfSample?.embedding && selfSample.speechSec >= 30) {
-        addSelfSample(this.db, decodeEmbedding(selfSample.embedding), selfSample.speechSec, doc.ts);
-      }
-      const mic = (speakers ?? []).filter((s) => s.channel === "mic");
       if (mic.length > 0) {
         const samples = selfSamples(this.db);
         if (samples.length === 0) {
           // No profile yet: numbered speakers plus a note saying why.
-          text = `[${NO_SELF_PROFILE_NOTE}]\n\n${text}`;
+          doc.text = `[${NO_SELF_PROFILE_NOTE}]\n\n${doc.text}`;
         } else {
           // Ambiguous match: chooseSelf is null, text unchanged, no note.
           const self = chooseSelf(mic.map((s) => ({ label: s.label, embedding: decodeEmbedding(s.embedding) })), samples);
-          text = relabelInPerson(text, self, mic.map((s) => s.label));
+          doc.text = relabelInPerson(doc.text, self, mic.map((s) => s.label));
         }
       }
-      doc.text = text;
     } catch (err) {
       console.error("[voice] diarization failed; ingesting the transcript unchanged", err);
     }
-    return ingestDocument(this.db, doc);
+    const result = ingestDocument(this.db, doc);
+    // A retried payload (deduped) or a dropped one (rejected) must not add a
+    // sample; an in-person session (mic speakers) is not a clean sample of the
+    // user. addSelfSample also skips a repeated (profile, ts).
+    if (!result.deduped && !result.rejected && mic.length === 0
+        && selfSample?.embedding && selfSample.speechSec >= 30) {
+      try {
+        addSelfSample(this.db, decodeEmbedding(selfSample.embedding), selfSample.speechSec, doc.ts);
+      } catch (err) {
+        console.error("[voice] could not store the self sample", err);
+      }
+    }
+    return result;
   }
 
   forgetSelfVoice() { return forgetSelf(this.db); }

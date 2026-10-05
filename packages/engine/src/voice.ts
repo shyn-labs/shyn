@@ -23,6 +23,8 @@ function selfProfileId(db: Database.Database, now: number): number {
 export function addSelfSample(db: Database.Database, embedding: Float32Array, speechSec: number, ts: number): void {
   db.transaction(() => {
     const id = selfProfileId(db, ts);
+    // ts is the meeting start, stable across retries and re-transcriptions.
+    if (db.prepare("SELECT 1 FROM voice_samples WHERE profile_id = ? AND ts = ?").get(id, ts)) return;
     db.prepare("INSERT INTO voice_samples(profile_id, embedding, speech_sec, ts) VALUES (?, ?, ?, ?)")
       .run(id, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength), speechSec, ts);
     db.prepare(`DELETE FROM voice_samples WHERE profile_id = ? AND id NOT IN (
@@ -55,8 +57,9 @@ export const NO_SELF_PROFILE_NOTE =
   "Speakers are numbered: shyn has no sample of your voice yet. It learns one from your next call.";
 
 function cosine(a: Float32Array, b: Float32Array): number {
+  if (a.length !== b.length) return 0;   // fail safe: never a truncated comparison
   let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < Math.min(a.length, b.length); i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
   return dot / Math.max(1e-9, Math.sqrt(na) * Math.sqrt(nb));
 }
 
