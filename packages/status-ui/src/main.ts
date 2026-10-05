@@ -1,5 +1,5 @@
 import {
-  app, BrowserWindow, Tray, nativeImage, ipcMain, screen, clipboard, shell, Notification,
+  app, BrowserWindow, Tray, nativeImage, ipcMain, screen, clipboard, shell, Notification, dialog,
 } from "electron";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -14,7 +14,7 @@ import { live } from "./live.js";
 import { deriveView, type TrayState, type ViewModel, CLAUDE_ADD_COMMAND } from "./derive.js";
 import {
   pauseCapture, resumeCapture, readPausedUntil, meetingStart, parseMeetingStartArg, meetingStop, meetingCancel,
-  readMeetingModel, setMeetingModel, readMeetingDiarization, setMeetingDiarization,
+  readMeetingModel, setMeetingModel, readMeetingDiarization, setMeetingDiarization, forgetVoiceNote,
   type PauseSpec, type MeetingModel,
 } from "./controls.js";
 import {
@@ -62,6 +62,28 @@ if (!app.requestSingleInstanceLock()) {
   let lastTray: TrayState | null = null;
   let lastVm: ViewModel | null = null;
   let analyticsEnabled: boolean | undefined;
+  // Outcome of "Forget my voice", shown in the popover for a minute.
+  let voiceNote: { text: string; at: number } | null = null;
+  const VOICE_NOTE_MS = 60_000;
+
+  // Deleting the self-profile is irreversible, so ask first. Cancel is the default.
+  async function forgetVoice() {
+    const { response } = await dialog.showMessageBox({
+      type: "warning", buttons: ["Cancel", "Forget"], defaultId: 0, cancelId: 0,
+      message: "Forget your voice?",
+      detail: "This deletes shyn's sample of your own voice. In-person meetings go back to Speaker 1, 2…",
+    });
+    if (response !== 1) return;
+    let text: string;
+    try {
+      text = forgetVoiceNote(await rpcCall(sock, "voice.forgetSelf", { confirm: true }));
+    } catch (e) {
+      console.error("failed to forget voice:", e);
+      text = "Could not reach shyn. Try again, or run: shyn voice forget-self";
+    }
+    voiceNote = { text, at: Date.now() };
+    void tick();
+  }
 
   const OB_WIN = { width: 400, height: 540 };
   let obWin: BrowserWindow | null = null;
@@ -207,6 +229,7 @@ if (!app.requestSingleInstanceLock()) {
       pausedUntil: readPausedUntil(home),
       meetingModel: readMeetingModel(home),
       meetingDiarization: readMeetingDiarization(home),
+      voiceNote: voiceNote && Date.now() - voiceNote.at < VOICE_NOTE_MS ? voiceNote.text : null,
       update: { latest: updLatest, updating: updUpdating, failed: updFailed,
                 brewFound: findBrew() !== null },
       // Two suppressions, both learned from shipping a notice without them:
@@ -333,6 +356,9 @@ if (!app.requestSingleInstanceLock()) {
           else console.error("unknown meeting model:", arg);
         }
         else if (name === "meeting-diarization") setMeetingDiarization(home, arg === "on");
+        else if (name === "forget-voice") {
+          void forgetVoice().catch((e) => console.error("forget-voice failed:", e));
+        }
         else if (name === "run-update") startUpgrade(updLatest, false);
         else if (name === "dismiss-notice") { if (typeof arg === "string") dismissNotice(home, arg); }
         else if (name === "open-onboarding") showOnboarding();

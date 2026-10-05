@@ -166,3 +166,4 @@ body.onboarding { padding: 4px 0 14px; }
   background: var(--lift); color: var(--ink); }
 .record-form input:focus { outline: none; border-color: var(--ink-dim); }
 .record-form-actions { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+.seg-hint.voice-note { font-style: italic; }

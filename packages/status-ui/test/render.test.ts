@@ -261,4 +261,20 @@ describe("manual record button", () => {
     expect(btns[1].classList.contains("selected")).toBe(false);
     expect(el.textContent).not.toContain("Downloading speaker model");
   });
+
+  it("offers to forget the voice, with the toggle off or on", () => {
+    for (const on of [false, true]) {
+      const el = mount(render(vm({ diarization: { on, note: null } }), NOW));
+      const btn = el.querySelector('[data-action="forget-voice"]') as HTMLButtonElement | null;
+      expect(btn?.textContent).toContain("Forget my voice");
+    }
+  });
+
+  it("shows the forget-voice result, escaped", () => {
+    const el = mount(render(vm({ diarization: { on: false, note: null, voiceNote: "<b>gone</b>" } }), NOW));
+    expect(el.textContent).toContain("<b>gone</b>");
+    expect(el.querySelector(".voice-note b")).toBeNull();
+    const none = mount(render(vm({ diarization: { on: false, note: null } }), NOW));
+    expect(none.querySelector(".voice-note")).toBeNull();
+  });
 });

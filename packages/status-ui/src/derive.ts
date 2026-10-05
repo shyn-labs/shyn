@@ -78,7 +78,8 @@ export type ViewModel = {
   modelChoice: ModelChoice | null;
   // Speaker separation toggle. Always shown (a config switch, not agent state);
   // note only reflects the speaker-model download while it is on.
-  diarization: { on: boolean; note: string | null };
+  // voiceNote: the outcome of "Forget my voice", present for a short while after.
+  diarization: { on: boolean; note: string | null; voiceNote?: string };
   // In-app update row (spec 2026-07-24): null = nothing to show (current,
   // opted out, offline, or daemon down). canRun=false → copy-command fallback.
   update: { version: string; state: "available" | "updating" | "failed"; canRun: boolean } | null;
@@ -101,6 +102,7 @@ export type DeriveContext = {
   claudeCommand: string;       // claude mcp add command, shim-aware
   meetingModel: string;        // capture.json meeting.whisperModel ("small" default)
   meetingDiarization: boolean; // capture.json meeting.diarization (false default)
+  voiceNote?: string | null;   // main.ts: result of the last "Forget my voice", if recent
   // main.ts owns the update-check timer + in-flight state; derive stays pure.
   update: { latest: string | null; updating: boolean; failed: boolean; brewFound: boolean };
   notice?: Notice | null;
@@ -140,7 +142,8 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
       tray: "warning", verdict: "daemon not running", meeting: null, canRecord: false,
       rows: [{ label: "Daemon", value: "unreachable", tone: "err", hint: START_HINT }],
       stats: [], week: [], paused: false, modelChoice: null,
-      diarization: { on: ctx.meetingDiarization, note: null }, update: null,
+      diarization: { on: ctx.meetingDiarization, note: null,
+                     ...(ctx.voiceNote ? { voiceNote: ctx.voiceNote } : {}) }, update: null,
       // A notice still shows with the daemon down — "upgrade, your build is
       // broken" is exactly the case where the daemon may not be running.
       notice: ctx.notice ?? null,
@@ -292,6 +295,7 @@ export function deriveView(poll: PollResult, ctx: DeriveContext): ViewModel {
       : m?.diarizerDownloading ? "Downloading speaker model…"
       : m?.diarizerReady === false ? "Speaker model not downloaded yet"
       : null,
+    ...(ctx.voiceNote ? { voiceNote: ctx.voiceNote } : {}),
   };
 
   // Update row: updating/failed outrank available so a mid-upgrade check

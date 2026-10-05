@@ -100,6 +100,8 @@ export function render(vm: ViewModel, nowSec: number, ui: RenderUi = { recordFor
     </div>
     <div class="seg-hint">Labels Speaker 1, 2… · stores a voiceprint of your own voice only</div>
     ${d.note ? `<div class="seg-hint model-note">${esc(d.note)}</div>` : ""}
+    <div class="seg-hint"><button data-action="forget-voice" class="ghost">Forget my voice</button></div>
+    ${d.voiceNote ? `<div class="seg-hint voice-note">${esc(d.voiceNote)}</div>` : ""}
   </section>`;
 
   // Always reachable: a friend's problem ("search feels wrong") often has

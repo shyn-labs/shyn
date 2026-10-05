@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { meetingStart,
   pauseCapture, resumeCapture, readPausedUntil, meetingStop, meetingCancel,
-  readMeetingModel, setMeetingModel, readMeetingDiarization, setMeetingDiarization,
+  readMeetingModel, setMeetingModel, readMeetingDiarization, setMeetingDiarization, forgetVoiceNote,
 } from "../src/controls.js";
 
 const NOW = 1_783_700_000;
@@ -126,5 +126,16 @@ describe("controls: meeting.diarization contract (matches MeetingConfig.load)", 
     const h = home();
     writeFileSync(join(h, "capture.json"), JSON.stringify({ meeting: { diarization: "yes" } }));
     expect(readMeetingDiarization(h)).toBe(false);
+  });
+});
+
+describe("controls: forgetVoiceNote", () => {
+  it("says what happened, from the daemon's removed count", () => {
+    expect(forgetVoiceNote({ removed: 1 })).toBe("Your voice sample is deleted");
+    expect(forgetVoiceNote({ removed: 0 })).toBe("No voice sample was stored");
+  });
+  it("a malformed reply claims nothing was deleted", () => {
+    expect(forgetVoiceNote(undefined)).toBe("No voice sample was stored");
+    expect(forgetVoiceNote({ removed: "yes" })).toBe("No voice sample was stored");
   });
 });

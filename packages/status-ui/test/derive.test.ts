@@ -404,6 +404,15 @@ describe("meeting model choice (language-framed setting)", () => {
     expect(d({})).toEqual({ on: true, note: null });
   });
 
+  it("diarization: carries the forget-voice result note, daemon up or down", () => {
+    const note = "Your voice sample is deleted";
+    const up = deriveView({ ok: true, status: withMeeting({ modelReady: true }) },
+      baseCtx({ meetingDiarization: false, voiceNote: note }));
+    expect(up.diarization).toEqual({ on: false, note: null, voiceNote: note });
+    const down = deriveView({ ok: false }, baseCtx({ meetingDiarization: false, voiceNote: note }));
+    expect(down.diarization).toEqual({ on: false, note: null, voiceNote: note });
+  });
+
   it("diarization: still present when the daemon is down", () => {
     const vm = deriveView({ ok: false }, baseCtx({ meetingDiarization: true }));
     expect(vm.diarization).toEqual({ on: true, note: null });

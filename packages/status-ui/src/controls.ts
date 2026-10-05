@@ -75,6 +75,14 @@ export function setMeetingDiarization(home: string, on: boolean): void {
   writeCfg(home, { ...cfg, meeting: { ...meeting, diarization: on } });
 }
 
+// What the popover says after "Forget my voice", from the daemon's voice.forgetSelf
+// reply. Anything but a positive count claims nothing was deleted.
+export function forgetVoiceNote(reply: unknown): string {
+  const removed = (reply as { removed?: unknown } | null | undefined)?.removed;
+  return typeof removed === "number" && removed > 0
+    ? "Your voice sample is deleted" : "No voice sample was stored";
+}
+
 function writeMeetingControl(home: string, action: "start" | "stop" | "cancel",
                             title?: string, attendees?: string[]): void {
   writeFileSync(join(home, "meeting-control.json"),
