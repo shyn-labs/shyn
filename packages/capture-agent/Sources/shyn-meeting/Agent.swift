@@ -441,6 +441,55 @@ actor MeetingAgent {
         }
     }
 
+    /// Diarization never costs a transcript: every failure returns the input
+    /// segments untouched and nil speakers, and the caller assembles as before.
+    /// A diarizer that finds no speakers ships nil, never an empty array.
+    private func diarize(_ segs: [TranscriptSegment], urls: (mic: URL, system: URL), cfg: MeetingConfig)
+        async -> (segs: [TranscriptSegment], speakers: [SpeakerPayload]?, selfSample: VoiceSamplePayload?) {
+        let plan = diarizationPlan(enabled: cfg.diarization,
+                                   modelsReady: diarizerModelsReady(dir: diarizerModelDir), segments: segs)
+        guard case .diarize(let channel) = plan else {
+            if case .skip(let why) = plan, why != "off" { logErr("[diarizer] skipped: \(why)") }
+            return (segs, nil, nil)
+        }
+        let channelURL = channel == .others ? urls.system : urls.mic
+        let wire = channel == .others ? "system" : "mic"
+        do {
+            return try await withSystemAwake(reason: "shyn: separating speakers") {
+                let t0 = ProcessInfo.processInfo.systemUptime
+                let samples = try AudioProcessor.loadAudioAsFloatArray(fromPath: channelURL.path)
+                let d = try await diarizeChannel(samples: samples, dir: diarizerModelDir)
+                let order = arrivalOrder(d.turns)
+                let speakers: [SpeakerPayload] = d.embeddings.compactMap { entry in
+                    guard let n = order[entry.key] else { return nil }
+                    return SpeakerPayload(label: "S\(n)", channel: wire,
+                                          embedding: encodeEmbedding(entry.value.embedding),
+                                          speechSec: entry.value.speechSec)
+                }.sorted { $0.label < $1.label }
+                var selfSample: VoiceSamplePayload? = nil
+                if channel == .others {
+                    let mic = try AudioProcessor.loadAudioAsFloatArray(fromPath: urls.mic.path)
+                    let chunks = voicedChunks(samples: mic, sampleRate: 16_000)
+                    let voiced = voicedSeconds(chunks)
+                    if voiced >= selfSampleMinSeconds {
+                        let e = try await embedSpeech(samples: mic, ranges: chunks.map { ($0.startSec, $0.endSec) },
+                                                      dir: diarizerModelDir)
+                        selfSample = VoiceSamplePayload(embedding: encodeEmbedding(e), speechSec: voiced)
+                    }
+                }
+                logErr(String(format: "[diarizer] %@: %d speakers, %d turns, took %.1fs%@",
+                              wire, order.count, d.turns.count, ProcessInfo.processInfo.systemUptime - t0,
+                              selfSample == nil ? "" : "; self sample"))
+                // No speakers found: keep today's labels and ship no far-side speakers.
+                guard !speakers.isEmpty else { return (segs, nil, selfSample) }
+                return (assignVoices(segs, channel: channel, turns: d.turns), speakers, selfSample)
+            }
+        } catch {
+            logErr("[diarizer] failed, shipping without speakers: \(error)")
+            return (segs, nil, nil)
+        }
+    }
+
     // The heavy work: `await transcribeMeeting` runs off-actor (it is a
     // nonisolated free function), so the actor stays free for tick() while the
     // ANE grinds. finishTranscription always runs, even on an empty drop.
@@ -474,8 +523,9 @@ actor MeetingAgent {
         }
         // Stamp first: the far-side roster decides how speakers are labelled.
         let stampEarly = await calendarStamp(startEpoch: start, endEpoch: end)
-        let label = farSideLabel(segs, others: stampEarly?.others ?? [])
-        var transcript = assembleTranscript(segs, farSide: label)
+        let diar = await diarize(segs, urls: urls, cfg: cfg)
+        let label = farSideLabel(diar.segs, others: stampEarly?.others ?? [], diarized: diar.speakers != nil)
+        var transcript = assembleTranscript(diar.segs, farSide: label)
         // Tell the reader when the labels are unusual rather than leaving them
         // to infer it — an unlabelled transcript with no explanation is its own
         // small mystery.
@@ -527,11 +577,17 @@ actor MeetingAgent {
         }
         dbg("title: \(chosen.rung.rawValue) (calendar tcc=\(calendarAccessAuthorized()), "
             + "ax=\(AXIsProcessTrusted()))")
-        let payload = meetingPayload(bundleId: bundleId, appName: appName,
-                                     startEpoch: start, endEpoch: end, transcript: transcript,
-                                     eventTitle: chosen.title,
-                                     attendees: meetingAttendees(manual: manualAttendees,
-                                                                 calendar: stamp?.attendees ?? []))
+        let base = meetingPayload(bundleId: bundleId, appName: appName,
+                                  startEpoch: start, endEpoch: end, transcript: transcript,
+                                  eventTitle: chosen.title,
+                                  attendees: meetingAttendees(manual: manualAttendees,
+                                                              calendar: stamp?.attendees ?? []))
+        // A named 1:1 already covers the far side, so ship no far-side speakers;
+        // the self-sample still goes.
+        let shippedSpeakers: [SpeakerPayload]? = { if case .named = label { return nil }; return diar.speakers }()
+        let payload = IngestPayload(source: base.source, uri: base.uri, title: base.title, ts: base.ts,
+                                    text: base.text, meta: base.meta,
+                                    speakers: shippedSpeakers, selfSample: diar.selfSample)
         if await ship(payload) {
             purgeAudio(sessionDir: dir)   // byte-honest: audio gone on ingest ack
             stats.meetingsCaptured += 1
