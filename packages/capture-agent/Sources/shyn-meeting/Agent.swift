@@ -688,6 +688,37 @@ actor MeetingAgent {
         await setWhisperDownloading(false)
     }
 
+    // Second gate: one inFlight flag per model, and the diarizer must never wait
+    // behind (or block) a Whisper download.
+    private var diarizerGate = ModelPredownloadGate()
+
+    func maybeKickDiarizerPredownload() async {
+        let cfg = MeetingConfig.load(from: configPath)
+        guard cfg.diarization else {
+            if stats.diarizerReady != nil || stats.diarizerDownloading != nil {
+                stats.diarizerReady = nil; stats.diarizerDownloading = nil
+            }
+            return
+        }
+        let ready = diarizerModelsReady(dir: diarizerModelDir)
+        stats.diarizerReady = ready
+        guard diarizerGate.shouldKick(present: ready, now: Int(Date().timeIntervalSince1970)) else { return }
+        stats.diarizerDownloading = true
+        Task.detached(priority: .background) {
+            let ok = await downloadDiarizerModels(dir: diarizerModelDir)
+            await self.finishDiarizerPredownload(success: ok)
+        }
+    }
+
+    private func finishDiarizerPredownload(success: Bool) async {
+        diarizerGate.finished(success: success, now: Int(Date().timeIntervalSince1970))
+        stats.diarizerDownloading = false
+        stats.diarizerReady = diarizerModelsReady(dir: diarizerModelDir)
+        await postStats(state: reportedMeetingState(
+            detector: detector.state, manualLive: manualSession && sessionDir != nil,
+            pendingTranscriptions: pendingTranscriptions))
+    }
+
     // Specialize the Core ML models to this chip now, not at the first meeting
     // after an upgrade (CaptureCore/PrewarmGate.swift, Transcriber.swift).
     private var prewarmGate = PrewarmGate()
@@ -749,6 +780,7 @@ actor MeetingAgent {
         while true {
             await agent.tick()
             await agent.maybeKickPredownload()
+            await agent.maybeKickDiarizerPredownload()
             await agent.maybeKickPrewarm()
             try? await Task.sleep(for: .seconds(3))
         }

@@ -52,6 +52,9 @@ struct MeetingStats: Codable, Sendable {
     // True only while the startup Whisper pre-download is in flight
     // (onboarding shows a busy state; no percentage by design).
     var whisperDownloading: Bool? = nil
+    // nil unless meeting.diarization is on (stats wire unchanged otherwise).
+    var diarizerDownloading: Bool? = nil
+    var diarizerReady: Bool? = nil
     // 0…1 overall transcription progress, present only while a background
     // transcription is running (state == "transcribing"); nil otherwise.
     var transcribeProgress: Double? = nil
