@@ -24,9 +24,15 @@ describe("self voice profile", () => {
 
   it("forget-self removes the profile and every sample", () => {
     const d = db();
+    // Add 3 samples to ensure cascade delete is actually working, not just
+    // relying on the selfSamples() JOIN to hide orphaned samples.
     addSelfSample(d, vec(1, 0), 40, 1);
+    addSelfSample(d, vec(2, 0), 40, 2);
+    addSelfSample(d, vec(3, 0), 40, 3);
     expect(forgetSelf(d).removed).toBe(1);
     expect(selfSamples(d)).toEqual([]);
     expect(d.prepare("SELECT COUNT(*) n FROM voice_profiles").get()).toEqual({ n: 0 });
+    // Critical: verify samples are actually deleted, not just hidden by JOIN.
+    expect(d.prepare("SELECT COUNT(*) n FROM voice_samples").get()).toEqual({ n: 0 });
   });
 });
