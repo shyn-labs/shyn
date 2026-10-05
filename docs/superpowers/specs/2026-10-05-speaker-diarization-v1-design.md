@@ -213,6 +213,14 @@ Throwaway code under `spikes/diarization-probe/` (gitignored build products), mo
    manual recording.
    - **Pass criteria:** on a real ~45-minute multi-party call, total transcript wall time
      increases **< 10%** and peak RSS does **not** increase over Whisper alone.
+   - **Amended 2026-10-05 (maintainer decision, after the first real-call run):**
+     - **Time** is measured *within* each run as diarization-stage seconds ÷ Whisper-stage
+       seconds, median over runs, which must be **< 10%**. Comparing wall time across separate
+       runs could not resolve a 1–2% cost, because Whisper alone varied ±20% run to run (331–494 s
+       on the same 18-minute call).
+     - **Memory:** a ~67 MB in-process footprint increase from the diarizer is accepted.
+       Whisper's Core ML weights are wired on the Neural Engine and invisible to in-process
+       metrics.
 4. **In-person** mixed-language recording: speaker splits, plus `Me` selection with a
    hand-built self-profile.
 5. **Embedding model choice:** FluidAudio's bundled speaker embedding vs. NVIDIA TitaNet,
