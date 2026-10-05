@@ -32,12 +32,13 @@ private func deviceRunningSomewhere(_ dev: AudioObjectID) -> Bool {
     return running != 0
 }
 
-func micActive() -> Bool {
+func micActive(excluding excluded: [String] = []) -> Bool {
     guard let dev = defaultDevice(selector: kAudioHardwarePropertyDefaultInputDevice) else { return false }
-    // Device flag first (cheap), then attribute it: a dictation tool holding
-    // the mic is not a call. See DictationApps.swift.
+    // Device flag first (cheap), then attribute it: a dictation tool or an
+    // excluded app holding the mic is not a call. See DictationApps.swift.
     guard deviceRunningSomewhere(dev) else { return false }
-    return micInUseByNonDictation(deviceRunning: true, inputHolders: inputHolderBundleIds())
+    return micInUseByNonDictation(deviceRunning: true, inputHolders: inputHolderBundleIds(),
+                                  excluded: excluded)
 }
 
 func systemAudioActive() -> Bool {

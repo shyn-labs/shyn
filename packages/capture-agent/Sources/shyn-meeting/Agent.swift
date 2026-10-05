@@ -148,7 +148,7 @@ actor MeetingAgent {
                 meetingAppFrontmost: frontmost)
         } else {
             signal = MeetingSignal(
-                micActive: force || micActive(),
+                micActive: force || micActive(excluding: cfg.excludeApps),
                 systemAudioActive: force || systemAudioActive(),
                 meetingAppFrontmost: frontmost)
         }

@@ -21,7 +21,14 @@ public let dictationBundlePrefixes: [String] = [
 public let ownBundleId = "com.shyn.meeting"
 
 public func isDictationBundleId(_ bundleId: String) -> Bool {
-    for prefix in dictationBundlePrefixes {
+    matchesBundlePrefix(bundleId, dictationBundlePrefixes)
+}
+
+/// `bundleId` is one of `prefixes` or a helper under it (`prefix.` + more).
+/// Blank prefixes never match: an empty excludeApps entry must not swallow
+/// every holder.
+func matchesBundlePrefix(_ bundleId: String, _ prefixes: [String]) -> Bool {
+    for prefix in prefixes where !prefix.isEmpty {
         if bundleId == prefix || bundleId.hasPrefix(prefix + ".") { return true }
     }
     return false
@@ -33,10 +40,16 @@ public func isDictationBundleId(_ bundleId: String) -> Bool {
 /// of processes holding an input stream. When the device is running but the
 /// process list is empty we cannot attribute it, so the device flag stands:
 /// dropping a real call is worse than one false banner. When holders ARE
-/// known, dictation tools and this agent are set aside, and the mic counts
-/// only if something else remains.
-public func micInUseByNonDictation(deviceRunning: Bool, inputHolders: [String]) -> Bool {
+/// known, dictation tools, this agent and the user's `meeting.excludeApps`
+/// are set aside, and the mic counts only if something else remains.
+/// Excluded apps are matched by HOLDER here, so one using the mic in the
+/// background never starts a pre-roll; the frontmost-app check in the agent
+/// only caught them while in front (lived 2026-10-05).
+public func micInUseByNonDictation(deviceRunning: Bool, inputHolders: [String],
+                                   excluded: [String] = []) -> Bool {
     guard deviceRunning else { return false }
     guard !inputHolders.isEmpty else { return true }
-    return inputHolders.contains { $0 != ownBundleId && !isDictationBundleId($0) }
+    return inputHolders.contains {
+        $0 != ownBundleId && !isDictationBundleId($0) && !matchesBundlePrefix($0, excluded)
+    }
 }
