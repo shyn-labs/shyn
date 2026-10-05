@@ -210,3 +210,54 @@ private func s(_ who: Speaker, _ t: String, _ at: Double) -> TranscriptSegment {
     #expect(negligibleSpeechNote([TranscriptSegment(start: 0, speaker: .me, text: "testing")],
                                  durationSeconds: 20) == nil)
 }
+
+// MARK: - Voice-aware segments (diarization v1)
+
+private func seg(_ s: Double, _ e: Double, _ who: Speaker, _ text: String, voice: Int? = nil) -> TranscriptSegment {
+    TranscriptSegment(start: s, end: e, speaker: who, text: text, voice: voice)
+}
+
+@Test func assignVoicesLabelsOnlyTheDiarizedChannelInArrivalOrder() {
+    let segs = [seg(0, 2, .others, "hi all"), seg(1, 2, .me, "hello"), seg(5, 7, .others, "second voice")]
+    let turns = [DiarizedTurn(speaker: 4, start: 4, end: 8), DiarizedTurn(speaker: 2, start: 0, end: 3)]
+    let out = assignVoices(segs, channel: .others, turns: turns)
+    #expect(out.map(\.voice) == [1, nil, 2])     // speaker 2 arrived first → Speaker 1
+}
+
+@Test func aSegmentNoTurnCoversKeepsItsChannelLabel() {
+    // Review focus 3: Whisper heard words the diarizer called silence. Never drop them.
+    let out = assignVoices([seg(10, 11, .others, "late words")], channel: .others,
+                           turns: [DiarizedTurn(speaker: 0, start: 0, end: 1)])
+    #expect(out[0].voice == nil)
+    #expect(assembleTranscript(out, farSide: .speakers) == "Others: late words")
+}
+
+@Test func oneFarVoiceOnAOneToOneKeepsTheName() {
+    let segs = [seg(0, 1, .me, "hi"), seg(1, 2, .others, "hey", voice: 1)]
+    #expect(farSideLabel(segs, others: ["Sam K"], diarized: true) == .named("Sam K"))
+}
+
+@Test func twoFarVoicesOnAOneToOneNeverGetTheName() {
+    // Review focus 2: a name is never attached to an ambiguous voice.
+    let segs = [seg(1, 2, .others, "hey", voice: 1), seg(3, 4, .others, "me too", voice: 2)]
+    #expect(farSideLabel(segs, others: ["Sam K"], diarized: true) == .speakers)
+}
+
+@Test func aDiarizedInPersonSessionIsSpeakersNotUnattributed() {
+    let segs = [seg(0, 1, .me, "shall we", voice: 1), seg(1, 2, .me, "yes", voice: 2)]
+    #expect(farSideLabel(segs, others: [], diarized: true) == .speakers)
+    #expect(assembleTranscript(segs, farSide: .speakers) == "Speaker 1: shall we\nSpeaker 2: yes")
+    #expect(speakerNote(.speakers) == nil)
+}
+
+@Test func onACallTheMicStaysMeAndTheFarSideIsNumbered() {
+    let segs = [seg(0, 1, .me, "morning"), seg(1, 2, .others, "morning", voice: 1),
+                seg(2, 3, .others, "hi from me", voice: 2)]
+    #expect(assembleTranscript(segs, farSide: .speakers)
+            == "Me: morning\nSpeaker 1: morning\nSpeaker 2: hi from me")
+}
+
+@Test func diarizationOffKeepsTodaysLabels() {
+    let segs = [seg(0, 1, .me, "a"), seg(1, 2, .others, "b")]
+    #expect(farSideLabel(segs, others: [], diarized: false) == farSideLabel(segs, others: []))
+}

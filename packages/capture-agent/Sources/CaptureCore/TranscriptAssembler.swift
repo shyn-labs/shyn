@@ -10,8 +10,11 @@ public struct TranscriptSegment: Sendable {
     public let end: Double?
     public let speaker: Speaker
     public let text: String
-    public init(start: Double, end: Double? = nil, speaker: Speaker, text: String) {
-        self.start = start; self.end = end; self.speaker = speaker; self.text = text
+    /// The diarized speaker label (1-based, arrival order) when this segment's
+    /// channel was diarized; nil otherwise, including a segment no turn covered.
+    public let voice: Int?
+    public init(start: Double, end: Double? = nil, speaker: Speaker, text: String, voice: Int? = nil) {
+        self.start = start; self.end = end; self.speaker = speaker; self.text = text; self.voice = voice
     }
 }
 
@@ -117,6 +120,9 @@ public enum FarSideLabel: Sendable, Equatable {
     /// came through the mic and the two-channel split says nothing about who
     /// spoke. Asserting "Me" for all of it would be a claim we cannot support.
     case unattributed
+    /// Diarization ran: speakers are rendered "Speaker N" from each segment's
+    /// voice. The mic stays "Me" on calls because it is not diarized there.
+    case speakers
 }
 
 /// `others` must be the attendees EXCLUDING the user — EKParticipant.isCurrentUser
@@ -141,6 +147,35 @@ public func farSideLabel(_ segments: [TranscriptSegment], others: [String]) -> F
     return .others
 }
 
+/// With `diarized`, one far-side voice on a 1:1 keeps the attendee's name, as
+/// before; two or more voices on a "1:1" become Speaker N, because which of
+/// them is the named person is exactly what we cannot know.
+public func farSideLabel(_ segments: [TranscriptSegment], others: [String], diarized: Bool) -> FarSideLabel {
+    guard diarized, segments.contains(where: { $0.voice != nil }) else {
+        return farSideLabel(segments, others: others)
+    }
+    let farVoices = Set(segments.filter { $0.speaker == .others }.compactMap(\.voice))
+    if farVoices.count == 1, others.count == 1,
+       !others[0].trimmingCharacters(in: .whitespaces).isEmpty {
+        return .named(others[0])
+    }
+    return .speakers
+}
+
+/// Stamps `voice` on every segment of `channel` from the diarized turns; the
+/// other channel is untouched. A segment no turn overlaps keeps voice nil and
+/// therefore its channel label: words are never dropped for a missing turn.
+public func assignVoices(_ segments: [TranscriptSegment], channel: Speaker,
+                         turns: [DiarizedTurn]) -> [TranscriptSegment] {
+    let order = arrivalOrder(turns)
+    return segments.map { s in
+        guard s.speaker == channel,
+              let raw = dominantSpeaker(start: s.start, end: s.end ?? s.start, turns: turns),
+              let n = order[raw] else { return s }
+        return TranscriptSegment(start: s.start, end: s.end, speaker: s.speaker, text: s.text, voice: n)
+    }
+}
+
 public func assembleTranscript(_ segments: [TranscriptSegment],
                                farSide: FarSideLabel = .others) -> String {
     let ordered = dropEchoDuplicates(segments).sorted { $0.start < $1.start }
@@ -153,6 +188,13 @@ public func assembleTranscript(_ segments: [TranscriptSegment],
     case .named(let who):
         return ordered
             .map { "\($0.speaker == .others ? who : Speaker.me.rawValue): \($0.text)" }
+            .joined(separator: "\n")
+    case .speakers:
+        return ordered
+            .map { s in
+                let who = s.voice.map { "Speaker \($0)" } ?? s.speaker.rawValue
+                return "\(who): \(s.text)"
+            }
             .joined(separator: "\n")
     case .others:
         return ordered
@@ -168,7 +210,7 @@ public func speakerNote(_ farSide: FarSideLabel) -> String? {
     case .unattributed:
         return "Speaker labels unavailable: no far-side audio, so every voice "
              + "came through this Mac's microphone and cannot be told apart."
-    case .named, .others:
+    case .named, .others, .speakers:
         return nil
     }
 }
