@@ -18,6 +18,9 @@ public struct MeetingConfig: Codable, Sendable {
     // whole-channel decode, kept as the escape hatch if a threshold ever
     // misses speech on someone's hardware.
     public var chunkedTranscription = true
+    /// Speaker separation (spec 2026-10-05). Off by default: when false the
+    /// ingest wire is byte-identical to 0.5.19 and no model is downloaded.
+    public var diarization = false
     // NOTE: `echoCancellation` existed in 0.4.18 and was REMOVED in 0.4.19 along
     // with the voice-processing code it gated. A live-degrading feature behind a
     // default-on flag is worse than no feature; a dead flag that silently does
@@ -35,6 +38,7 @@ public struct MeetingConfig: Codable, Sendable {
         excludeApps = try c.decodeIfPresent([String].self, forKey: .excludeApps) ?? []
         calendarSync = try c.decodeIfPresent(Bool.self, forKey: .calendarSync) ?? true
         chunkedTranscription = try c.decodeIfPresent(Bool.self, forKey: .chunkedTranscription) ?? true
+        diarization = try c.decodeIfPresent(Bool.self, forKey: .diarization) ?? false
     }
     public static let defaults = MeetingConfig()
 
