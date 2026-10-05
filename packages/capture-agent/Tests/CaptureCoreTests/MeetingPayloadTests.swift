@@ -58,3 +58,28 @@ private let START = 1_783_700_000, END = 1_783_701_800
     #expect(meetingPayload(bundleId: nil, appName: "Recording", startEpoch: START, endEpoch: END,
                            transcript: "x", timeZone: kolkata).meta["tzOffset"] == "+05:30")
 }
+
+@Test func ingestParamsWithoutSpeakersAreExactlyTodays() {
+    let p = IngestPayload(source: "meeting", uri: "meeting://x/1", title: "t", ts: 1, text: "Me: hi", meta: ["a": "b"])
+    #expect(Set(ingestParams(p).keys) == ["source", "uri", "title", "ts", "text", "meta"])
+}
+
+@Test func speakersAndSelfSampleTravelWithTheTranscript() {
+    let p = IngestPayload(source: "meeting", uri: "meeting://x/1", title: "t", ts: 1, text: "Speaker 1: hi",
+                          meta: [:],
+                          speakers: [SpeakerPayload(label: "S1", channel: "mic", embedding: "AACAPw==", speechSec: 40)],
+                          selfSample: VoiceSamplePayload(embedding: "AACAPw==", speechSec: 31))
+    let d = ingestParams(p)
+    let s = d["speakers"] as? [[String: Any]]
+    #expect(s?.first?["label"] as? String == "S1")
+    #expect(s?.first?["channel"] as? String == "mic")
+    #expect((d["selfSample"] as? [String: Any])?["speechSec"] as? Double == 31)
+}
+
+@Test func aBufferedPayloadKeepsItsSpeakers() {
+    // Review focus 5: daemon down → RingBuffer → retry must not lose speakers.
+    var buf = RingBuffer<IngestPayload>(capacity: 2)
+    buf.append(IngestPayload(source: "meeting", uri: "u", title: "t", ts: 1, text: "x", meta: [:],
+                             speakers: [SpeakerPayload(label: "S1", channel: "system", embedding: "", speechSec: 1)]))
+    #expect(buf.drain().first?.speakers?.count == 1)
+}

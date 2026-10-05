@@ -38,15 +38,52 @@ public struct PipelineState: Sendable {
     public init() {}
 }
 
+/// One diarized speaker as sent to the daemon. Other people's embeddings exist
+/// only for the length of this request: the daemon labels with them and drops them.
+public struct SpeakerPayload: Sendable, Equatable {
+    public let label: String       // "S1", matches "Speaker 1:" in text
+    public let channel: String     // "system" | "mic"
+    public let embedding: String   // base64 float32 LE
+    public let speechSec: Double
+    public init(label: String, channel: String, embedding: String, speechSec: Double) {
+        self.label = label; self.channel = channel; self.embedding = embedding; self.speechSec = speechSec
+    }
+}
+
+/// A sample of the user's own voice (calls only, ≥ 30 s of mic speech).
+public struct VoiceSamplePayload: Sendable, Equatable {
+    public let embedding: String
+    public let speechSec: Double
+    public init(embedding: String, speechSec: Double) { self.embedding = embedding; self.speechSec = speechSec }
+}
+
 public struct IngestPayload: Sendable {
     public let source: String
     public let uri: String, title: String, ts: Int, text: String
     public let meta: [String: String]
+    /// Only for source "meeting" with diarization on; nil keeps the wire as before.
+    public let speakers: [SpeakerPayload]?
+    public let selfSample: VoiceSamplePayload?
     public init(source: String = "screen", uri: String, title: String,
-                ts: Int, text: String, meta: [String: String]) {
+                ts: Int, text: String, meta: [String: String],
+                speakers: [SpeakerPayload]? = nil, selfSample: VoiceSamplePayload? = nil) {
         self.source = source; self.uri = uri; self.title = title
         self.ts = ts; self.text = text; self.meta = meta
+        self.speakers = speakers; self.selfSample = selfSample
     }
+}
+
+/// The `ingest` params. Keys for speakers/selfSample appear only when set, so
+/// with diarization off the wire is byte-identical to 0.5.19.
+public func ingestParams(_ p: IngestPayload) -> [String: Any] {
+    var d: [String: Any] = ["source": p.source, "uri": p.uri, "title": p.title,
+                            "ts": p.ts, "text": p.text, "meta": p.meta]
+    if let s = p.speakers {
+        d["speakers"] = s.map { ["label": $0.label, "channel": $0.channel,
+                                 "embedding": $0.embedding, "speechSec": $0.speechSec] as [String: Any] }
+    }
+    if let v = p.selfSample { d["selfSample"] = ["embedding": v.embedding, "speechSec": v.speechSec] }
+    return d
 }
 
 public func decide(event: CaptureEvent, config: CaptureConfig,

@@ -57,9 +57,7 @@ public final class DaemonClient: Sendable {
     }
 
     public func ingest(_ p: IngestPayload) async throws {
-        _ = try await call(method: "ingest", params: [
-            "source": p.source, "uri": p.uri, "title": p.title,
-            "ts": p.ts, "text": p.text, "meta": p.meta])
+        _ = try await call(method: "ingest", params: ingestParams(p))
     }
     public func postStats(_ s: Stats) async throws {
         let data = try JSONEncoder().encode(s)
