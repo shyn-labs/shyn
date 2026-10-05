@@ -722,3 +722,4 @@ certainly fool a user reading the menu bar.
 - More than 8 distinct voices are merged.
 - `Speaker 1` in one meeting is unrelated to `Speaker 1` in another.
 - A segment that spans a change of speaker gets one label.
+- After a diarization timeout (600 s), the abandoned model work may keep running briefly, and the Mac's sleep hold is already released.
