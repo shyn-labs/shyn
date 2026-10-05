@@ -88,8 +88,13 @@ without cutting the GitHub release, for a dry-run.
       it is always worth understanding before shipping.
 
 - [ ] **`pnpm check:diarization` green** (AMI ES2004a DER <= 15%; spike baseline 11.7% with
-      1.0s bridging). Needs the AMI clip under `~/Library/Application Support/shyn-spike/ami`
-      and the diarizer models (`shyn-meeting diarize <wav> --download` once). Manual gate,
+      1.0s bridging). Build first: `cd packages/capture-agent && swift build -c release`,
+      because the gate scores `.build/release/shyn-meeting`. Needs the AMI clip under
+      `~/Library/Application Support/shyn-spike/ami` and the diarizer models in the gate's
+      isolated home (it never touches the real shyn home; `SHYN_HOME` overrides). One-time
+      download: `SHYN_HOME="$HOME/Library/Application Support/shyn-spike/home"
+      packages/capture-agent/.build/release/shyn-meeting diarize <wav> --download`.
+      Exit 0 = within the gate, 1 = DER over it, 2 = setup or tool failure. Manual gate,
       like the evals.
 
 - [ ] **Entry-point changes get a live run, not just tests.** If a commit

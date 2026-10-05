@@ -194,7 +194,8 @@ shyn voice forget-self   # delete shyn's sample of your voice
 
 - **Encryption at rest** protects against stolen disks and leaked backups —
   not against malware running as your own user. We say this out loud.
-- **Meetings**: channel-based speaker labels (`Me:` / `Others:`), 10-second
+- **Meetings**: channel-based speaker labels (`Me:` / `Others:`, the default
+  while speaker separation is off), 10-second
   cancellable grace before any recording, 180-minute hard cap, temp audio
   byte-purged on ingest. For a room, a talk or a speakerphone — anything shyn
   cannot hear itself into — click **Start recording** in the menu bar: a
@@ -218,6 +219,7 @@ shyn voice forget-self   # delete shyn's sample of your voice
   popover says so while a transcription is in progress. To time or compare
   decoders on your own files: `shyn-meeting transcribe mic.wav system.wav
   [--whole]` (binary inside the staged `shyn-meeting.app`).
+
   **Speaker separation** (menu bar, "Speaker separation"). On calls, the other
   side is split into `Speaker 1`, `Speaker 2`…; your microphone stays `Me:`,
   and a 1:1 with a single voice keeps the attendee's name. In person, everyone
