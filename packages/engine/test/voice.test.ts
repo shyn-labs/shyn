@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/storage.js";
 import { addSelfSample, selfSamples, forgetSelf, decodeEmbedding, SELF_SAMPLE_CAP } from "../src/voice.js";
-import { chooseSelf, relabelInPerson } from "../src/voice.js";
+import { chooseSelf, relabelInPerson, selfScores, pickSelf, matchLogLine } from "../src/voice.js";
 import { Engine } from "../src/engine.js";
 import { StaticKeyProvider } from "../src/keys.js";
 import { Embedder, type EmbedBackend } from "../src/embedder.js";
@@ -62,6 +62,30 @@ describe("choosing Me in an in-person session", () => {
   it("is null below threshold and with no samples", () => {
     expect(chooseSelf([{ label: "S1", embedding: other }], [me])).toBeNull();
     expect(chooseSelf([{ label: "S1", embedding: me }], [])).toBeNull();
+  });
+});
+
+describe("scores behind the Me decision (logged so the thresholds can be tuned)", () => {
+  const me = unit(1, 0, 0);
+  const spk = [{ label: "S1", embedding: unit(0, 1, 0) }, { label: "S2", embedding: unit(0.95, 0.05, 0) }];
+
+  it("scores every speaker by its closest sample, best first", () => {
+    const sc = selfScores(spk, [me]);
+    expect(sc.map((x) => x.label)).toEqual(["S2", "S1"]);
+    expect(sc[0].score).toBeGreaterThan(0.9);
+    expect(sc[1].score).toBeLessThan(0.1);
+  });
+  it("pickSelf on those scores agrees with chooseSelf", () => {
+    expect(pickSelf(selfScores(spk, [me]))).toBe(chooseSelf(spk, [me]));
+    expect(pickSelf([])).toBeNull();
+  });
+  it("the log line has labels and two-decimal numbers only", () => {
+    const line = matchLogLine(selfScores(spk, [me]), "S2", 3);
+    expect(line).toMatch(/^in-person match: 3 voices, best S2 \d\.\d\d, runner-up S1 \d\.\d\d, margin \d\.\d\d, Me=S2 \(threshold 0\.60, margin 0\.20\)$/);
+  });
+  it("says when nobody matched and when there is a single voice", () => {
+    expect(matchLogLine(selfScores(spk, [unit(0, 0, 1)]), null, 2)).toContain("Me=none");
+    expect(matchLogLine(selfScores([spk[1]], [me]), "S2", 1)).toContain("runner-up none");
   });
 });
 
@@ -178,6 +202,39 @@ describe("Engine.ingestMeeting self samples", () => {
     });
     expect(r.rejected).toBeFalsy();
     expect(selfSamples(d)).toHaveLength(0);
+    await e.close();
+  });
+});
+
+describe("Engine.ingestMeeting logs the in-person match scores", () => {
+  const f32 = (...xs: number[]) => Buffer.from(Float32Array.from(xs).buffer).toString("base64");
+  it("logs one numbers-only line and never an embedding", async () => {
+    const embedder = new Embedder(async () => (<EmbedBackend>{
+      embed: async () => { const v = new Float32Array(EMBEDDING_DIM); v[0] = 1; return v; },
+      dispose: async () => {},
+    }));
+    const e = new Engine({
+      dbPath: join(mkdtempSync(join(tmpdir(), "shyn-")), "t.db"),
+      keyProvider: new StaticKeyProvider(null), embedder,
+    });
+    const d = (e as any).db as ReturnType<typeof db>;
+    addSelfSample(d, vec(1, 0, 0), 40, 1);
+    const errs: unknown[][] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => { errs.push(a); };
+    try {
+      e.ingestMeeting({
+        source: "meeting", uri: "meeting://call/scores", title: "Recording", ts: 2000,
+        text: "Speaker 1: hi\nSpeaker 2: hello",
+        speakers: [{ label: "S1", channel: "mic", embedding: f32(0, 1, 0), speechSec: 20 },
+                   { label: "S2", channel: "mic", embedding: f32(1, 0.02, 0), speechSec: 20 }],
+      });
+    } finally { console.error = orig; }
+    expect(errs).toHaveLength(1);
+    const line = String(errs[0][0]);
+    expect(line).toMatch(/^\[voice\] in-person match: 2 voices, best S2 /);
+    expect(line).toContain("Me=S2");
+    expect(line).not.toContain(f32(1, 0.02, 0));
     await e.close();
   });
 });

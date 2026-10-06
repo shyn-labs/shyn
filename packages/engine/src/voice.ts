@@ -63,21 +63,51 @@ function cosine(a: Float32Array, b: Float32Array): number {
   return dot / Math.max(1e-9, Math.sqrt(na) * Math.sqrt(nb));
 }
 
+export type SelfScore = { label: string; score: number };
+
+/** Each speaker's closest-sample similarity to the user's voice, best first. */
+export function selfScores(
+  speakers: { label: string; embedding: Float32Array }[], samples: Float32Array[],
+): SelfScore[] {
+  if (samples.length === 0) return [];
+  return speakers
+    .map((s) => ({ label: s.label, score: Math.max(...samples.map((x) => cosine(s.embedding, x))) }))
+    .sort((a, b) => b.score - a.score);
+}
+
+/** The label of the speaker who is the user, or null when not certain. The
+ *  best score must clear `threshold` and beat the runner-up by `margin`. */
+export function pickSelf(
+  scored: SelfScore[], threshold = SELF_THRESHOLD, margin = SELF_MARGIN,
+): string | null {
+  const [best, next] = scored;
+  if (!best || best.score < threshold) return null;
+  if (next && best.score - next.score < margin) return null;
+  return best.label;
+}
+
 /** The label of the speaker who is the user, or null when not certain. Each
- *  speaker scores its CLOSEST self sample; the best must clear `threshold` and
- *  beat the runner-up by `margin`. */
+ *  speaker scores its CLOSEST self sample; see pickSelf for the decision. */
 export function chooseSelf(
   speakers: { label: string; embedding: Float32Array }[], samples: Float32Array[],
   threshold = SELF_THRESHOLD, margin = SELF_MARGIN,
 ): string | null {
-  if (samples.length === 0 || speakers.length === 0) return null;
-  const scored = speakers
-    .map((s) => ({ label: s.label, score: Math.max(...samples.map((x) => cosine(s.embedding, x))) }))
-    .sort((a, b) => b.score - a.score);
+  return pickSelf(selfScores(speakers, samples), threshold, margin);
+}
+
+/** One log line for the Me decision: labels and two-decimal numbers only, so
+ *  the thresholds can be tuned from real sessions. Never an embedding, never text. */
+export function matchLogLine(
+  scored: SelfScore[], chosen: string | null, voices: number,
+  threshold = SELF_THRESHOLD, margin = SELF_MARGIN,
+): string {
   const [best, next] = scored;
-  if (best.score < threshold) return null;
-  if (next && best.score - next.score < margin) return null;
-  return best.label;
+  const f = (n: number) => n.toFixed(2);
+  const gap = best && next ? `margin ${f(best.score - next.score)}` : "margin n/a";
+  return `in-person match: ${voices} voice${voices === 1 ? "" : "s"}, `
+    + `best ${best ? `${best.label} ${f(best.score)}` : "none"}, `
+    + `runner-up ${next ? `${next.label} ${f(next.score)}` : "none"}, ${gap}, `
+    + `Me=${chosen ?? "none"} (threshold ${f(threshold)}, margin ${f(margin)})`;
 }
 
 /** Rewrites "Speaker N:" line prefixes: the self label becomes "Me:", the rest

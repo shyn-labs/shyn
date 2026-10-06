@@ -722,4 +722,5 @@ certainly fool a user reading the menu bar.
 - More than 8 distinct voices are merged.
 - `Speaker 1` in one meeting is unrelated to `Speaker 1` in another.
 - A segment that spans a change of speaker gets one label.
+- **Other audio in the room:** in an in-person recording everything the microphone hears is numbered as a speaker, including a television or a video. A show playing in the background shows up as extra `Speaker N` voices, and its language is rendered by the same rules as speech (Hindi as an English summary, quiet Kannada poorly).
 - After a diarization timeout (600 s), the abandoned model work may keep running briefly, and the Mac's sleep hold is already released.

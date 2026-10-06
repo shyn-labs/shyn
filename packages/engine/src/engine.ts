@@ -4,7 +4,8 @@ import type { KeyProvider } from "./keys.js";
 import type { Embedder } from "./embedder.js";
 import { ingestDocument } from "./ingest.js";
 import {
-  addSelfSample, selfSamples, forgetSelf, decodeEmbedding, chooseSelf, relabelInPerson, NO_SELF_PROFILE_NOTE,
+  addSelfSample, selfSamples, forgetSelf, decodeEmbedding, selfScores, pickSelf, matchLogLine, relabelInPerson,
+  NO_SELF_PROFILE_NOTE,
 } from "./voice.js";
 import { search as runSearch } from "./search.js";
 import { forget as runForget, type ForgetSelector } from "./forget.js";
@@ -67,8 +68,10 @@ export class Engine {
           // No profile yet: numbered speakers plus a note saying why.
           doc.text = `[${NO_SELF_PROFILE_NOTE}]\n\n${doc.text}`;
         } else {
-          // Ambiguous match: chooseSelf is null, text unchanged, no note.
-          const self = chooseSelf(mic.map((s) => ({ label: s.label, embedding: decodeEmbedding(s.embedding) })), samples);
+          // Ambiguous match: pickSelf is null, text unchanged, no note.
+          const scored = selfScores(mic.map((s) => ({ label: s.label, embedding: decodeEmbedding(s.embedding) })), samples);
+          const self = pickSelf(scored);
+          console.error(`[voice] ${matchLogLine(scored, self, mic.length)}`);
           doc.text = relabelInPerson(doc.text, self, mic.map((s) => s.label));
         }
       }
