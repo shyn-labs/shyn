@@ -70,6 +70,7 @@ without cutting the GitHub release, for a dry-run.
       this registry; no separate submissions needed.
 - [ ] **Version bump excludes `@shyn/status-ui`** — it is private and
       pinned `0.0.0`, deliberately outside the four-package lockstep.
+- [ ] **Live file-search sanity.** With thatone running, `node scripts/check-file-search.mjs "<query>"` returns hits and `memory_status` ends with `file search: ready (thatone)`.
 - [ ] **Live meeting sanity.** Since v0.2.0 the meeting agent's detection is
       voice-verified (pre-roll commit gate); before tagging, confirm the
       most recent real meeting auto-ended and produced a transcript
