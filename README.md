@@ -72,8 +72,9 @@ nothing but your own questions leaving your machine.
 A background daemon owns an encrypted SQLite index (key in your macOS
 Keychain) and serves JSON-RPC over a unix socket. Capture agents — screen,
 meetings — and source readers — Chrome, Safari, Apple Notes — feed it.
-Your AI talks to it through five MCP tools (plus an optional sixth, below). That's the whole trick: one
-private index, many memories, any MCP-speaking assistant.
+Your AI talks to it through six MCP tools (plus an optional seventh,
+`search_files`, below). That's the whole trick: one private index, many
+memories, any MCP-speaking assistant.
 
 | Tool | What your AI gets |
 |---|---|
@@ -93,8 +94,9 @@ Elastic License 2.0, macOS on Apple Silicon, pre-alpha) running on the same
 Mac. shyn itself indexes no files; thatone owns the file index.
 
 - **What is sent:** only the query text and the optional `kinds`, `folder`
-  and `limit` go to thatone's local socket. Nothing leaves the machine; both
-  programs run locally.
+  and `limit` go to thatone's local socket. Neither program sends anything
+  over the network. Results (paths and short snippets of your own files) go to
+  your AI client exactly like `search_memory` results do.
 - **What comes back:** file paths (Photos items show as "in: Apple Photos,
   name"), the kind, the time inside recordings and videos, the page for PDFs
   and a snippet of at most 300 characters. These enter your AI's context
