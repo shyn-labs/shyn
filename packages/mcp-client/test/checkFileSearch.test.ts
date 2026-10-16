@@ -12,6 +12,8 @@ const ROOT = join(fileURLToPath(import.meta.url), "../../../..");
 const SCRIPT = join(ROOT, "scripts/check-file-search.mjs");
 
 let dir: string, sock: string, server: Server;
+let slowSock: string, slowServer: Server;
+const slowConns = new Set<import("node:net").Socket>();
 
 const run = (args: string[], timeoutMs = 20_000) =>
   new Promise<{ code: number | null; out: string; ms: number }>((resolve, reject) => {
@@ -50,9 +52,24 @@ beforeAll(async () => {
     });
   });
   await new Promise<void>((r) => server.listen(sock, r));
+  // Answers ping, never answers search: keeps a run busy so a signal can land.
+  slowSock = join(dir, "slow.sock");
+  slowServer = createServer((c) => {
+    slowConns.add(c);
+    c.on("error", () => {});
+    let buf = "";
+    c.on("data", (d) => {
+      buf += d;
+      if (buf.includes('"op":"ping"')) { buf = ""; c.end('{"ok":true}\n'); }
+    });
+  });
+  await new Promise<void>((r) => slowServer.listen(slowSock, r));
 }, 60_000);
 
-afterAll(() => { server?.close(); rmSync(dir, { recursive: true, force: true }); });
+afterAll(() => {
+  for (const c of slowConns) c.destroy();
+  slowServer?.close();
+  server?.close(); rmSync(dir, { recursive: true, force: true }); });
 
 describe("scripts/check-file-search.mjs", () => {
   it("--help exits 0", async () => {
@@ -85,4 +102,66 @@ describe("scripts/check-file-search.mjs", () => {
     expect(r.ms).toBeLessThan(9_000);
     expect(pids()).toBe("");
   }, 30_000);
+
+  it("--help documents every flag and the real-socket default", async () => {
+    const r = await run(["--help"]);
+    expect(r.code).toBe(0);
+    for (const f of ["--limit", "--socket", "--no-build", "--print-banner", "--help"]) expect(r.out).toContain(f);
+    expect(r.out).toMatch(/WITHOUT --socket/);
+    expect(r.out).toMatch(/REAL socket/);
+    expect(r.out).toMatch(/private files/);
+    expect(r.out).toMatch(/SHYN_FILE_SEARCH_SOCKET/);
+  });
+
+  it("banner states the socket (dry run, spawns nothing)", async () => {
+    const d = await run(["--print-banner", "q"]);
+    expect(d.code).toBe(0);
+    expect(d.out).toMatch(/socket: default \(thatone's real socket\)/);
+    expect(d.out).not.toMatch(/temp SHYN_HOME/);
+    const s = await run(["--print-banner", "--socket", sock, "q"]);
+    expect(s.code).toBe(0);
+    expect(s.out).toContain(`socket: ${sock}`);
+  });
+
+  it("a real run prints the socket in the banner", async () => {
+    const r = await run(["--no-build", "--socket", sock, "q"]);
+    expect(r.out).toContain(`socket: ${sock}`);
+  }, 30_000);
+
+  it("--socket without a value exits 2", async () => {
+    expect((await run(["--socket", "--no-build", "q"])).code).toBe(2);
+    expect((await run(["q", "--socket"])).code).toBe(2);
+  });
+
+  it("-- makes later args queries, even -h", async () => {
+    const r = await run(["--no-build", "--socket", join(dir, "nope.sock"), "--", "-h"]);
+    expect(r.out).not.toMatch(/^Usage/m);
+    expect(r.out).toMatch(/FAIL search_files is listed/);
+    expect(r.code).toBe(1);
+  }, 30_000);
+
+  it("SIGINT mid-run exits 130, removes the temp home, leaves no child", async () => {
+    const p = spawn("node", [SCRIPT, "--no-build", "--socket", slowSock, "slow query"], { cwd: ROOT });
+    let out = "";
+    p.stdout.on("data", (d) => (out += d));
+    p.stderr.on("data", (d) => (out += d));
+    const closed = new Promise<number | null>((r) => p.on("close", (c) => r(c)));
+    try {
+      const t0 = Date.now();
+      while (!/PASS search_files is listed/.test(out)) {
+        if (Date.now() - t0 > 15_000) throw new Error("never reached listing:\n" + out);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      p.kill("SIGINT");
+      const code = await Promise.race([closed, new Promise<string>((r) => setTimeout(() => r("timeout"), 8_000))]);
+      expect(code).toBe(130);
+      const home = /temp SHYN_HOME (\S+)/.exec(out)?.[1];
+      expect(home).toBeTruthy();
+      expect(existsSync(home!)).toBe(false);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(pids()).toBe("");
+    } finally {
+      if (p.exitCode === null) p.kill("SIGKILL");
+    }
+  }, 40_000);
 });
