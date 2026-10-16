@@ -21,6 +21,8 @@ const REPO_ROOT = join(fileURLToPath(import.meta.url), "../../../..");
 const SERVER_ENTRY = join(REPO_ROOT, "extension/server/index.mjs");
 
 let dir: string;
+// The bundled server must never reach thatone's real default socket.
+const noFileSearchDir = mkdtempSync(join(tmpdir(), "shynfs-none-"));
 let daemon: { close(): Promise<void> };
 let client: Client;
 let transport: StdioClientTransport;
@@ -29,6 +31,8 @@ beforeAll(() => {
   // Build the real .mcpb server bundle once for this file's tests.
   execFileSync("node", ["scripts/build-mcpb.mjs"], { cwd: REPO_ROOT, stdio: "inherit" });
 }, 60_000);
+
+afterAll(() => rmSync(noFileSearchDir, { recursive: true, force: true }));
 
 afterEach(async () => {
   await client?.close();
@@ -57,7 +61,7 @@ describe("mcpb bundle (real subprocess, real daemon)", () => {
     transport = new StdioClientTransport({
       command: "node",
       args: [SERVER_ENTRY],
-      env: { ...process.env, SHYN_HOME: dir },
+      env: { ...process.env, SHYN_HOME: dir, SHYN_FILE_SEARCH_SOCKET: join(noFileSearchDir, "none.sock") },
     });
     client = new Client({ name: "bundle-test", version: "0" });
     await client.connect(transport);

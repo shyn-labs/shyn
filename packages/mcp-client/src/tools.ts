@@ -311,7 +311,9 @@ export function buildMcpServer(
       // via their default toString (arrays/objects become "[object Object]");
       // JSON.stringify keeps them readable and machine-parseable.
       const fmt = (v: unknown) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v));
-      return reply(Object.entries(s).map(([k, v]) => `${k}: ${fmt(v)}`).join("\n"));
+      const lines = Object.entries(s).map(([k, v]) => `${k}: ${fmt(v)}`);
+      lines.push(await fileSearchStatusLine());
+      return reply(lines.join("\n"));
     } catch (e: any) {
       return reply(`error: ${e.message}`);
     }
@@ -327,6 +329,17 @@ export function buildMcpServer(
       process.env.SHYN_FILE_SEARCH_SOCKET ??
       join(homedir(), "Library/Application Support/thatone/thatone.sock"),
   );
+  // One extra memory_status line. The ping is capped at 1 s inside the client
+  // and any failure here reads as "not running", so it can never fail status.
+  const fileSearchStatusLine = async (): Promise<string> => {
+    let state = "not installed";
+    try {
+      if (fileSearch.socketPresent()) state = (await fileSearch.ping()) ? "ready" : "not running";
+    } catch {
+      state = "not running";
+    }
+    return `file search: ${state} (thatone)`;
+  };
   let fileSearchUp = false;
   const searchFiles = server.registerTool("search_files", {
     description:

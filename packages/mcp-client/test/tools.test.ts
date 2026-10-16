@@ -629,4 +629,51 @@ describe("search_files", () => {
     await pause(150);              // six intervals' worth
     expect(fsReceived.length).toBe(after);
   });
+
+  describe("memory_status file search line", () => {
+    const status = async (c: Client) => text(await c.callTool({ name: "memory_status", arguments: {} }));
+
+    it("no socket: the old text plus exactly one 'not installed' line", async () => {
+      const s = await rpcCall(sock, "status", {});
+      const fmt = (v: unknown) => (typeof v === "object" && v !== null ? JSON.stringify(v) : String(v));
+      const oldText = Object.entries(s).map(([k, v]) => `${k}: ${fmt(v)}`).join("\n");
+      const { c } = await connect({ detectEveryMs: 60_000 });
+      expect(await status(c)).toBe(`${oldText}\nfile search: not installed (thatone)`);
+    });
+
+    it("socket answering ping: ready", async () => {
+      await startFake();
+      const { c } = await connect({ detectEveryMs: 60_000 });
+      const t = await status(c);
+      expect(t.split("\n").at(-1)).toBe("file search: ready (thatone)");
+      expect(t).toMatch(/documents/);
+    });
+
+    it("socket present but not answering: not running, within the ping bound", async () => {
+      await startFake(undefined, "slam");
+      const { c } = await connect({ detectEveryMs: 60_000 });
+      expect((await status(c)).split("\n").at(-1)).toBe("file search: not running (thatone)");
+    });
+
+    it("a hanging ping is bounded and never fails memory_status", async () => {
+      await startFake(undefined, "hang");
+      const { c } = await connect({ detectEveryMs: 60_000 });
+      const t0 = Date.now();
+      const t = await status(c);
+      expect(Date.now() - t0).toBeLessThan(2500);
+      expect(t.split("\n").at(-1)).toBe("file search: not running (thatone)");
+      expect(t).toMatch(/documents/);
+    });
+
+    it("daemon down: the error reply is unchanged and has no file search line", async () => {
+      await startFake();
+      const mcp = buildMcpServer(join(dir, "no-such.sock"), { fileSearchSocket: fsSock, detectEveryMs: 60_000 });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      const c = new Client({ name: "fs-test", version: "0" });
+      await Promise.all([mcp.connect(st), c.connect(ct)]);
+      extra.push({ client: c, mcp });
+      expect(await status(c)).toBe(
+        "error: the shyn daemon is not running on this machine — install it with `shyn install` from the shyn repo, or start it manually");
+    });
+  });
 });
