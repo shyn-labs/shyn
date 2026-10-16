@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -15,7 +15,9 @@ import { buildMcpServer, classifyRpcError } from "../src/tools.js";
 // Never let a test reach the real file-search app's default socket: servers
 // built without an explicit fileSearchSocket fall back to this env var, which
 // points at a path that never exists.
-process.env.SHYN_FILE_SEARCH_SOCKET = join(mkdtempSync(join(tmpdir(), "shynfs-none-")), "none.sock");
+const noFileSearchDir = mkdtempSync(join(tmpdir(), "shynfs-none-"));
+process.env.SHYN_FILE_SEARCH_SOCKET = join(noFileSearchDir, "none.sock");
+afterAll(() => rmSync(noFileSearchDir, { recursive: true, force: true }));
 
 const mcpClientPkgVersion: string = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8"),
@@ -545,9 +547,61 @@ describe("search_files", () => {
   it("a call to the disabled tool is refused by the SDK", async () => {
     const { c } = await connect();
     await pause(60);
-    const r: any = await c.callTool({ name: "search_files", arguments: { query: "x" } })
-      .catch((e) => ({ rejected: e }));
-    expect(r.rejected !== undefined || r.isError === true).toBe(true);
+    // The SDK's own refusal for a registered-but-disabled tool. Before the tool
+    // existed this said "not found", so the text pins the disabled state.
+    const r: any = await c.callTool({ name: "search_files", arguments: { query: "x" } });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("Tool search_files disabled");
+  });
+
+  const oneShot = async (hits: any[]) => {
+    await startFake(() => ({ ok: true, search: { notice: null, hits } }));
+    const { c } = await connect();
+    await until(() => listed(c));
+    return text(await c.callTool({ name: "search_files", arguments: { query: "x" } }));
+  };
+  const h = (paths: string[], anchors: any[] = [], kind = "image") =>
+    ({ paths, kind, score: 1, modified: 0, anchors });
+
+  it("shows a Photos name after the LAST slash and never any part of the id", async () => {
+    const id = "9F3C1A2B-0000-4000-8000-123456789ABC";
+    const t = await oneShot([h([`photos:${id}/L0/001/IMG 8481.HEIC`],
+      [{ modality: "image", anchor: "{}", text: "a red kite" }])]);
+    expect(t).toBe([
+      "- IMG 8481.HEIC (image)",
+      "  in: Apple Photos, IMG 8481.HEIC",
+      "  a red kite",
+    ].join("\n"));
+    expect(t).not.toContain("L0/001");
+    expect(t).not.toContain("9F3C");
+    expect(t).not.toContain("photos:");
+  });
+
+  it("shows just Apple Photos for a photos: path with no slash", async () => {
+    const t = await oneShot([h(["photos:9F3C1A2B-0000-4000-8000-123456789ABC"])]);
+    expect(t).toBe("- Apple Photos (image)\n  in: Apple Photos");
+    expect(t).not.toContain("9F3C");
+  });
+
+  it("skips a hit with no paths", async () => {
+    const t = await oneShot([h([]), h(["/Users/example/pics/a.png"])]);
+    expect(t).toBe("- a.png (image) /Users/example/pics\n  path: /Users/example/pics/a.png");
+  });
+
+  it("cuts the snippet on a code point, not inside an emoji", async () => {
+    const t = await oneShot([h(["/Users/example/a.txt"],
+      [{ modality: "text", anchor: "{}", text: "a".repeat(299) + "\u{1F600}" + "tail" }], "text")]);
+    const snippet = t.split("\n")[2];
+    expect(snippet).toBe("  " + "a".repeat(299) + "\u{1F600}");
+    expect(snippet).not.toMatch(/[\uD800-\uDBFF]$/);
+  });
+
+  it("shows page only when it is a positive integer", async () => {
+    const pageHit = (page: number) => h([`/Users/example/p${page}.pdf`],
+      [{ modality: "text", anchor: JSON.stringify({ page }), text: "" }], "pdf");
+    const t = await oneShot([pageHit(0), pageHit(-1), pageHit(2.5), pageHit(3)]);
+    expect(t.match(/page: /g)).toHaveLength(1);
+    expect(t).toContain("  page: 3");
   });
 
   it("a call that reaches the handler after the service stopped says it is not available", async () => {

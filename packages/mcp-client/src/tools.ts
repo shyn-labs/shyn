@@ -43,15 +43,19 @@ const tildify = (p: string) => {
   return home && (p === home || p.startsWith(home + "/")) ? "~" + p.slice(home.length) : p;
 };
 
-// One block per hit. Photos library items come as a virtual `photos:<id>/<name>`
-// path: only the name is shown, never that string. Anchors are JSON strings
-// from the service; one that does not parse is skipped, never printed raw.
+// One block per hit. Photos library items come as a virtual
+// `photos:<localIdentifier>/<filename>` path, and the identifier itself
+// contains slashes (e.g. `<uuid>/L0/001`), so the name is everything after
+// the LAST slash; no part of the identifier is ever shown. Anchors are JSON
+// strings from the service; one that does not parse is skipped, never printed.
 const fmtFileHit = (h: FileHit) => {
-  const first = h.paths[0] ?? "";
+  const first = h.paths[0];
   const photo = first.startsWith("photos:");
-  const name = photo ? first.slice(first.indexOf("/") + 1) : basename(first);
-  const lines = [photo ? `- ${name} (${h.kind})` : `- ${name} (${h.kind}) ${tildify(dirname(first))}`];
-  lines.push(photo ? `  in: Apple Photos, ${name}` : `  path: ${first}`);
+  const slash = first.lastIndexOf("/");
+  const name = photo ? (slash >= 0 ? first.slice(slash + 1) : "") : basename(first);
+  const lines = photo
+    ? [`- ${name || "Apple Photos"} (${h.kind})`, name ? `  in: Apple Photos, ${name}` : "  in: Apple Photos"]
+    : [`- ${name} (${h.kind}) ${tildify(dirname(first))}`, `  path: ${first}`];
   const anchors = h.anchors.map((a) => {
     try {
       const v = JSON.parse(a.anchor);
@@ -62,10 +66,11 @@ const fmtFileHit = (h: FileHit) => {
   });
   const t0 = anchors.find((a: any) => typeof a.t0 === "number" && Number.isFinite(a.t0))?.t0;
   if (t0 !== undefined) lines.push(`  at: ${fmtChip(t0)}`);
-  const page = anchors.find((a: any) => typeof a.page === "number")?.page;
+  const page = anchors.find((a: any) => Number.isInteger(a.page) && a.page > 0)?.page;
   if (page !== undefined) lines.push(`  page: ${page}`);
   const snippet = h.anchors.map((a) => a.text.replace(/\s+/g, " ").trim()).find((t) => t);
-  if (snippet) lines.push(`  ${snippet.slice(0, SNIPPET_CHARS)}`);
+  // Cut on code points so an emoji at the boundary is never split in half.
+  if (snippet) lines.push(`  ${Array.from(snippet).slice(0, SNIPPET_CHARS).join("")}`);
   return lines.join("\n");
 };
 
@@ -340,7 +345,8 @@ export function buildMcpServer(
     if (!query) return reply("error: query is empty");
     try {
       const r = await fileSearch.search({ query, kinds: a.kinds, folder: a.folder, limit: a.limit });
-      const body = r.hits.length ? r.hits.map(fmtFileHit).join("\n") : "no files found";
+      const hits = r.hits.filter((h) => h.paths.length > 0);
+      const body = hits.length ? hits.map(fmtFileHit).join("\n") : "no files found";
       return reply(body + (r.notice ? `\nnote: ${r.notice}` : ""));
     } catch (e: any) {
       // Gone since the last detection round: say so plainly and unlist it now
