@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
+import { realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { rpcCall, isDaemonDownError } from "@shyn/daemon/rpc";
 import { createFileSearch, FILE_KINDS, type FileHit } from "./fileSearch.js";
@@ -38,6 +39,27 @@ const fmtChip = (t: number) => {
   return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
 };
 
+// Text from files and from the service is printed into a line-oriented reply:
+// control characters become spaces and whitespace runs collapse, so a file
+// name can never start a new reply line.
+const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+const NOTICE_CHARS = 200;
+
+// thatone prefix-matches REAL stored paths: expand ~, resolve symlinks, and
+// refuse anything that is not absolute. Returns undefined for "not given".
+const normaliseFolder = (raw: string | undefined): { folder?: string; error?: string } => {
+  let f = (raw ?? "").trim();
+  if (!f) return {};
+  if (f === "~" || f.startsWith("~/")) f = homedir() + f.slice(1);
+  if (!f.startsWith("/")) return { error: "folder must be an absolute path (or start with ~)" };
+  try {
+    f = realpathSync(f);
+  } catch {
+    // a folder that does not exist is passed through unchanged
+  }
+  return { folder: f };
+};
+
 const tildify = (p: string) => {
   const home = homedir();
   return home && (p === home || p.startsWith(home + "/")) ? "~" + p.slice(home.length) : p;
@@ -49,26 +71,26 @@ const tildify = (p: string) => {
 // the LAST slash; no part of the identifier is ever shown. Anchors are JSON
 // strings from the service; one that does not parse is skipped, never printed.
 const fmtFileHit = (h: FileHit) => {
-  const first = h.paths[0];
+  const first = clean(h.paths[0]);
   const photo = first.startsWith("photos:");
   const slash = first.lastIndexOf("/");
   const name = photo ? (slash >= 0 ? first.slice(slash + 1) : "") : basename(first);
   const lines = photo
-    ? [`- ${name || "Apple Photos"} (${h.kind})`, name ? `  in: Apple Photos, ${name}` : "  in: Apple Photos"]
-    : [`- ${name} (${h.kind}) ${tildify(dirname(first))}`, `  path: ${first}`];
-  const anchors = h.anchors.map((a) => {
-    try {
-      const v = JSON.parse(a.anchor);
-      return v && typeof v === "object" ? v : {};
-    } catch {
-      return {};
-    }
-  });
-  const t0 = anchors.find((a: any) => typeof a.t0 === "number" && Number.isFinite(a.t0))?.t0;
-  if (t0 !== undefined) lines.push(`  at: ${fmtChip(t0)}`);
-  const page = anchors.find((a: any) => Number.isInteger(a.page) && a.page > 0)?.page;
-  if (page !== undefined) lines.push(`  page: ${page}`);
-  const snippet = h.anchors.map((a) => a.text.replace(/\s+/g, " ").trim()).find((t) => t);
+    ? [`- ${name || "Apple Photos"} (${clean(h.kind)})`, name ? `  in: Apple Photos, ${name}` : "  in: Apple Photos"]
+    : [`- ${name} (${clean(h.kind)}) ${tildify(dirname(first))}`, `  path: ${first}`];
+  // Time chip, page and snippet all come from ONE anchor: the first with
+  // text, else the first anchor.
+  const chosen = h.anchors.find((a) => a.text.trim()) ?? h.anchors[0];
+  let v: any = {};
+  try {
+    const parsed = chosen ? JSON.parse(chosen.anchor) : {};
+    if (parsed && typeof parsed === "object") v = parsed;
+  } catch {
+    // an unparsable anchor is skipped, never printed
+  }
+  if (typeof v.t0 === "number" && Number.isFinite(v.t0)) lines.push(`  at: ${fmtChip(v.t0)}`);
+  if (Number.isInteger(v.page) && v.page > 0) lines.push(`  page: ${v.page}`);
+  const snippet = chosen ? chosen.text.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
   // Cut on code points so an emoji at the boundary is never split in half.
   if (snippet) lines.push(`  ${Array.from(snippet).slice(0, SNIPPET_CHARS).join("")}`);
   return lines.join("\n");
@@ -77,7 +99,7 @@ const fmtFileHit = (h: FileHit) => {
 export function buildMcpServer(
   socketPath: string,
   options: { fileSearchSocket?: string; detectEveryMs?: number } = {},
-): McpServer {
+): McpServer & { fileSearchReady: Promise<void> } {
   const server = new McpServer({ name: "shyn", version: pkg.version });
   // Rewrites a dead-socket/missing-daemon connection error into a friendly,
   // consistent message before it hits any handler's `error: ${e.message}` reply
@@ -334,7 +356,11 @@ export function buildMcpServer(
   const fileSearchStatusLine = async (): Promise<string> => {
     let state = "not installed";
     try {
-      if (fileSearch.socketPresent()) state = (await fileSearch.ping()) ? "ready" : "not running";
+      if (fileSearch.socketPresent()) {
+        const up = await fileSearch.ping();
+        state = up ? "ready" : "not running";
+        setFileSearchUp(up);   // keep the tool list and this line in step
+      }
     } catch {
       state = "not running";
     }
@@ -356,11 +382,13 @@ export function buildMcpServer(
   }, async (a) => {
     const query = a.query.trim();
     if (!query) return reply("error: query is empty");
+    const f = normaliseFolder(a.folder);
+    if (f.error) return reply(`error: ${f.error}`);
     try {
-      const r = await fileSearch.search({ query, kinds: a.kinds, folder: a.folder, limit: a.limit });
+      const r = await fileSearch.search({ query, kinds: a.kinds, folder: f.folder, limit: a.limit });
       const hits = r.hits.filter((h) => h.paths.length > 0);
       const body = hits.length ? hits.map(fmtFileHit).join("\n") : "no files found";
-      return reply(body + (r.notice ? `\nnote: ${r.notice}` : ""));
+      return reply(body + (r.notice ? `\nnote: ${clean(r.notice).slice(0, NOTICE_CHARS)}` : ""));
     } catch (e: any) {
       // Gone since the last detection round: say so plainly and unlist it now
       // rather than waiting for the next round.
@@ -368,7 +396,7 @@ export function buildMcpServer(
         setFileSearchUp(false);
         return reply(`error: ${FILE_SEARCH_UNAVAILABLE}`);
       }
-      return reply(`error: ${e.message}`);
+      return reply(`error: ${clean(String(e.message))}`);
     }
   });
   searchFiles.disable();
@@ -388,7 +416,7 @@ export function buildMcpServer(
       detecting = false;
     }
   };
-  void detect();
+  const fileSearchReady = detect().catch(() => {});
   const detector = setInterval(() => void detect(), options.detectEveryMs ?? 20_000);
   detector.unref();
   const priorOnclose = server.server.onclose;
@@ -397,5 +425,5 @@ export function buildMcpServer(
     priorOnclose?.();
   };
 
-  return server;
+  return Object.assign(server, { fileSearchReady });
 }

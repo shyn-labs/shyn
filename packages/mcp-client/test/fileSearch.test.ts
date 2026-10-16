@@ -90,7 +90,7 @@ describe("createFileSearch", () => {
     expect(received[0]).toEqual({
       v: 1,
       op: "search",
-      query: { query: "hello", kinds: [], folder: null, since: null, limit: 10 },
+      query: { query: "hello", kinds: [], limit: 10 },
     });
   });
 
@@ -151,15 +151,23 @@ describe("createFileSearch", () => {
   it("times out when the server never answers, and leaves no connection", async () => {
     await listen(() => {});
     const t0 = Date.now();
-    await expect(createFileSearch(sock, { queryMs: 100 }).search({ query: "x" })).rejects.toThrow(/timed out/);
+    await expect(createFileSearch(sock, { queryMs: 100 }).search({ query: "x" })).rejects.toThrow(
+      /^file search: thatone did not answer in 0 s \(it may still be loading its model or busy indexing; try again shortly\)$/,
+    );
     expect(Date.now() - t0).toBeLessThan(1000);
     await settle();
     expect(conns.size).toBe(0);
   });
 
   it("leaves no connection after success or ok:false", async () => {
-    await listen((_l, c) => c.write(okReply([])));
+    let fail = false;
+    await listen((_l, c) =>
+      c.write(fail ? JSON.stringify({ ok: false, error: "busy" }) + "\n" : okReply([])));
     await createFileSearch(sock).search({ query: "x" });
+    await settle();
+    expect(conns.size).toBe(0);
+    fail = true;
+    await expect(createFileSearch(sock).search({ query: "x" })).rejects.toThrow(/busy/);
     await settle();
     expect(conns.size).toBe(0);
   });
@@ -181,7 +189,7 @@ describe("createFileSearch", () => {
     spawnSync(process.execPath, [
       "-e",
       `const n=require("net");const s=n.createServer().listen(${JSON.stringify(s2)},()=>process.kill(process.pid,"SIGKILL"));`,
-    ]);
+    ], { timeout: 20_000 });
     const fs = createFileSearch(s2);
     expect(fs.socketPresent()).toBe(true);
     const t0 = Date.now();
@@ -250,6 +258,21 @@ describe("createFileSearch", () => {
     });
     expect(received[0].query.kinds).toEqual(["pdf", "audio"]);
     expect(received[0].query.folder).toBe("/Users/example/docs");
+  });
+
+  it("sends folder only when it is a non-empty string, never since", async () => {
+    await listen((_l, c) => c.end(okReply([])));
+    const fs = createFileSearch(sock);
+    await fs.search({ query: "x", folder: "" });
+    await fs.search({ query: "x" });
+    await fs.search({ query: "x", folder: "/Users/example/docs" });
+    expect("folder" in received[0].query).toBe(false);
+    expect("folder" in received[1].query).toBe(false);
+    expect(received[2].query.folder).toBe("/Users/example/docs");
+    for (const m of received) {
+      expect("since" in m.query).toBe(false);
+      expect(Object.keys(m.query)).toEqual(expect.arrayContaining(["query", "kinds", "limit"]));
+    }
   });
 
   it("trims the query, caps at 2000 chars, rejects empty without connecting", async () => {

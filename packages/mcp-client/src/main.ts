@@ -17,4 +17,7 @@ import { startHelloLoop } from "./hello.js";
 
 const server = buildMcpServer(join(shynHome(), "shyn.sock"));
 startHelloLoop(join(shynHome(), "shyn.sock"));
+// Give an already-running thatone a moment to be detected so a client that
+// lists tools once still sees search_files; never hold startup past 1 s.
+await Promise.race([server.fileSearchReady, new Promise((r) => setTimeout(r, 1000))]);
 await server.connect(new StdioServerTransport());

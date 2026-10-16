@@ -32,7 +32,7 @@ const fail = (reason: string) => new Error(`file search: ${reason}`);
 
 export function createFileSearch(socketPath: string, opts: FileSearchOpts = {}) {
   const connectMs = opts.connectMs ?? 1000;
-  const queryMs = opts.queryMs ?? 20000;
+  const queryMs = opts.queryMs ?? 50_000;
   const maxReplyBytes = opts.maxReplyBytes ?? 1024 * 1024;
 
   const socketPresent = (): boolean => {
@@ -46,7 +46,7 @@ export function createFileSearch(socketPath: string, opts: FileSearchOpts = {}) 
 
   // One connection, one request line, first reply line back. A single timer
   // bounds the whole call; every exit path clears it and destroys the socket.
-  const exchange = (request: unknown, ms: number): Promise<any> =>
+  const exchange = (request: unknown, ms: number, timeoutMessage?: string): Promise<any> =>
     new Promise((resolve, reject) => {
       if (!socketPresent()) return reject(fail("search service is not running (no socket)"));
       const sock = connect(socketPath);
@@ -60,7 +60,7 @@ export function createFileSearch(socketPath: string, opts: FileSearchOpts = {}) 
         sock.destroy();
         err ? reject(err) : resolve(value);
       };
-      const timer = setTimeout(() => finish(fail(`timed out after ${ms} ms`)), ms);
+      const timer = setTimeout(() => finish(fail(timeoutMessage ?? `timed out after ${ms} ms`)), ms);
       sock.on("error", (e: any) => finish(fail(`connection failed (${e?.code ?? e?.message ?? "error"})`)));
       sock.on("close", () => finish(fail("connection closed before a reply")));
       sock.on("connect", () => sock.write(JSON.stringify(request) + "\n"));
@@ -97,9 +97,14 @@ export function createFileSearch(socketPath: string, opts: FileSearchOpts = {}) 
     const n = Math.floor(Number(q.limit ?? DEFAULT_LIMIT));
     const limit = Number.isFinite(n) ? Math.min(20, Math.max(1, n)) : DEFAULT_LIMIT;
     const kinds = (q.kinds ?? []).filter((k) => (FILE_KINDS as readonly string[]).includes(k));
+    // thatone requires query, kinds and limit; folder is sent only when set.
+    const wire: Record<string, unknown> = { query, kinds, limit };
+    if (typeof q.folder === "string" && q.folder) wire.folder = q.folder;
     const reply = await exchange(
-      { v: 1, op: "search", query: { query, kinds, folder: q.folder ?? null, since: null, limit } },
+      { v: 1, op: "search", query: wire },
       queryMs,
+      `thatone did not answer in ${Math.round(queryMs / 1000)} s ` +
+        "(it may still be loading its model or busy indexing; try again shortly)",
     );
     if (reply?.ok !== true) {
       throw fail(String(reply?.error ?? "service reported an error").slice(0, MAX_ERROR_CHARS));

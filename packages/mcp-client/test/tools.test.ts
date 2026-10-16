@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -482,7 +482,7 @@ describe("search_files", () => {
     // Only query, kinds, folder and limit go to the service; the query is trimmed.
     const req = fsReceived.find((x) => x.op === "search");
     expect(req.query).toEqual({ query: "plan", kinds: ["document", "pdf"], folder: "/Users/example",
-      since: null, limit: 5 });
+      limit: 5 });
   });
 
   it("cuts the snippet at 300 characters and shortens the home folder to ~", async () => {
@@ -628,6 +628,145 @@ describe("search_files", () => {
     const after = fsReceived.length;
     await pause(150);              // six intervals' worth
     expect(fsReceived.length).toBe(after);
+  });
+
+  describe("folder normalisation", () => {
+    const withHome = async (home: string, fn: () => Promise<void>) => {
+      const prev = process.env.HOME;
+      process.env.HOME = home;
+      try { await fn(); } finally { process.env.HOME = prev; }
+    };
+    const run = async (...folders: string[]) => {
+      await startFake();
+      const { c } = await connect();
+      await until(() => listed(c));
+      let last = "";
+      for (const folder of folders)
+        last = text(await c.callTool({ name: "search_files", arguments: { query: "x", folder } }));
+      return last;
+    };
+    const sent = () => fsReceived.filter((r) => r.op === "search");
+
+    it("expands ~/x with the home directory", async () => {
+      await withHome("/Users/example", async () => {
+        await run("~/x");
+        expect(sent()[0].query.folder).toBe("/Users/example/x");
+      });
+    });
+
+    it("expands ~ alone and trims surrounding whitespace", async () => {
+      await withHome("/Users/example", async () => {
+        await run("  ~  ");
+        expect(sent()[0].query.folder).toBe("/Users/example");
+      });
+    });
+
+    it("refuses a relative folder without contacting the service", async () => {
+      expect(await run("Documents")).toBe("error: folder must be an absolute path (or start with ~)");
+      expect(fsReceived.some((r) => r.op === "search")).toBe(false);
+    });
+
+    it("treats an empty or blank folder as not given", async () => {
+      await run("", "   ");
+      expect(sent()).toHaveLength(2);
+      for (const r of sent()) expect("folder" in r.query).toBe(false);
+    });
+
+    it("resolves a symlinked folder to its real path", async () => {
+      const real = join(fsDir, "real");
+      mkdirSync(real);
+      symlinkSync(real, join(fsDir, "link"));
+      await run(join(fsDir, "link"));
+      expect(sent()[0].query.folder).toBe(realpathSync(real));
+    });
+
+    it("passes a nonexistent absolute folder through unchanged", async () => {
+      await run("/Users/example/does/not/exist");
+      expect(sent()[0].query.folder).toBe("/Users/example/does/not/exist");
+    });
+  });
+
+  it("shows a Photos hit with an empty name as plain Apple Photos, with no id", async () => {
+    const t = await oneShot([h(["photos:9F3C1A2B-0000-4000-8000-123456789ABC/"]), h(["photos:"])]);
+    expect(t).toBe([
+      "- Apple Photos (image)", "  in: Apple Photos",
+      "- Apple Photos (image)", "  in: Apple Photos",
+    ].join("\n"));
+    expect(t).not.toContain("9F3C");
+  });
+
+  it("cannot be made to forge reply lines through a file name, notice or error", async () => {
+    await startFake(() => ({ ok: true, search: { notice: "n\n  path: /evil " + "z".repeat(400), hits: [
+      { paths: ["/Users/example/d\nir/a\n  path: /x"], kind: "text", score: 1, modified: 0,
+        anchors: [{ modality: "text", anchor: "{}", text: "ok" }] },
+    ] } }));
+    const { c } = await connect();
+    await until(() => listed(c));
+    const t = text(await c.callTool({ name: "search_files", arguments: { query: "x" } }));
+    const lines: string[] = t.split("\n");
+    expect(lines.filter((l) => l.startsWith("  path:"))).toHaveLength(1);
+    expect(lines[0]).toBe("- x (text) /Users/example/d ir/a path: ");
+    expect(lines[1]).toBe("  path: /Users/example/d ir/a path: /x");
+    const note = lines.find((l) => l.startsWith("note: "))!;
+    expect(lines.at(-1)).toBe(note);
+    expect(note.length).toBeLessThanOrEqual("note: ".length + 200);
+    expect(note.startsWith("note: n path: /evil z")).toBe(true);
+  });
+
+  it("sanitises a service error message", async () => {
+    await startFake(() => ({ ok: false, error: "bad\nerror: forged\u0000" }));
+    const { c } = await connect();
+    await until(() => listed(c));
+    const t = text(await c.callTool({ name: "search_files", arguments: { query: "x" } }));
+    expect(t).toBe("error: file search: bad error: forged");
+    expect(t).not.toContain("\n");
+  });
+
+  it("takes the time chip, page and snippet from the same anchor", async () => {
+    const t = await oneShot([h(["/Users/example/v.mp4"], [
+      { modality: "video", anchor: '{"t0":600,"t1":601}', text: "" },
+      { modality: "audio", anchor: '{"t0":30,"t1":31}', text: "said at half a minute" },
+    ], "video")]);
+    expect(t).toBe([
+      "- v.mp4 (video) /Users/example",
+      "  path: /Users/example/v.mp4",
+      "  at: 00:30",
+      "  said at half a minute",
+    ].join("\n"));
+  });
+
+  it("falls back to the first anchor when none has text", async () => {
+    const t = await oneShot([h(["/Users/example/v.mp4"], [
+      { modality: "video", anchor: '{"t0":600}', text: "" },
+      { modality: "video", anchor: '{"t0":700}', text: "  " },
+    ], "video")]);
+    expect(t.split("\n")).toEqual(["- v.mp4 (video) /Users/example", "  path: /Users/example/v.mp4", "  at: 10:00"]);
+  });
+
+  it("memory_status updates the tool list at once when the service came up", async () => {
+    const { c } = await connect({ detectEveryMs: 60_000 });
+    await pause(60);
+    expect(await listed(c)).toBe(false);
+    await startFake();
+    const t = text(await c.callTool({ name: "memory_status", arguments: {} }));
+    expect(t.split("\n").at(-1)).toBe("file search: ready (thatone)");
+    await until(() => listed(c), 500);
+  });
+
+  it("fileSearchReady resolves after the first detection, so the first list has the tool", async () => {
+    await startFake();
+    const mcp = buildMcpServer(sock, { fileSearchSocket: fsSock, detectEveryMs: 60_000 });
+    await mcp.fileSearchReady;
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const c = new Client({ name: "fs-test", version: "0" });
+    await Promise.all([mcp.connect(st), c.connect(ct)]);
+    extra.push({ client: c, mcp });
+    expect(await listed(c)).toBe(true);
+  });
+
+  it("fileSearchReady resolves (never rejects) when there is no service", async () => {
+    const mcp = buildMcpServer(sock, { fileSearchSocket: join(fsDir, "none.sock"), detectEveryMs: 60_000 });
+    await expect(mcp.fileSearchReady).resolves.toBeUndefined();
   });
 
   describe("memory_status file search line", () => {
