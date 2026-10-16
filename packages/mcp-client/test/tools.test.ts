@@ -1,14 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { Engine, StaticKeyProvider, Embedder, EMBEDDING_DIM, type EmbedBackend } from "@shyn/engine";
 import { startServer } from "@shyn/daemon";
 import { rpcCall } from "@shyn/daemon/rpc";
 import { buildMcpServer, classifyRpcError } from "../src/tools.js";
+
+// Never let a test reach the real file-search app's default socket: servers
+// built without an explicit fileSearchSocket fall back to this env var, which
+// points at a path that never exists.
+process.env.SHYN_FILE_SEARCH_SOCKET = join(mkdtempSync(join(tmpdir(), "shynfs-none-")), "none.sock");
 
 const mcpClientPkgVersion: string = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8"),
@@ -270,5 +277,302 @@ describe("get_document", () => {
       .toMatch(/file, notes/);
     expect(text(await client.callTool({ name: "get_document",
       arguments: { uri: "dup", source: "notes" } }))).toContain("note body");
+  });
+});
+
+describe("search_files", () => {
+  let fsDir: string, fsSock: string;
+  let fake: Server | undefined;
+  let fakeConns: Set<Socket>;
+  let fsReceived: any[];
+  let extra: { client: Client; mcp: ReturnType<typeof buildMcpServer> }[];
+
+  type FakeMode = "answer" | "hang" | "slam";
+  const startFake = (onSearch: (req: any) => any = () => ({ ok: true, search: { hits: [], notice: null } }),
+    mode: FakeMode = "answer") =>
+    new Promise<void>((resolve) => {
+      fake = createServer((c) => {
+        fakeConns.add(c);
+        c.on("close", () => fakeConns.delete(c));
+        c.on("error", () => {});
+        if (mode === "slam") { c.destroy(); return; }
+        let buf = "";
+        c.on("data", (d) => {
+          buf += d.toString("utf8");
+          const i = buf.indexOf("\n");
+          if (i < 0) return;
+          const req = JSON.parse(buf.slice(0, i));
+          buf = buf.slice(i + 1);
+          fsReceived.push(req);
+          if (mode === "hang") return;
+          const r = req.op === "ping" ? { ok: true } : onSearch(req);
+          c.write(JSON.stringify(r) + "\n");
+        });
+      });
+      fake.listen(fsSock, resolve);
+    });
+  const stopFake = async () => {
+    if (!fake) return;
+    for (const c of fakeConns) c.destroy();
+    await new Promise<void>((r) => fake!.close(() => r()));
+    fake = undefined;
+  };
+
+  const connect = async (opts: { fileSearchSocket?: string; detectEveryMs?: number } = {}) => {
+    const mcp = buildMcpServer(sock, { fileSearchSocket: fsSock, detectEveryMs: 25, ...opts });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const c = new Client({ name: "fs-test", version: "0" });
+    const changes = { n: 0 };
+    c.setNotificationHandler(ToolListChangedNotificationSchema, async () => { changes.n++; });
+    await Promise.all([mcp.connect(st), c.connect(ct)]);
+    extra.push({ client: c, mcp });
+    return { c, changes };
+  };
+
+  const until = async (cond: () => boolean | Promise<boolean>, ms = 2000) => {
+    const deadline = Date.now() + ms;
+    while (!(await cond())) {
+      if (Date.now() > deadline) throw new Error("condition not met in time");
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const listed = async (c: Client) =>
+    (await c.listTools()).tools.some((t) => t.name === "search_files");
+
+  beforeEach(() => {
+    fsDir = mkdtempSync(join(tmpdir(), "shynfs-"));
+    fsSock = join(fsDir, "f.sock");
+    fakeConns = new Set();
+    fsReceived = [];
+    extra = [];
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    for (const e of extra) await e.client.close();
+    await stopFake();
+    rmSync(fsDir, { recursive: true, force: true });
+  });
+
+  it("is absent when no socket exists", async () => {
+    const { c, changes } = await connect();
+    await pause(100);
+    expect(await listed(c)).toBe(false);
+    expect(changes.n).toBe(0);
+    // The shared client (env default, nothing there) never lists it either.
+    expect(await listed(client)).toBe(false);
+  });
+
+  it("is absent when the socket is present but dead", async () => {
+    await startFake(undefined, "slam");
+    const { c, changes } = await connect();
+    await pause(100);
+    expect(await listed(c)).toBe(false);
+    expect(changes.n).toBe(0);
+  });
+
+  it("appears when the service starts and goes when it stops, one list_changed per flip", async () => {
+    const { c, changes } = await connect();
+    await pause(60);
+    expect(await listed(c)).toBe(false);
+    await startFake();
+    await until(() => listed(c));
+    await until(() => changes.n >= 1);
+    await pause(100);            // several more detection rounds, no state change
+    expect(changes.n).toBe(1);
+    await stopFake();
+    await until(async () => !(await listed(c)));
+    await until(() => changes.n >= 2);
+    await pause(100);
+    expect(changes.n).toBe(2);
+  });
+
+  it("is listed straight away when the service already answers, with the thatone description", async () => {
+    await startFake();
+    const { c } = await connect();
+    await until(() => listed(c));
+    const t = (await c.listTools()).tools.find((x) => x.name === "search_files")!;
+    expect(t.description).toBe(
+      "Find files on the user's Mac by describing them: photos by what they show, PDFs and documents " +
+      "by their text, recordings and videos by what is said or shown. Returns paths, the kind, the time " +
+      "inside the file for recordings and videos, and a short snippet. Needs the thatone app (a separate " +
+      "local file-search app) to be running.");
+  });
+
+  it("falls back to SHYN_FILE_SEARCH_SOCKET when no socket option is given", async () => {
+    await startFake();
+    const prev = process.env.SHYN_FILE_SEARCH_SOCKET;
+    process.env.SHYN_FILE_SEARCH_SOCKET = fsSock;
+    try {
+      const { c } = await connect({ fileSearchSocket: undefined });
+      await until(() => listed(c));
+    } finally {
+      process.env.SHYN_FILE_SEARCH_SOCKET = prev;
+    }
+  });
+
+  it("a hanging ping does not delay search_memory", async () => {
+    await startFake(undefined, "hang");
+    const { c } = await connect();
+    await until(() => fakeConns.size > 0);   // a ping is in flight and will not be answered
+    const t0 = Date.now();
+    const r = await c.callTool({ name: "search_memory", arguments: { query: "anything" } });
+    expect(text(r)).toMatch(/mode: /);
+    expect(Date.now() - t0).toBeLessThan(500);
+  });
+
+  it("does not start a new ping while one is still in flight", async () => {
+    await startFake(undefined, "hang");
+    await connect({ detectEveryMs: 10 });
+    await pause(200);
+    expect(fsReceived.filter((r) => r.op === "ping").length).toBe(1);
+  });
+
+  it("formats path, Photos, recording, video and PDF hits, with the notice", async () => {
+    await startFake(() => ({
+      ok: true,
+      search: {
+        notice: "the index is still being built",
+        hits: [
+          { paths: ["/Users/example/notes/plan.md"], kind: "document", score: 0.9, modified: 1700000000,
+            anchors: [{ modality: "text", anchor: '{"heading":"Goals"}', text: "Sam wants\n  the   plan\tdone" }] },
+          { paths: ["photos:ABC-123/IMG_0042.HEIC"], kind: "image", score: 0.8, modified: 1700000000,
+            anchors: [{ modality: "image", anchor: "{}", text: "a dog on a beach" }] },
+          { paths: ["/Users/example/rec/standup.m4a"], kind: "audio", score: 0.7, modified: 1700000000,
+            anchors: [{ modality: "audio", anchor: '{"t0":133.4,"t1":160}', text: "we ship on friday" }] },
+          { paths: ["/Users/example/video/talk.mp4"], kind: "video", score: 0.6, modified: 1700000000,
+            anchors: [
+              { modality: "video", anchor: "not json", text: "" },
+              { modality: "video", anchor: '{"t0":3725,"t1":3730}', text: "thanks for coming" },
+            ] },
+          { paths: ["/Users/example/docs/report.pdf"], kind: "pdf", score: 0.5, modified: 1700000000,
+            anchors: [{ modality: "text", anchor: '{"page":3}', text: "see example.com for details" }] },
+        ],
+      },
+    }));
+    const { c } = await connect();
+    await until(() => listed(c));
+    const r = await c.callTool({ name: "search_files",
+      arguments: { query: "  plan  ", kinds: ["document", "pdf"], folder: "/Users/example", limit: 5 } });
+    expect(r.isError).toBeFalsy();
+    expect(text(r)).toBe([
+      "- plan.md (document) /Users/example/notes",
+      "  path: /Users/example/notes/plan.md",
+      "  Sam wants the plan done",
+      "- IMG_0042.HEIC (image)",
+      "  in: Apple Photos, IMG_0042.HEIC",
+      "  a dog on a beach",
+      "- standup.m4a (audio) /Users/example/rec",
+      "  path: /Users/example/rec/standup.m4a",
+      "  at: 02:13",
+      "  we ship on friday",
+      "- talk.mp4 (video) /Users/example/video",
+      "  path: /Users/example/video/talk.mp4",
+      "  at: 1:02:05",
+      "  thanks for coming",
+      "- report.pdf (pdf) /Users/example/docs",
+      "  path: /Users/example/docs/report.pdf",
+      "  page: 3",
+      "  see example.com for details",
+      "note: the index is still being built",
+    ].join("\n"));
+    expect(text(r)).not.toContain("photos:");
+    // Only query, kinds, folder and limit go to the service; the query is trimmed.
+    const req = fsReceived.find((x) => x.op === "search");
+    expect(req.query).toEqual({ query: "plan", kinds: ["document", "pdf"], folder: "/Users/example",
+      since: null, limit: 5 });
+  });
+
+  it("cuts the snippet at 300 characters and shortens the home folder to ~", async () => {
+    await startFake(() => ({ ok: true, search: { notice: null, hits: [
+      { paths: ["/Users/example/notes/long.txt"], kind: "text", score: 1, modified: 0,
+        anchors: [{ modality: "text", anchor: "{", text: "word ".repeat(100) }] },
+    ] } }));
+    const { c } = await connect();
+    await until(() => listed(c));
+    const prevHome = process.env.HOME;
+    process.env.HOME = "/Users/example";
+    let t: string;
+    try {
+      t = text(await c.callTool({ name: "search_files", arguments: { query: "long" } }));
+    } finally {
+      process.env.HOME = prevHome;
+    }
+    const lines = t.split("\n");
+    expect(lines[0]).toBe("- long.txt (text) ~/notes");
+    expect(lines[1]).toBe("  path: /Users/example/notes/long.txt");
+    expect(lines[2]).toBe("  " + "word ".repeat(100).slice(0, 300));
+    expect(lines).toHaveLength(3);
+  });
+
+  it("says no files found for zero hits", async () => {
+    await startFake();
+    const { c } = await connect();
+    await until(() => listed(c));
+    expect(text(await c.callTool({ name: "search_files", arguments: { query: "nothing" } })))
+      .toBe("no files found");
+  });
+
+  it("turns a service error into an error: reply", async () => {
+    await startFake(() => ({ ok: false, error: "index is busy" }));
+    const { c } = await connect();
+    await until(() => listed(c));
+    expect(text(await c.callTool({ name: "search_files", arguments: { query: "x" } })))
+      .toBe("error: file search: index is busy");
+  });
+
+  it("rejects an empty query without asking the service", async () => {
+    await startFake();
+    const { c } = await connect();
+    await until(() => listed(c));
+    expect(text(await c.callTool({ name: "search_files", arguments: { query: "   " } })))
+      .toBe("error: query is empty");
+    expect(fsReceived.some((x) => x.op === "search")).toBe(false);
+  });
+
+  it("rejects invalid arguments through the schema", async () => {
+    await startFake();
+    const { c } = await connect();
+    await until(() => listed(c));
+    for (const args of [{ query: "x", limit: 50 }, { query: "x", limit: 0 }, { query: "x", kinds: ["spreadsheet"] },
+      { query: 3 }, {}]) {
+      const r = await c.callTool({ name: "search_files", arguments: args as any });
+      expect(r.isError).toBe(true);
+    }
+    expect(fsReceived.some((x) => x.op === "search")).toBe(false);
+  });
+
+  it("a call to the disabled tool is refused by the SDK", async () => {
+    const { c } = await connect();
+    await pause(60);
+    const r: any = await c.callTool({ name: "search_files", arguments: { query: "x" } })
+      .catch((e) => ({ rejected: e }));
+    expect(r.rejected !== undefined || r.isError === true).toBe(true);
+  });
+
+  it("a call that reaches the handler after the service stopped says it is not available", async () => {
+    await startFake();
+    const { c, changes } = await connect({ detectEveryMs: 60_000 });
+    await until(() => listed(c));
+    await stopFake();
+    expect(text(await c.callTool({ name: "search_files", arguments: { query: "x" } })))
+      .toBe("error: file search is not available (is thatone running?)");
+    // The handler's discovery also takes the tool out of the list.
+    await until(() => changes.n >= 2);
+    expect(await listed(c)).toBe(false);
+  });
+
+  it("uses an unref'd timer and stops pinging once the transport closes", async () => {
+    const spy = vi.spyOn(globalThis, "setInterval");
+    await startFake();
+    const { c } = await connect();
+    const timer = spy.mock.results.at(-1)!.value as NodeJS.Timeout;
+    expect(timer.hasRef()).toBe(false);
+    await until(() => fsReceived.filter((r) => r.op === "ping").length >= 3);
+    await c.close();
+    await pause(30);               // let an in-flight ping finish
+    const after = fsReceived.length;
+    await pause(150);              // six intervals' worth
+    expect(fsReceived.length).toBe(after);
   });
 });

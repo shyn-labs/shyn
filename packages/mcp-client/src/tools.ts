@@ -1,7 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { rpcCall, isDaemonDownError } from "@shyn/daemon/rpc";
+import { createFileSearch, FILE_KINDS, type FileHit } from "./fileSearch.js";
 // Static JSON import so scripts/build-mcpb.mjs's esbuild bundle inlines the
 // version as a literal at build time — see packages/daemon/src/main.ts for
 // why a createRequire(import.meta.url) runtime read would break once bundled
@@ -22,7 +25,54 @@ const fmtHit = (h: any) =>
   `  source: ${h.source} | uri: ${h.uri} | doc: ${h.docId}\n` +
   `  ${h.text.slice(0, 400)}`;
 
-export function buildMcpServer(socketPath: string): McpServer {
+const FILE_SEARCH_UNAVAILABLE = "file search is not available (is thatone running?)";
+const SNIPPET_CHARS = 300;
+
+// Seconds into a recording as a chip: whole seconds, mm:ss under an hour,
+// h:mm:ss from an hour on.
+const fmtChip = (t: number) => {
+  const s = Math.max(0, Math.floor(t));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
+};
+
+const tildify = (p: string) => {
+  const home = homedir();
+  return home && (p === home || p.startsWith(home + "/")) ? "~" + p.slice(home.length) : p;
+};
+
+// One block per hit. Photos library items come as a virtual `photos:<id>/<name>`
+// path: only the name is shown, never that string. Anchors are JSON strings
+// from the service; one that does not parse is skipped, never printed raw.
+const fmtFileHit = (h: FileHit) => {
+  const first = h.paths[0] ?? "";
+  const photo = first.startsWith("photos:");
+  const name = photo ? first.slice(first.indexOf("/") + 1) : basename(first);
+  const lines = [photo ? `- ${name} (${h.kind})` : `- ${name} (${h.kind}) ${tildify(dirname(first))}`];
+  lines.push(photo ? `  in: Apple Photos, ${name}` : `  path: ${first}`);
+  const anchors = h.anchors.map((a) => {
+    try {
+      const v = JSON.parse(a.anchor);
+      return v && typeof v === "object" ? v : {};
+    } catch {
+      return {};
+    }
+  });
+  const t0 = anchors.find((a: any) => typeof a.t0 === "number" && Number.isFinite(a.t0))?.t0;
+  if (t0 !== undefined) lines.push(`  at: ${fmtChip(t0)}`);
+  const page = anchors.find((a: any) => typeof a.page === "number")?.page;
+  if (page !== undefined) lines.push(`  page: ${page}`);
+  const snippet = h.anchors.map((a) => a.text.replace(/\s+/g, " ").trim()).find((t) => t);
+  if (snippet) lines.push(`  ${snippet.slice(0, SNIPPET_CHARS)}`);
+  return lines.join("\n");
+};
+
+export function buildMcpServer(
+  socketPath: string,
+  options: { fileSearchSocket?: string; detectEveryMs?: number } = {},
+): McpServer {
   const server = new McpServer({ name: "shyn", version: pkg.version });
   // Rewrites a dead-socket/missing-daemon connection error into a friendly,
   // consistent message before it hits any handler's `error: ${e.message}` reply
@@ -261,6 +311,72 @@ export function buildMcpServer(socketPath: string): McpServer {
       return reply(`error: ${e.message}`);
     }
   });
+
+  // search_files forwards to thatone, a separate local file-search app, over
+  // its private socket. The tool is listed only while that socket answers a
+  // ping: detection runs once now and then every detectEveryMs, and flips the
+  // tool (one tools/list_changed each) only when the answer changes. The
+  // detector never blocks a shyn tool: pings are async with a hard 1 s cap.
+  const fileSearch = createFileSearch(
+    options.fileSearchSocket ??
+      process.env.SHYN_FILE_SEARCH_SOCKET ??
+      join(homedir(), "Library/Application Support/thatone/thatone.sock"),
+  );
+  let fileSearchUp = false;
+  const searchFiles = server.registerTool("search_files", {
+    description:
+      "Find files on the user's Mac by describing them: photos by what they show, PDFs and documents " +
+      "by their text, recordings and videos by what is said or shown. Returns paths, the kind, the time " +
+      "inside the file for recordings and videos, and a short snippet. Needs the thatone app (a separate " +
+      "local file-search app) to be running.",
+    inputSchema: {
+      query: z.string(),
+      kinds: z.array(z.enum(FILE_KINDS)).optional(),
+      folder: z.string().describe("absolute path of a folder to search within").optional(),
+      limit: z.number().int().min(1).max(20).optional(),
+    },
+  }, async (a) => {
+    const query = a.query.trim();
+    if (!query) return reply("error: query is empty");
+    try {
+      const r = await fileSearch.search({ query, kinds: a.kinds, folder: a.folder, limit: a.limit });
+      const body = r.hits.length ? r.hits.map(fmtFileHit).join("\n") : "no files found";
+      return reply(body + (r.notice ? `\nnote: ${r.notice}` : ""));
+    } catch (e: any) {
+      // Gone since the last detection round: say so plainly and unlist it now
+      // rather than waiting for the next round.
+      if (!fileSearch.socketPresent() || !(await fileSearch.ping())) {
+        setFileSearchUp(false);
+        return reply(`error: ${FILE_SEARCH_UNAVAILABLE}`);
+      }
+      return reply(`error: ${e.message}`);
+    }
+  });
+  searchFiles.disable();
+  const setFileSearchUp = (up: boolean) => {
+    if (up === fileSearchUp) return;
+    fileSearchUp = up;
+    if (up) searchFiles.enable();
+    else searchFiles.disable();
+  };
+  let detecting = false;
+  const detect = async () => {
+    if (detecting) return;
+    detecting = true;
+    try {
+      setFileSearchUp(fileSearch.socketPresent() && (await fileSearch.ping()));
+    } finally {
+      detecting = false;
+    }
+  };
+  void detect();
+  const detector = setInterval(() => void detect(), options.detectEveryMs ?? 20_000);
+  detector.unref();
+  const priorOnclose = server.server.onclose;
+  server.server.onclose = () => {
+    clearInterval(detector);
+    priorOnclose?.();
+  };
 
   return server;
 }
