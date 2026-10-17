@@ -45,13 +45,22 @@ without cutting the GitHub release, for a dry-run.
       at a time (see `docs/known-issues.md`, Plan A section, on why socket
       protocol versioning is still deferred).
 - [ ] **Artifact leak scan.** `node scripts/check-artifact-leaks.mjs`
-      extracts the built tarball and `.mcpb` and scans every file for the
-      builder's username, home dir and checkout path plus every term of the
-      private denylist (`~/.config/shyn/leak-denylist.txt`, kept OUTSIDE this
-      repo on purpose). `scripts/release.sh` runs it and any hit aborts the
-      release; fix the source of the hit and rebuild, never edit the scan.
-      On a CI runner pass `--ci` (no denylist there, home/username needles
-      dropped).
+      extracts the built tarball and `.mcpb` and scans the contents of
+      every file, the raw archive streams (owner names, path names, link
+      targets, headers) and every extracted path and symlink target for the
+      builder's username, home dir and checkout path (anywhere, exact) plus
+      every term of the private denylist
+      (`~/.config/shyn/leak-denylist.txt`, kept OUTSIDE this repo on
+      purpose; whole words, and inside binaries only within a run of 6+
+      printable bytes, shorter matches are counted as "ignored binary
+      noise"). An empty denylist or an empty archive fails. The tarball is
+      built with a fixed owner `shyn:staff` and without xattrs, so the
+      builder's name is not in its headers. `scripts/release.sh` runs the
+      scan and any hit aborts the release; fix the source of the hit and
+      rebuild, never edit the scan. Vendored third-party coincidences go in
+      the owner allowlist (`~/.config/shyn/artifact-leak-allow.txt`), also
+      outside the repo. On a CI runner pass `--ci` (no private files there,
+      home/username needles dropped).
 - [ ] **Tag.** `git tag vX.Y.Z && git push --tags` once the above are all
       green and the version bump is committed. Write a short tag message
       summarizing what shipped (new readers, new commands, fixed bugs) —

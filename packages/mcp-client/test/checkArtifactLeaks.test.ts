@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import {
-  chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync, writeSync,
+  chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,11 +31,16 @@ const allow = (name: string, ...lines: string[]) => {
   return p;
 };
 
+// The ONE place that builds the environment of every spawned gate process:
+// synthetic builder name, temp denylist, temp allowlist. Nothing may fall back
+// to the owner's real ~/.config/shyn files (a test below enforces it).
+const baseEnv = (extra: Record<string, string> = {}) => ({
+  ...process.env, CI: "", SHYN_GATE_USERNAME: NAME, SHYN_LEAK_DENYLIST: D0(),
+  SHYN_DIST_DIR: emptyDist, SHYN_ARTIFACT_ALLOW: join(base, "no-allowlist.txt"), ...extra,
+});
+
 const run = (args: string[], env: Record<string, string> = {}) => {
-  const r = spawnSync("node", [SCRIPT, ...args], {
-    cwd: ROOT, encoding: "utf8", timeout: 25_000,
-    env: { ...process.env, CI: "", SHYN_GATE_USERNAME: NAME, SHYN_LEAK_DENYLIST: D0(), SHYN_DIST_DIR: emptyDist, SHYN_ARTIFACT_ALLOW: join(base, "no-allowlist.txt"), ...env },
-  });
+  const r = spawnSync("node", [SCRIPT, ...args], { cwd: ROOT, encoding: "utf8", timeout: 25_000, env: baseEnv(env) });
   return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? "") };
 };
 const tarOf = (name: string, files: Record<string, Buffer | string>) => {
@@ -173,7 +178,7 @@ describe("check-artifact-leaks", () => {
       const d = setup();
       const { code, out } = run(["--dir", d], { SHYN_ARTIFACT_ALLOW: allow("al1.txt", "vendor/**/lib.c|ACME-secret") });
       expect(code).toBe(0);
-      expect(out).toContain("allowlisted: vendor/deps/lib.c x2 (<denylist-term-0>)");
+      expect(out).toContain("allowlisted: dir:vendor/deps/lib.c x2 (<denylist-term-0>)");
       expect(out).toContain("scanned 1 files, 0.0 MB, hits 0, allowlisted 2, ignored binary noise 0, unreadable 0");
     });
     it("an entry for a different file still leaves a hit", () => {
@@ -184,7 +189,7 @@ describe("check-artifact-leaks", () => {
     });
     it("rejects a bare ** or *, and a term that is not in the denylist (line number only)", () => {
       const d = setup();
-      for (const [lines, n] of [[["# c", "**|acme-secret"], "2"], [["*|acme-secret"], "1"], [["vendor/**|not-a-term-xyz"], "1"]] as const) {
+      for (const [lines, n] of [[["# c", "**|acme-secret"], "2"], [["*|acme-secret"], "1"], [["vendor/**|not-a-term-xyz"], "1"], [["vendor/deps/*.c|acme-secret"], "1"], [["vendor/**/**|acme-secret"], "1"]] as const) {
         const { code, out } = run(["--dir", d], { SHYN_ARTIFACT_ALLOW: allow("al3.txt", ...lines) });
         expect(code).toBe(1);
         expect(out).toContain(`line(s): ${Number(n) + 1}`);
@@ -194,6 +199,86 @@ describe("check-artifact-leaks", () => {
     it("an absent allowlist file has no effect", () => {
       expect(run(["--dir", setup()]).code).toBe(1);
     });
+  });
+
+  it("every spawned process gets the synthetic env from baseEnv (no fallback to ~/.config/shyn)", () => {
+    const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
+    const spawns = src.match(/\bspawn(Sync)?\(\s*"node"/g) ?? [];
+    const withEnv = src.match(/\bspawn(Sync)?\(\s*"node"[^;]*?env: baseEnv\(/g) ?? [];
+    expect(spawns.length).toBeGreaterThan(0);
+    expect(withEnv.length).toBe(spawns.length);
+    for (const k of ["SHYN_GATE_USERNAME", "SHYN_LEAK_DENYLIST", "SHYN_ARTIFACT_ALLOW"]) expect((baseEnv() as Record<string, string>)[k]).toBeTruthy();
+  });
+
+  it("an owner name in a tar header is found by the raw-stream scan", () => {
+    const d = mkdtempSync(join(base, "own-"));
+    writeFileSync(join(d, "a.txt"), "nothing\n");
+    const tb = join(base, "owner.tar.gz");
+    execFileSync("tar", ["--uname", NAME, "--gname", "staff", "-czf", tb, "-C", d, "."]);
+    const { code, out } = run(["--tarball", tb]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/tarball-raw:raw stream {2}@\d+ {2}\[username\]/);
+    expect(out).not.toContain(NAME);
+  });
+
+  it("a symlink target containing the username is a link: hit; a denylist term in a directory name is a name: hit", () => {
+    const d = mkdtempSync(join(base, "lnk-"));
+    writeFileSync(join(d, "a.txt"), "nothing\n");
+    symlinkSync(`/Users/${NAME}/x`, join(d, "dangling"));
+    mkdirSync(join(d, "dir-acme-secret"));
+    writeFileSync(join(d, "dir-acme-secret/b.txt"), "clean\n");
+    const tb = join(base, "links.tar.gz");
+    execFileSync("tar", ["-czf", tb, "-C", d, "."]);
+    const { code, out } = run(["--tarball", tb]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/tarball:dangling {2}link: {2}\[username\]/);
+    expect(out).toMatch(/tarball:dir-<denylist-term-0> {2}name: {2}\[denylist-term-0\]/);
+    expect(out).not.toContain(NAME);
+    expect(out).not.toContain("acme-secret");
+  });
+
+  it("a zip entry name containing the username is a hit", () => {
+    const d = mkdtempSync(join(base, "zn-"));
+    writeFileSync(join(d, `${NAME}.txt`), "x\n");
+    const mcpb = join(base, "named.mcpb");
+    execFileSync("zip", ["-qr", mcpb, "."], { cwd: d });
+    const { code, out } = run(["--mcpb", mcpb]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/<username>\.txt {2}name:/);
+    expect(out).not.toContain(NAME);
+  });
+
+  it("an empty denylist fails like a missing one; --ci passes with the notice", () => {
+    const dl = deny("deny-empty.txt");
+    const tb = tarOf("clean5.tar.gz", { "a.txt": "x\n" });
+    const a = run(["--tarball", tb], { SHYN_LEAK_DENYLIST: dl });
+    expect(a.code).toBe(1);
+    expect(a.out).toContain("no active terms");
+    const b = run(["--tarball", tb, "--ci"], { SHYN_LEAK_DENYLIST: dl });
+    expect(b.code).toBe(0);
+    expect(b.out).toContain("no active terms (--ci)");
+  });
+
+  it("an archive with zero files fails, even with --ci", () => {
+    const d = mkdtempSync(join(base, "emptyar-"));
+    const tb = join(base, "empty.tar.gz");
+    execFileSync("tar", ["-czf", tb, "-C", d, "."]);
+    expect(run(["--tarball", tb]).code).toBe(1);
+    const r = run(["--tarball", tb, "--ci"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("scanned 0 files");
+  });
+
+  it("hides builder values and denylist substrings everywhere it prints (contexts, names, errors)", () => {
+    const d = mkdtempSync(join(base, "hyg-"));
+    writeFileSync(join(d, "t.txt"), "acme-secret next to xAcme-SecretLy and acme-secret\n");
+    const a = run(["--dir", d]);
+    expect(a.code).toBe(1);
+    expect(a.out.toLowerCase()).not.toContain("acme-secret");
+    const m = run(["--tarball", join(base, `missing-${NAME}-ACME-secret.tar.gz`)]);
+    expect(m.code).toBe(2);
+    expect(m.out).not.toContain(NAME);
+    expect(m.out).toContain("<username>");
   });
 
   it("a clean tarball exits 0 with exact counts in the summary line", () => {
@@ -283,7 +368,7 @@ describe("check-artifact-leaks", () => {
     const before = gateDirs();
     const child = spawn("node", [SCRIPT, "--tarball", tb], {
       cwd: ROOT,
-      env: { ...process.env, CI: "", SHYN_GATE_USERNAME: NAME, SHYN_LEAK_DENYLIST: D0(), SHYN_GATE_TEST_DELAY_MS: "300" },
+      env: baseEnv({ SHYN_GATE_TEST_DELAY_MS: "300" }),
     });
     let out = "";
     try {

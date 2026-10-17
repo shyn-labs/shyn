@@ -8,16 +8,31 @@
 // seed check scripts/check-build-paths.mjs); this file is policy and plumbing:
 // targets, extraction, the denylist file, output, exit codes.
 //
+// What it checks (builder values count anywhere, exact; denylist terms are
+// whole words, with the printable-run noise rule inside binaries):
+//   1. every file of the extracted tarball / .mcpb / --dir (contents)
+//   2. the RAW decompressed tar stream and the raw .mcpb bytes (builder values
+//      only): owner names, path names, link targets, extended headers
+//   3. every relative path and symlink target of the extracted trees
+//      (builder values and denylist terms), reported as name: / link:
+//
+// Known limits (deliberately not handled): regex punctuation boundaries, the
+// <4-character rule counts characters not bytes, non-ASCII case folding,
+// extraction size limits, UTF-16 and case-variant builder needles, denylist
+// terms in archive headers (only builder values are scanned there).
+//
 // Never prints a denylist term (matches show as <denylist-term-N>, N = the
 // entry's index in the file) and never prints the builder's username, home or
 // checkout path (shown as <username>, <home>, <checkout>).
 
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  REPO_ROOT, builderNeedles, newStats, parseDenylist, sanitizeText, scanTreeRules,
+  REPO_ROOT, builderNeedles, newStats, parseDenylist, sanitizeText, scanFileRules, scanNames, scanTreeRules,
 } from "./lib/artifact-scan.mjs";
 
 const HELP = `usage: node scripts/check-artifact-leaks.mjs [options]
@@ -49,7 +64,7 @@ environment:
                            one regex per line, # comments, case-insensitive
   SHYN_ARTIFACT_ALLOW      optional owner allowlist (default ~/.config/shyn/artifact-leak-allow.txt),
                            one entry per line: <glob relative to the extraction root>|<term>
-                           (* and **; needs a literal path segment; the term must equal a
+                           (* and **; the last path segment must be literal; the term must equal a
                            denylist line). Matching hits are reported as allowlisted, not failures.
   SHYN_GATE_USERNAME       override the builder username needle (tests)
   SHYN_DIST_DIR            where the default targets are looked up (default: dist/)
@@ -82,8 +97,10 @@ function parseAllowlist(text, denylist) {
     const cut = line.lastIndexOf("|");
     const glob = cut > 0 ? line.slice(0, cut).trim() : "";
     const term = cut > 0 ? line.slice(cut + 1).trim().toLowerCase() : "";
-    const literalSegment = glob.split("/").some((seg) => seg && !seg.includes("*"));
-    if (!glob || !known.has(term) || !literalSegment) { bad.push(i + 1); return; }
+    const segs = glob.split("/");
+    const literalSegment = segs.some((seg) => seg && !seg.includes("*"));
+    const basenameLiteral = !!segs[segs.length - 1] && !segs[segs.length - 1].includes("*");
+    if (!glob || !known.has(term) || !literalSegment || !basenameLiteral) { bad.push(i + 1); return; }
     const re = new RegExp("^" + glob.split("**").map((part) =>
       part.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*") + "$");
     out.push({ re, termIndex: known.get(term) });
@@ -94,6 +111,11 @@ function parseAllowlist(text, denylist) {
 class Exit extends Error {
   constructor(code, msg) { super(msg); this.code = code; }
 }
+
+// Everything printed that is not an already-sanitized context goes through
+// san(): builder values (any case) and denylist substrings are replaced.
+const sanRules = { needles: builderNeedles({ env: process.env }), denylist: [] };
+const san = (t) => sanitizeText(t, sanRules);
 
 let workDir = null;
 const cleanup = () => {
@@ -183,7 +205,7 @@ async function main() {
   }
   const hasPaths = (t) => existsSync(t.path);
   for (const t of targets) {
-    if (!hasPaths(t)) throw new Exit(2, `${t.kind} not found: ${t.path.replace(homedir(), "~")}`);
+    if (!hasPaths(t)) throw new Exit(2, `${t.kind} not found: ${t.path}`);
     if (t.kind === "dir" && !statSync(t.path).isDirectory()) throw new Exit(2, `not a directory: ${t.path}`);
   }
   if (!targets.length) throw new Exit(2, "no targets: build first (dist/release/shyn-v*-darwin-arm64.tar.gz, dist/shyn.mcpb) or pass --tarball/--mcpb/--dir");
@@ -207,8 +229,13 @@ async function main() {
     if (parsed.badLines.length) {
       throw new Exit(1, `denylist has invalid regex on line(s): ${parsed.badLines.join(", ")} (${shownPath})`);
     }
+    if (!parsed.entries.length) {
+      if (!ciMode) throw new Exit(1, `denylist at ${shownPath} has no active terms: an empty list would pass everything. Add terms, or pass --ci.`);
+      denylistNote = "denylist: no active terms (--ci): only the remaining builder checks ran";
+    }
     denylist = parsed.entries;
-    denylistNote = `denylist: ${denylist.length} term(s) (never printed; reported as <denylist-term-N>)`;
+    if (denylist.length)
+      denylistNote = `denylist: ${denylist.length} term(s) (never printed; reported as <denylist-term-N>)`;
   }
   const allowPath = process.env.SHYN_ARTIFACT_ALLOW ?? join(homedir(), ".config/shyn/artifact-leak-allow.txt");
   let allow = [];
@@ -216,12 +243,12 @@ async function main() {
     const parsed = parseAllowlist(readFileSync(allowPath, "utf8"), denylist);
     if (parsed.bad.length) {
       throw new Exit(1, `allowlist has invalid entr${parsed.bad.length === 1 ? "y" : "ies"} on line(s): ${parsed.bad.join(", ")} `
-        + "(need <glob with a literal segment>|<term in the denylist>)");
+        + "(need <glob with a literal basename>|<term in the denylist>)");
     }
     allow = parsed.entries;
   }
   const rules = { needles, denylist, delayMs: Number(process.env.SHYN_GATE_TEST_DELAY_MS) || 0 };
-  const san = (t) => sanitizeText(t, rules);
+  sanRules.denylist = denylist;
   console.log(`builder needles used: ${needles.map((n) => n.label).join(", ") || "none"}`
     + (ciMode && !opts.ci ? " (GitHub runner home detected: home and username dropped)" : "")
     + (opts.ci ? " (--ci: home and username dropped)" : ""));
@@ -235,10 +262,11 @@ async function main() {
   const perFile = new Map();
   const allowed = new Map();
   let allowlisted = 0;
+  let currentLabel = "";
   rules.onHit = (h) => {
     if (h.kind === "denylist" && allow.some((a) => a.termIndex === h.termIndex && a.re.test(h.file))) {
       allowlisted++;
-      const k = `${h.file}\0${h.termIndex}`;
+      const k = `${currentLabel}:${h.file}\0${h.termIndex}`;
       allowed.set(k, (allowed.get(k) ?? 0) + 1);
       return;
     }
@@ -251,17 +279,46 @@ async function main() {
       console.log(`  ${currentLabel}:${san(h.file)}  @${h.offset}  [${h.label}]  ${h.context()}`);
     }
   };
-  let currentLabel = "";
+  // names and link targets (and anything that is not a content offset)
+  const onNameHit = (h) => {
+    hits++;
+    if (printed < 200) {
+      printed++;
+      console.log(`  ${currentLabel}:${san(h.file)}  ${h.where}:  [${h.label}]`);
+    }
+  };
+  // builder values only, in a raw archive stream: counted in H, not in F/B
+  const scanRaw = async (path, label) => {
+    const prev = currentLabel;
+    currentLabel = label;
+    const scratch = newStats();
+    await scanFileRules(path, { needles, denylist: [], onHit: rules.onHit }, scratch, "raw stream");
+    stats.unreadable += scratch.unreadable;
+    currentLabel = prev;
+  };
   for (const t of targets) {
     currentLabel = t.kind;
     let root = t.path;
+    console.log(`scanning ${t.kind}: ${san(t.path)}`);
     if (t.kind !== "dir") {
       root = join(workDir, t.kind);
       extract(t.kind, t.path, root, rules);
     }
-    console.log(`scanning ${t.kind}`);
+    if (t.kind === "tarball") {
+      const raw = join(workDir, "tarball.raw.tar");
+      const fd = openSync(raw, "w");
+      const r = spawnSync("gzip", ["-dc", t.path], { stdio: ["ignore", fd, "pipe"] });
+      closeSync(fd);
+      if (r.status !== 0) throw new Exit(1, "cannot decompress the tarball stream");
+      await scanRaw(raw, "tarball-raw");
+      rmSync(raw, { force: true });
+    } else if (t.kind === "mcpb") {
+      await scanRaw(t.path, "mcpb-raw");
+    }
     await scanTreeRules(root, rules, stats);
+    scanNames(root, rules, onNameHit);
   }
+  if (stats.files === 0) throw new Exit(1, "scanned 0 files: nothing to check (empty or unreadable archive?)");
   for (const [k, n] of allowed) {
     const [f, idx] = k.split("\0");
     console.log(`allowlisted: ${san(f)} x${n} (<denylist-term-${idx}>)`);
@@ -285,10 +342,10 @@ try {
   await main();
 } catch (e) {
   if (e instanceof Exit) {
-    console.error(`check-artifact-leaks: ${e.message}`);
+    console.error(`check-artifact-leaks: ${san(e.message)}`);
     process.exitCode = e.code;
   } else {
-    console.error(`check-artifact-leaks: unexpected error: ${e?.stack ?? e}`);
+    console.error(`check-artifact-leaks: unexpected error: ${san(e?.stack ?? e)}`);
     process.exitCode = 1;
   }
 } finally {

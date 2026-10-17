@@ -60,7 +60,7 @@
 //   sanitizeText(text, rules) -> text with builder values and denylist matches
 //       replaced (use for any file name or message that may be printed).
 
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -163,10 +163,13 @@ export function parseDenylist(text) {
       // Files are decoded as latin1 (1 char = 1 byte), so a non-ASCII term is
       // matched as its UTF-8 byte sequence. Whole-word: no ASCII letter or
       // digit directly before or after the match.
-      const src = `${WORD_L}(?:${Buffer.from(line, "utf8").toString("latin1")})${WORD_R}`;
+      const bare = Buffer.from(line, "utf8").toString("latin1");
+      const src = `${WORD_L}(?:${bare})${WORD_R}`;
       entries.push({
         index: entries.length, term: line, short: [...line].length < 4,
-        re: new RegExp(src, "gi"), reCtx: new RegExp(src, "gi"),
+        // re: whole-word, decides hits. reCtx: ANY substring, case-insensitive,
+        // used only to hide terms in printed text.
+        re: new RegExp(src, "gi"), reCtx: new RegExp(bare, "gi"),
       });
     } catch {
       badLines.push(i + 1);
@@ -180,9 +183,15 @@ export function parseDenylist(text) {
 // starts in it.
 function sanitizeSpans(w, own, { needles = [], denylist = [] }) {
   const spans = own ? [{ ...own, first: true }] : [];
+  const lw = w.toLowerCase();
+  const ci = lw.length === w.length;
   for (const n of normalize(needles)) {
-    for (let i = w.indexOf(n.value); i !== -1; i = w.indexOf(n.value, i + 1))
-      spans.push({ start: i, end: i + n.value.length, label: `<${n.label}>` });
+    const v = Buffer.from(n.value, "utf8").toString("latin1");
+    const hay = ci ? lw : w;
+    const nd = ci ? v.toLowerCase() : v;
+    if (nd.length !== v.length) continue;
+    for (let i = hay.indexOf(nd); i !== -1; i = hay.indexOf(nd, i + 1))
+      spans.push({ start: i, end: i + v.length, label: `<${n.label}>` });
   }
   for (const d of denylist) {
     d.reCtx.lastIndex = 0;
@@ -207,7 +216,41 @@ function sanitizeSpans(w, own, { needles = [], denylist = [] }) {
   return { text: out, q };
 }
 
-export const sanitizeText = (text, rules) => sanitizeSpans(text, null, rules).text;
+// For file names, messages and paths (JS strings): builder values (any case)
+// and any substring occurrence of a denylist term become placeholders.
+export function sanitizeText(text, rules) {
+  const l = Buffer.from(String(text), "utf8").toString("latin1");
+  return Buffer.from(sanitizeSpans(l, null, rules).text, "latin1").toString("utf8");
+}
+
+// Names and symlink targets of an extracted tree (never file contents):
+// builder values anywhere (exact), denylist terms whole-word. onHit({ file,
+// where: "name"|"link", kind, label, termIndex }).
+export function scanNames(root, rules, onHit) {
+  const { needles = [], denylist = [] } = rules;
+  const ns = normalize(needles);
+  const check = (file, where, text) => {
+    for (const n of ns) if (text.includes(n.value)) onHit({ file, where, kind: "builder", label: n.label });
+    const l = Buffer.from(text, "utf8").toString("latin1");
+    for (const d of denylist) {
+      d.re.lastIndex = 0;
+      if (d.re.test(l)) onHit({ file, where, kind: "denylist", label: `denylist-term-${d.index}`, termIndex: d.index });
+    }
+  };
+  const walk = (dir) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      const rel = relative(root, p);
+      check(rel, "name", rel);
+      if (e.isSymbolicLink()) {
+        try { check(rel, "link", readlinkSync(p)); } catch { /* unreadable link: ignore */ }
+      } else if (e.isDirectory()) walk(p);
+    }
+  };
+  walk(root);
+}
 
 function printableSlice(buf, start, end) {
   let s = "";
