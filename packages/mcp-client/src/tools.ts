@@ -39,10 +39,16 @@ const fmtChip = (t: number) => {
   return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
 };
 
-// Text from files and from the service is printed into a line-oriented reply:
-// control characters become spaces and whitespace runs collapse, so a file
-// name can never start a new reply line.
-const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+// Text from files and from the service is printed into a line-oriented reply.
+// Both sanitisers replace control characters (C0, DEL, C1) and the line and
+// paragraph separators U+2028/U+2029 with a space, so nothing can start a new
+// reply line. `cleanName` stops there, so a printed name or path is otherwise
+// byte for byte what is on disk (U+202F, no-break and ideographic spaces,
+// doubled, leading and trailing spaces all survive). `clean` also collapses
+// whitespace runs and trims; it is for snippets, notices and error messages.
+const LINE_BREAKERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+const cleanName = (s: string) => s.replace(LINE_BREAKERS, " ");
+const clean = (s: string) => s.replace(LINE_BREAKERS, " ").replace(/\s+/g, " ").trim();
 const NOTICE_CHARS = 200;
 
 // thatone prefix-matches REAL stored paths: expand ~, resolve symlinks, and
@@ -71,7 +77,7 @@ const tildify = (p: string) => {
 // the LAST slash; no part of the identifier is ever shown. Anchors are JSON
 // strings from the service; one that does not parse is skipped, never printed.
 const fmtFileHit = (h: FileHit) => {
-  const first = clean(h.paths[0]);
+  const first = cleanName(h.paths[0]);
   const photo = first.startsWith("photos:");
   const slash = first.lastIndexOf("/");
   const name = photo ? (slash >= 0 ? first.slice(slash + 1) : "") : basename(first);
@@ -90,7 +96,7 @@ const fmtFileHit = (h: FileHit) => {
   }
   if (typeof v.t0 === "number" && Number.isFinite(v.t0)) lines.push(`  at: ${fmtChip(v.t0)}`);
   if (Number.isInteger(v.page) && v.page > 0) lines.push(`  page: ${v.page}`);
-  const snippet = chosen ? chosen.text.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
+  const snippet = chosen ? clean(chosen.text) : "";
   // Cut on code points so an emoji at the boundary is never split in half.
   if (snippet) lines.push(`  ${Array.from(snippet).slice(0, SNIPPET_CHARS).join("")}`);
   return lines.join("\n");
@@ -388,7 +394,7 @@ export function buildMcpServer(
       const r = await fileSearch.search({ query, kinds: a.kinds, folder: f.folder, limit: a.limit });
       const hits = r.hits.filter((h) => h.paths.length > 0);
       const body = hits.length ? hits.map(fmtFileHit).join("\n") : "no files found";
-      return reply(body + (r.notice ? `\nnote: ${clean(r.notice).slice(0, NOTICE_CHARS)}` : ""));
+      return reply(body + (r.notice ? `\nnote: ${Array.from(clean(r.notice)).slice(0, NOTICE_CHARS).join("")}` : ""));
     } catch (e: any) {
       // Gone since the last detection round: say so plainly and unlist it now
       // rather than waiting for the next round.

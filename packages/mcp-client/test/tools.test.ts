@@ -577,6 +577,64 @@ describe("search_files", () => {
     expect(t).not.toContain("photos:");
   });
 
+  it("prints a path with U+202F exactly, in the path line and the header name", async () => {
+    const p = "/Users/example/Screenshots/Screenshot 2026-10-14 at 7.02.49\u202fPM.png";
+    const t = await oneShot([h([p])]);
+    expect(t).toContain(`  path: ${p}`);
+    expect(t).toContain("- Screenshot 2026-10-14 at 7.02.49\u202fPM.png (image) /Users/example/Screenshots");
+  });
+
+  it("prints no-break, ideographic, doubled, leading and trailing spaces unchanged", async () => {
+    const p = "/Users/example/d\u00a0ir/ a\u3000b  c.png ";
+    const t = await oneShot([h([p])]);
+    expect(t).toContain(`  path: ${p}\n`.replace(/\n$/, ""));
+    expect(t.split("\n")[1]).toBe(`  path: ${p}`);
+    expect(t.split("\n")[0]).toBe(`- ${p.slice(p.lastIndexOf("/") + 1)} (image) /Users/example/d\u00a0ir`);
+  });
+
+  it("neutralises a newline and a tab in a name with single spaces", async () => {
+    const t = await oneShot([h(["/Users/example/a\n  path: /x\tb"])]);
+    const lines = t.split("\n");
+    expect(lines.filter((l: string) => l.startsWith("  path:"))).toHaveLength(1);
+    expect(lines[1]).toBe("  path: /Users/example/a   path: /x b");
+    expect(t).not.toContain("\t");
+  });
+
+  it("replaces U+0085 and U+2028 in a name with spaces", async () => {
+    const t = await oneShot([h(["/Users/example/a\u0085b\u2028c\u2029d\u007fe.txt"])]);
+    expect(t.split("\n")[1]).toBe("  path: /Users/example/a b c d e.txt");
+    expect(t.split("\n")).toHaveLength(2);
+  });
+
+  it("still collapses snippet whitespace including U+202F", async () => {
+    const t = await oneShot([h(["/Users/example/a.txt"],
+      [{ modality: "text", anchor: "{}", text: "  a\u202f\u202fb\u0085c \n d  " }], "text")]);
+    expect(t.split("\n")[2]).toBe("  a b c d");
+  });
+
+  it("cuts the notice on a code point at the 200 boundary", async () => {
+    await startFake(() => ({ ok: true, search: { notice: "n".repeat(199) + "\u{1F600}tail", hits: [] } }));
+    const { c } = await connect();
+    await until(() => listed(c));
+    const t = text(await c.callTool({ name: "search_files", arguments: { query: "x" } }));
+    expect(t).toBe("no files found\nnote: " + "n".repeat(199) + "\u{1F600}");
+    expect(t).not.toMatch(/[\uD800-\uDBFF]$/);
+  });
+
+  it("keeps a service error with a C1 control and newline on one line", async () => {
+    await startFake(() => ({ ok: false, error: "a\nb\u0085c" }));
+    const { c } = await connect();
+    await until(() => listed(c));
+    const t = text(await c.callTool({ name: "search_files", arguments: { query: "x" } }));
+    expect(t).toBe("error: file search: a b c");
+  });
+
+  it("keeps U+202F in a Photos name in the header and the in: line", async () => {
+    const t = await oneShot([h(["photos:9F3C1A2B-0000-4000-8000-123456789ABC/L0/001/IMG\u202f8481.HEIC"])]);
+    expect(t).toBe("- IMG\u202f8481.HEIC (image)\n  in: Apple Photos, IMG\u202f8481.HEIC");
+    expect(t).not.toContain("9F3C");
+  });
+
   it("shows just Apple Photos for a photos: path with no slash", async () => {
     const t = await oneShot([h(["photos:9F3C1A2B-0000-4000-8000-123456789ABC"])]);
     expect(t).toBe("- Apple Photos (image)\n  in: Apple Photos");
@@ -705,8 +763,9 @@ describe("search_files", () => {
     const t = text(await c.callTool({ name: "search_files", arguments: { query: "x" } }));
     const lines: string[] = t.split("\n");
     expect(lines.filter((l) => l.startsWith("  path:"))).toHaveLength(1);
-    expect(lines[0]).toBe("- x (text) /Users/example/d ir/a path: ");
-    expect(lines[1]).toBe("  path: /Users/example/d ir/a path: /x");
+    // Names keep their spaces byte for byte (no collapsing): "\n  path" is three spaces.
+    expect(lines[0]).toBe("- x (text) /Users/example/d ir/a   path: ");
+    expect(lines[1]).toBe("  path: /Users/example/d ir/a   path: /x");
     const note = lines.find((l) => l.startsWith("note: "))!;
     expect(lines.at(-1)).toBe(note);
     expect(note.length).toBeLessThanOrEqual("note: ".length + 200);
