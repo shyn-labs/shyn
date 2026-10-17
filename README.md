@@ -80,6 +80,7 @@ memories, any MCP-speaking assistant.
 |---|---|
 | `search_memory(query, …)` | Hybrid search with provenance — the workhorse |
 | `recent_activity(hours?, …)` | Orientation timeline; great first call on vague questions |
+| `get_document(uri \| doc_id, …)` | Read a whole document (a full transcript, a whole note) instead of excerpts |
 | `remember(content, tags?)` | Explicit "write this down" memory |
 | `forget(doc_id \| source \| time-range, confirm)` | Honest deletion; refuses without `confirm: true` |
 | `memory_status()` | Health, index counts, model download %, connected sources |
