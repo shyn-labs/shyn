@@ -34,6 +34,31 @@
 //       count what was read (callers report "scanned F files, B bytes").
 // Needles shorter than a few characters will match random bytes in large
 // binaries; the release gate adds its own noise rule on top of these hits.
+//
+// Gate API (async, streaming, used by scripts/check-artifact-leaks.mjs):
+//   parseDenylist(text) -> { entries: [{ index, re, reCtx }], badLines: [n] }
+//       One regex per non-comment line (case-insensitive, WHOLE WORD: no ASCII
+//       letter or digit directly before or after a match; non-ASCII terms are
+//       matched as their UTF-8 bytes). A term shorter than 4 characters is
+//       never matched inside binary files: always ignored noise. `index` is the
+//       entry's position, the only thing the gate ever prints about a term.
+//       badLines are 1-based line numbers of invalid regexes (never content).
+//   scanTreeRules(root, rules, stats) / scanFileRules(path, rules, stats)
+//       rules = { needles, denylist, onHit(hit), delayMs }. Builder needles
+//       (case-sensitive bytes) count wherever they occur, text or binary.
+//       Denylist regexes match anywhere in text files; in BINARY files (a NUL
+//       in the first 8 KiB) a match counts only when it lies inside a run of
+//       >= 6 printable ASCII bytes (0x20-0x7e, tab) that contains it, else it
+//       is ignored binary noise: counted in stats.noise, never dropped
+//       silently. Files are decoded in 16 MiB chunks with a 64 KiB overlap so
+//       a match straddling a chunk boundary is still found. Unreadable files
+//       are counted in stats.unreadable. hit = { file, offset, kind
+//       ("builder"|"denylist"), label, context() } and context() is already
+//       sanitized: denylist matches show as <denylist-term-N>, builder values
+//       as <label>. stats = { files, bytes, noise, unreadable, noiseFiles:Set,
+//       unreadableFiles:[] } (see newStats()).
+//   sanitizeText(text, rules) -> text with builder values and denylist matches
+//       replaced (use for any file name or message that may be printed).
 
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
@@ -90,12 +115,15 @@ export function scanDir(root, needles, opts = {}) {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, e.name);
       if (e.isDirectory()) walk(p);
-      else if (e.isFile()) hits.push(...scanFile(p, needles, { ...opts, as: relative(root, p) }));
+      else if (e.isFile()) {
+        // loop, never hits.push(...arr): spreading a huge array throws RangeError
+        for (const h of scanFile(p, needles, { ...opts, as: relative(root, p) })) hits.push(h);
+      }
       // symlinks, sockets, fifos: skipped on purpose (see header)
     }
   };
   if (lstatSync(root).isDirectory()) walk(root);
-  else hits.push(...scanFile(root, needles, opts));
+  else for (const h of scanFile(root, needles, opts)) hits.push(h);
   return hits;
 }
 
@@ -104,4 +132,170 @@ export function redact(text, needles) {
   const ns = normalize(needles).sort((a, b) => b.value.length - a.value.length);
   for (const n of ns) text = text.split(n.value).join(`<${n.label}>`);
   return text;
+}
+
+// ---------------------------------------------------------------------------
+// Gate API
+// ---------------------------------------------------------------------------
+
+const CHUNK = 16 * 1024 * 1024;
+const OVERLAP = 64 * 1024;
+const WINDOW = 120;
+const RUN_MIN = 6;
+const tick = () => new Promise((r) => setImmediate(r));
+const isPrint = (b) => (b >= 0x20 && b <= 0x7e) || b === 9;
+
+export const newStats = () => ({
+  files: 0, bytes: 0, noise: 0, unreadable: 0, noiseFiles: new Set(), unreadableFiles: [],
+});
+
+const WORD_L = "(?<![A-Za-z0-9])";
+const WORD_R = "(?![A-Za-z0-9])";
+
+export function parseDenylist(text) {
+  const entries = [];
+  const badLines = [];
+  text.split("\n").forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) return;
+    try {
+      new RegExp(line, "i"); // validate the line as the owner wrote it
+      // Files are decoded as latin1 (1 char = 1 byte), so a non-ASCII term is
+      // matched as its UTF-8 byte sequence. Whole-word: no ASCII letter or
+      // digit directly before or after the match.
+      const src = `${WORD_L}(?:${Buffer.from(line, "utf8").toString("latin1")})${WORD_R}`;
+      entries.push({
+        index: entries.length, term: line, short: [...line].length < 4,
+        re: new RegExp(src, "gi"), reCtx: new RegExp(src, "gi"),
+      });
+    } catch {
+      badLines.push(i + 1);
+    }
+  });
+  return { entries, badLines };
+}
+
+// Replace builder values and denylist matches in `w`; `own` ({start,end,label})
+// is the span of the hit itself. Returns the sanitized text and where `own`
+// starts in it.
+function sanitizeSpans(w, own, { needles = [], denylist = [] }) {
+  const spans = own ? [{ ...own, first: true }] : [];
+  for (const n of normalize(needles)) {
+    for (let i = w.indexOf(n.value); i !== -1; i = w.indexOf(n.value, i + 1))
+      spans.push({ start: i, end: i + n.value.length, label: `<${n.label}>` });
+  }
+  for (const d of denylist) {
+    d.reCtx.lastIndex = 0;
+    let m;
+    while ((m = d.reCtx.exec(w)) !== null) {
+      if (m[0].length === 0) { d.reCtx.lastIndex++; continue; }
+      spans.push({ start: m.index, end: m.index + m[0].length, label: `<denylist-term-${d.index}>` });
+    }
+  }
+  spans.sort((a, b) => a.start - b.start || (b.first ? 1 : 0) - (a.first ? 1 : 0) || b.end - a.end);
+  let out = "";
+  let cursor = 0;
+  let q = 0;
+  for (const s of spans) {
+    if (s.start < cursor) continue;
+    out += w.slice(cursor, s.start);
+    if (own && s.first) q = out.length;
+    out += s.label;
+    cursor = s.end;
+  }
+  out += w.slice(cursor);
+  return { text: out, q };
+}
+
+export const sanitizeText = (text, rules) => sanitizeSpans(text, null, rules).text;
+
+function printableSlice(buf, start, end) {
+  let s = "";
+  for (let i = start; i < end; i++) s += isPrint(buf[i]) ? String.fromCharCode(buf[i]) : ".";
+  return s;
+}
+
+function contextFor(buf, off, len, label, rules, maxContext) {
+  const ws = Math.max(0, off - WINDOW);
+  const we = Math.min(buf.length, off + len + WINDOW);
+  const w = printableSlice(buf, ws, we);
+  const { text, q } = sanitizeSpans(w, { start: off - ws, end: off - ws + len, label }, rules);
+  const from = Math.max(0, q - Math.floor(maxContext / 3));
+  return text.slice(from, from + maxContext);
+}
+
+function inPrintableRun(buf, start, end) {
+  // inside the match itself, UTF-8 bytes of a non-ASCII term count as printable
+  for (let i = start; i < end; i++) if (!isPrint(buf[i]) && buf[i] < 0x80) return false;
+  let len = end - start;
+  for (let i = start - 1; i >= 0 && len < RUN_MIN && isPrint(buf[i]); i--) len++;
+  for (let i = end; i < buf.length && len < RUN_MIN && isPrint(buf[i]); i++) len++;
+  return len >= RUN_MIN;
+}
+
+export async function scanFileRules(path, rules, stats, as = path) {
+  const { needles = [], denylist = [], onHit, maxContext = 60 } = rules;
+  let buf;
+  try {
+    buf = readFileSync(path);
+  } catch {
+    stats.unreadable++;
+    stats.unreadableFiles.push(as);
+    return;
+  }
+  stats.files++;
+  stats.bytes += buf.length;
+  const binary = buf.subarray(0, 8192).includes(0);
+  const emit = (off, len, kind, label, ownLabel, termIndex) =>
+    onHit({ file: as, offset: off, kind, label, termIndex, context: () => contextFor(buf, off, len, ownLabel, rules, maxContext) });
+
+  for (const n of normalize(needles)) {
+    for (let i = buf.indexOf(n.bytes); i !== -1; i = buf.indexOf(n.bytes, i + 1))
+      emit(i, n.bytes.length, "builder", n.label, `<${n.label}>`);
+  }
+  if (!denylist.length) return;
+  for (let cs = 0; cs < buf.length; cs += CHUNK) {
+    const owned = Math.min(CHUNK, buf.length - cs);
+    const s = buf.latin1Slice(cs, Math.min(buf.length, cs + CHUNK + OVERLAP));
+    for (const d of denylist) {
+      d.re.lastIndex = 0;
+      let m;
+      while ((m = d.re.exec(s)) !== null) {
+        if (m.index >= owned) break;
+        if (m[0].length === 0) { d.re.lastIndex++; continue; }
+        const off = cs + m.index;
+        if (binary && (d.short || !inPrintableRun(buf, off, off + m[0].length))) {
+          stats.noise++;
+          stats.noiseFiles.add(as);
+        } else {
+          emit(off, m[0].length, "denylist", `denylist-term-${d.index}`, `<denylist-term-${d.index}>`, d.index);
+        }
+      }
+    }
+    await tick();
+  }
+}
+
+export async function scanTreeRules(root, rules, stats) {
+  const walk = async (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1));
+    } catch {
+      stats.unreadable++;
+      stats.unreadableFiles.push(relative(root, dir) || ".");
+      return;
+    }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) await walk(p);
+      else if (e.isFile()) {
+        if (rules.delayMs) await new Promise((r) => setTimeout(r, rules.delayMs));
+        await scanFileRules(p, rules, stats, relative(root, p));
+        await tick();
+      }
+      // symlinks, sockets, fifos: skipped on purpose (see header)
+    }
+  };
+  await walk(root);
 }

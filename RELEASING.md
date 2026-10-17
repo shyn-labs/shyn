@@ -44,6 +44,14 @@ without cutting the GitHub release, for a dry-run.
       lockstep — there is exactly one client and one daemon version in play
       at a time (see `docs/known-issues.md`, Plan A section, on why socket
       protocol versioning is still deferred).
+- [ ] **Artifact leak scan.** `node scripts/check-artifact-leaks.mjs`
+      extracts the built tarball and `.mcpb` and scans every file for the
+      builder's username, home dir and checkout path plus every term of the
+      private denylist (`~/.config/shyn/leak-denylist.txt`, kept OUTSIDE this
+      repo on purpose). `scripts/release.sh` runs it and any hit aborts the
+      release; fix the source of the hit and rebuild, never edit the scan.
+      On a CI runner pass `--ci` (no denylist there, home/username needles
+      dropped).
 - [ ] **Tag.** `git tag vX.Y.Z && git push --tags` once the above are all
       green and the version bump is committed. Write a short tag message
       summarizing what shipped (new readers, new commands, fixed bugs) —

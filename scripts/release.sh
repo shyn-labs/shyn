@@ -42,6 +42,8 @@ pnpm build:release
 
 TARBALL=$(ls dist/release/shyn-v*-darwin-arm64.tar.gz)
 [[ "$TARBALL" == *"shyn-v${V}-darwin-arm64"* ]] || { echo "version mismatch: arg v${V} vs built $(basename "$TARBALL") — bump package versions first"; exit 1; }
+# Scan what actually ships (extracted tarball + .mcpb) for the builder's identity and the private denylist, before anything can be published (dry runs too).
+node scripts/check-artifact-leaks.mjs --tarball "$TARBALL" --mcpb dist/shyn.mcpb || { echo "release.sh: artifact leak scan failed: not publishing" >&2; exit 1; }
 SHA256="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
 echo "$SHA256  $TARBALL"
 
