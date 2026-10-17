@@ -12,7 +12,26 @@ if (!ROOT.endsWith("/shyn")) {
 }
 
 const PKG = join(ROOT, "packages/capture-agent");
-execFileSync("swift", ["build", "-c", "release", "--package-path", PKG], {
+// Builder-path hygiene. A plain release build linked the debug map into the
+// binaries: symbol-table stabs (N_SO source dirs, N_OSO object paths under
+// .build/out/Intermediates.noindex, one N_AST .swiftmodule path), all of
+// them absolute paths in the builder's checkout, so the shipped binaries
+// carried the builder's home directory and macOS username (77 in
+// shyn-capture, 837 in shyn-meeting; nothing else in the binaries did).
+//   -Xlinker -S          the linker writes no debug stabs at all (it keeps
+//                        the normal symbol table, so crash backtraces still
+//                        show function names; what is lost is source-file /
+//                        line symbolication from the debug map, accepted).
+//   -file-prefix-map /   any path the compilers would still embed (#filePath,
+//   -ffile-prefix-map    DWARF in objects) is rewritten to /build/shyn, so a
+//                        future flag or dependency cannot reintroduce it.
+// Proved by scripts/check-build-paths.mjs over dist/capture.
+const PREFIX_MAP = `${ROOT}=/build/shyn`;
+execFileSync("swift", ["build", "-c", "release", "--package-path", PKG,
+  "-Xlinker", "-S",
+  "-Xswiftc", "-file-prefix-map", "-Xswiftc", PREFIX_MAP,
+  "-Xcc", `-ffile-prefix-map=${PREFIX_MAP}`,
+], {
   stdio: "inherit",
   cwd: ROOT,
 });

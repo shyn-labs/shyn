@@ -218,6 +218,52 @@ for (const link of [...walkLinks(DIST)]) {
     throw new Error(`symlink escapes dist: ${link} -> ${target}`);
 }
 
+// Builder-path hygiene: `pnpm deploy` writes two kinds of generated text that
+// carry the BUILDER's absolute paths (home directory, hence the macOS
+// username, plus the checkout path) into the shipped bundle:
+//   - node_modules/.modules.yaml: pnpm's own bookkeeping for the next
+//     `pnpm install` in this directory (storeDir: ~/Library/pnpm/store/...,
+//     virtualStoreDir, ...). Nothing at runtime reads it: node's resolver
+//     ignores it, shynd starts daemon.mjs directly, `shyn setup`/`install`
+//     copy dist/daemon as a tree, and no shipped dependency references it
+//     (grep of daemon.mjs and every deployed .js/.mjs/.cjs). Users never run
+//     pnpm inside the payload. REMOVED.
+//   - node_modules/**/.bin/* shell shims: `export NODE_PATH="<scratch>/..."`
+//     with absolute paths into dist/.deploy-scratch (deleted below, so those
+//     entries are dead even on the builder's machine). Their exec targets are
+//     already relative ($basedir/...). They are reachable at runtime in one
+//     corner case: node-llama-cpp's build-from-source fallback runs
+//     `npm run cmake-js-llama`, which puts its node_modules/.bin on PATH.
+//     So they are KEPT and REWRITTEN: each scratch-absolute NODE_PATH entry
+//     becomes "$basedir/<relative path>" to the same directory inside
+//     dist/daemon, which is what pnpm meant and is relocatable.
+// Scrubbed here, where the bundle is assembled, rather than in the finished
+// artifact; scripts/check-build-paths.mjs (and the release gate) prove it.
+rmSync(join(DIST_NM, ".modules.yaml"), { force: true });
+let shimsRewritten = 0;
+function* walkBinShims(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory() && entry.name === ".bin") {
+      for (const s of readdirSync(p, { withFileTypes: true }))
+        if (s.isFile()) yield join(p, s.name);
+    } else if (entry.isDirectory()) yield* walkBinShims(p);
+  }
+}
+for (const shim of [...walkBinShims(DIST_NM)]) {
+  const text = readFileSync(shim, "utf8");
+  if (!text.includes(SCRATCH_NM)) continue;
+  const rel = relative(dirname(shim), DIST_NM);
+  writeFileSync(shim, text.split(SCRATCH_NM).join(`$basedir/${rel}`));
+  shimsRewritten++;
+}
+for (const shim of [...walkBinShims(DIST_NM)]) {
+  const text = readFileSync(shim, "utf8");
+  if (text.includes(ROOT) || text.includes(homedir()))
+    throw new Error(`builder path left in ${relative(DIST, shim)}: extend the shim rewrite above`);
+}
+console.log(`    builder paths: removed .modules.yaml, rewrote ${shimsRewritten} .bin shim(s) to $basedir-relative NODE_PATH`);
+
 writeFileSync(
   join(DIST, "package.json"),
   JSON.stringify({ name: "shyn-daemon-dist", type: "module" }, null, 2) + "\n",
