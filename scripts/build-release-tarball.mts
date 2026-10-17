@@ -78,7 +78,14 @@ chmodSync(join(STAGE, "bin/shyn"), 0o755);
 mkdirSync(join(STAGE, "setup"), { recursive: true });
 cpSync(join(ROOT, "scripts/setup-signing.sh"), join(STAGE, "setup/setup-signing.sh"));
 
-execFileSync("tar", ["-czf", OUT, "-C", join(ROOT, "dist/release/.stage"), "shyn"]);
+// Fixed owner and no xattrs: the default would record the BUILDER's macOS
+// username as every entry's owner name (visible in `tar -tv` of the public
+// artifact) plus com.apple.provenance xattrs. Same members, same layout.
+execFileSync("tar", [
+  "--uid", "0", "--gid", "0", "--uname", "shyn", "--gname", "staff",
+  "--no-xattrs", "--no-mac-metadata",
+  "-czf", OUT, "-C", join(ROOT, "dist/release/.stage"), "shyn",
+], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
 rmSync(join(ROOT, "dist/release/.stage"), { recursive: true, force: true });
 const sha = execFileSync("shasum", ["-a", "256", OUT]).toString().split(/\s+/)[0];
 console.log(`release tarball: ${OUT}`);
