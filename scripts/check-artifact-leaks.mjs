@@ -15,14 +15,22 @@
 //      only): owner names, path names, link targets, extended headers
 //   3. every relative path and symlink target of the extracted trees
 //      (builder values and denylist terms), reported as name: / link:
-//   4. the gzip header fields of the tarball (FNAME, FCOMMENT, FEXTRA):
-//      builder values and denylist terms, reported as tarball-gzip-header
+//   4. the gzip header fields of the tarball (FNAME, FCOMMENT, FEXTRA, read
+//      whole): builder values and denylist terms, reported as
+//      tarball-gzip-header; the raw .gz bytes too (builder values only,
+//      tarball-gz-raw)
 //   5. the code signature of every code item (bundle directories and Mach-O
-//      files, scripts/lib/signing.mjs): reported as signing: <reason>
+//      files, every slice of a universal file, scripts/lib/signing.mjs):
+//      reported as signing: <reason>
+//
+// Order: every target is extracted and signing-checked FIRST, and only then is
+// any target scanned, so every disallowed identity (from any target) is a
+// known secret before any context, name or signing line is printed.
 //
 // Archives are refused, never partially scanned, when the listing (read from
 // the tar headers / zip directory) has duplicate names, unsafe names, devices,
-// fifos, entries below a symlink, or when the extracted tree differs from it
+// fifos, entries below a symlink, or when the extracted tree differs from it,
+// and a .tar.gz that is not exactly one gzip member with nothing after it
 // (scripts/lib/archive.mjs).
 //
 // Known limits (deliberately not handled): regex punctuation boundaries, the
@@ -50,10 +58,10 @@ import {
 import {
   TAR, UNZIP, checkTarEntries, checkZipNames, compareTree, forceRm, gunzipToFile, gzipHeaderFields, killChildren, listTar, runChild,
 } from "./lib/archive.mjs";
-import { allowedAuthorities, checkSigning, codesignPath, discoverCode } from "./lib/signing.mjs";
+import { allowedAuthorities, checkSigning, codesignPath, discoverCode, lipoPath } from "./lib/signing.mjs";
 
 // Test hooks (they replace the signing tool, the builder name or add delays): always announced, name only.
-const TEST_HOOKS = ["SHYN_CODESIGN", "SHYN_GATE_USERNAME", "SHYN_GATE_TEST_DELAY_MS"];
+const TEST_HOOKS = ["SHYN_CODESIGN", "SHYN_LIPO", "SHYN_GATE_USERNAME", "SHYN_GATE_TEST_DELAY_MS"];
 // Files that change what the gate checks: refused in --release, announced otherwise.
 const CONFIG_OVERRIDES = ["SHYN_LEAK_DENYLIST", "SHYN_ARTIFACT_ALLOW"];
 
@@ -72,7 +80,8 @@ With no target flags it scans the newest dist/release/shyn-v*-darwin-arm64.tar.g
 and dist/shyn.mcpb (whichever exist; at least one must).
 
 options:
-  --tarball <path>  scan this .tar.gz (decompressed, listed from its headers, extracted with tar -xf)
+  --tarball <path>  scan this .tar.gz (decompressed, listed from its headers, extracted with tar -xf);
+                    refused unless it is exactly one gzip member with nothing after it
   --mcpb <path>     scan this .mcpb (a zip, extracted with unzip -q)
   --dir <path>      scan this directory in place (no extraction)
                     (explicit targets replace the defaults; they can be combined)
@@ -121,14 +130,22 @@ signing policy (every bundle directory and Mach-O file, checked with codesign):
      - allowed identity: the only Authority= line is in SHYN_ALLOWED_AUTHORITIES
        (default "Shyn Dev") and TeamIdentifier is "not set"
      - pinned third party: an entry of THIRD_PARTY_SIGNERS in scripts/lib/signing.mjs
-       (today the vendored Node runtime) with only the Apple chain above it
+       (today the vendored Node runtime): exactly the leaf, "Developer ID
+       Certification Authority", "Apple Root CA" in that order, its team, and
+       codesign --verify -R='anchor apple generic and certificate
+       leaf[subject.OU] = "<team>"' exits 0
      - ad-hoc file: Signature=adhoc on a FILE (never on a bundle directory)
+  A universal (fat) Mach-O is checked per slice (lipo -archs, then codesign -a
+  <arch>): every slice must pass, problems are tagged [slice <arch>], and the
+  slice count must equal the fat header's.
   A --tarball must contain at least one .app directory. Identity values of
-  anything not allowed are never printed (<redacted>); email-shaped text is
-  always printed as <email>.
+  anything not allowed are never printed (<redacted>): the authority, its ID,
+  its bare name and every string field of the leaf certificate (codesign -d
+  --extract-certificates); email-shaped text is always printed as <email>.
   SHYN_ALLOWED_AUTHORITIES  comma separated, exact names; empty is a usage error;
                             when set, a count-only NOTICE is printed
   SHYN_CODESIGN             codesign binary (default /usr/bin/codesign; test hook, WARNING printed)
+  SHYN_LIPO                 lipo binary (default /usr/bin/lipo; test hook, WARNING printed)
 
 output: every archive target also prints "sha256: <hex>" of the copy the gate extracted
 
@@ -226,7 +243,9 @@ function refuseListing(kind, { bad, dups }, rules) {
 
 // Tarball steps: decompress, list from the headers, extract, compare the tree.
 async function gunzipTarball(file, raw) {
-  try { await gunzipToFile(file, raw); } catch (e) { throw new Exit(1, `cannot decompress the tarball stream: ${firstLine(e)}`); }
+  try { await gunzipToFile(file, raw); } catch (e) {
+    throw new Exit(1, e.refuse ? `refusing tarball: ${firstLine(e)}` : `cannot decompress the tarball stream: ${firstLine(e)}`);
+  }
 }
 function listTarball(raw, rules) {
   let entries;
@@ -406,25 +425,28 @@ async function main() {
   };
   const kinds = { allowed: 0, "third-party": 0, adhoc: 0 };
   let codeItems = 0;
-  const signingHit = (label, rel, reason) => {
-    hits++;
-    if (printed < 200) { printed++; console.log(`  ${label}:${san(rel)}  signing: ${reason}`); }
-  };
-  // Signing runs FIRST in every target (right after extraction and before any
-  // content, name, raw-stream or gzip-header scan can print a context), so every
-  // disallowed identity is a known secret before anything else is printed.
+  // Signing hits are held back until every target is signing-checked (an item
+  // name could hold an identity that only a later target reveals).
+  const signingLines = [];
+  const signingHit = (label, rel, reason) => { hits++; signingLines.push([label, rel, reason]); };
+  const lipo = lipoPath(process.env);
+  // Signing runs FIRST for every target (after extraction, before any content,
+  // name, raw-stream or gzip-header scan of ANY target can print a context), so
+  // every disallowed identity is a known secret before anything else is printed.
   const signTree = async (t, root) => {
     const code = discoverCode(root);
     if (t.kind === "tarball" && code.apps === 0) signingHit(t.kind, ".", "no .app in the tarball");
     for (const p of code.problems) signingHit(t.kind, p.rel, p.reason);
     for (const item of code.items) {
       codeItems++;
-      const res = await checkSigning(codesign, item, allowedAuth);
+      const res = await checkSigning(codesign, item, allowedAuth, { lipo, workDir });
       sanRules.secrets.push(...res.secrets); // before anything about the item is printed
       for (const reason of res.problems) signingHit(t.kind, item.rel, reason);
       if (res.kind) kinds[res.kind]++;
     }
   };
+  // Phase 1: copy, hash, decompress, list, extract, verify the tree, then the signing check, for EVERY target.
+  const prepared = [];
   for (const target of targets) {
     let t = target;
     currentLabel = t.kind;
@@ -437,16 +459,35 @@ async function main() {
       console.log(`sha256: ${await sha256Of(copy)}`);
       t = { ...t, path: copy };
     }
+    let raw = null;
     if (t.kind === "tarball") {
       root = join(workDir, t.kind);
-      const raw = join(workDir, "tarball.raw.tar");
+      raw = join(workDir, "tarball.raw.tar");
       await gunzipTarball(t.path, raw);
       const names = listTarball(raw, rules);
       await extractTarball(raw, root);
       verifyTree("tarball", root, names);
-      await signTree(t, root);
+    } else if (t.kind === "mcpb") {
+      root = join(workDir, t.kind);
+      const names = await listMcpb(t.path, rules);
+      await extractMcpb(t.path, root);
+      verifyTree("mcpb", root, names);
+    }
+    prepared.push({ t, root, raw });
+  }
+  for (const { t, root } of prepared) await signTree(t, root);
+  for (const [label, rel, reason] of signingLines) {
+    if (printed < 200) { printed++; console.log(`  ${label}:${san(rel)}  signing: ${reason}`); }
+  }
+
+  // Phase 2: every secret is known; now the raw streams, gzip header, contents and names.
+  for (const { t, root, raw } of prepared) {
+    currentLabel = t.kind;
+    if (t.kind === "tarball") {
       await scanRaw(raw, "tarball-raw");
       rmSync(raw, { force: true });
+      // the compressed bytes themselves (builder values): nothing outside the scanned member can hide there
+      await scanRaw(t.path, "tarball-gz-raw");
       // gzip header fields (FNAME / FCOMMENT / FEXTRA): builder values and denylist
       let hdr;
       try { hdr = gzipHeaderFields(t.path); } catch (e) { throw new Exit(1, `cannot read the gzip header: ${firstLine(e)}`); }
@@ -460,14 +501,8 @@ async function main() {
       currentLabel = prev;
       rmSync(hdrFile, { force: true });
     } else if (t.kind === "mcpb") {
-      root = join(workDir, t.kind);
-      const names = await listMcpb(t.path, rules);
-      await extractMcpb(t.path, root);
-      verifyTree("mcpb", root, names);
-      await signTree(t, root);
       await scanRaw(t.path, "mcpb-raw");
     }
-    if (t.kind === "dir") await signTree(t, root);
     await scanTreeRules(root, rules, stats);
     scanNames(root, rules, onNameHit);
   }

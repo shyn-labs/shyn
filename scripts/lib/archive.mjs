@@ -3,11 +3,12 @@
 // metadata off, and prove the extracted tree equals the listing.
 import { spawn } from "node:child_process";
 import {
-  chmodSync, closeSync, createReadStream, createWriteStream, lstatSync, openSync, readdirSync, readSync, rmSync,
+  chmodSync, closeSync, createReadStream, createWriteStream, lstatSync, openSync, readdirSync, readSync, rmSync, statSync,
 } from "node:fs";
 import { join, relative } from "node:path";
+import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createGunzip } from "node:zlib";
+import * as zlib from "node:zlib";
 
 export const TAR = "/usr/bin/tar";
 export const UNZIP = "/usr/bin/unzip";
@@ -16,31 +17,79 @@ export const unsafeName = (n) =>
   n.startsWith("/") || /^[A-Za-z]:/.test(n) || n.split(/[\\/]/).includes("..") || /[\n\r\\]/.test(n);
 export const normName = (n) => { while (n.startsWith("./")) n = n.slice(2); return n.replace(/\/+$/, ""); };
 
-export async function gunzipToFile(gz, out) {
-  await pipeline(createReadStream(gz), createGunzip(), createWriteStream(out));
-}
+// A .tar.gz must be exactly ONE gzip member with nothing after it: Node's gunzip silently ignores trailing
+// bytes and decompresses further members, so bytes the scan never sees could ride along. Thrown errors
+// with .refuse = true mean "not a single clean gzip member" (the gate refuses the archive).
+const refuse = (msg) => Object.assign(new Error(msg), { refuse: true });
 
+// Parses the whole gzip header (no size cap): { name, comment, extra, length }.
 export function gzipHeaderFields(gz) {
   const fd = openSync(gz, "r");
   try {
-    const head = Buffer.alloc(65536);
-    const n = readSync(fd, head, 0, head.length, 0);
-    const b = head.subarray(0, n);
-    if (b.length < 10 || b[0] !== 0x1f || b[1] !== 0x8b) throw new Error("not a gzip file");
-    const flg = b[3];
+    let buf = Buffer.alloc(0);
+    let eof = false;
+    const ensure = (n) => {
+      while (buf.length < n && !eof) {
+        const c = Buffer.alloc(65536);
+        const got = readSync(fd, c, 0, c.length, buf.length);
+        if (got === 0) eof = true;
+        buf = Buffer.concat([buf, c.subarray(0, got)]);
+      }
+      if (buf.length < n) throw refuse("truncated gzip header");
+    };
+    ensure(10);
+    if (buf[0] !== 0x1f || buf[1] !== 0x8b) throw refuse("not a gzip file");
+    if (buf[2] !== 8) throw refuse("gzip compression method is not deflate");
+    const flg = buf[3];
+    if (flg & 0xe0) throw refuse("gzip header has reserved flag bits set");
     let p = 10;
     let extra = null, name = null, comment = null;
-    if (flg & 0x04) { const xlen = b.readUInt16LE(p); extra = b.subarray(p + 2, p + 2 + xlen); p += 2 + xlen; }
+    if (flg & 0x04) { ensure(p + 2); const xlen = buf.readUInt16LE(p); ensure(p + 2 + xlen); extra = Buffer.from(buf.subarray(p + 2, p + 2 + xlen)); p += 2 + xlen; }
     const cstr = () => {
-      const e = b.indexOf(0, p);
-      const s = b.latin1Slice(p, e < 0 ? b.length : e);
-      p = e < 0 ? b.length : e + 1;
-      return s;
+      let e;
+      for (;;) { e = buf.indexOf(0, p); if (e >= 0) break; ensure(buf.length + 1); }
+      const v = buf.latin1Slice(p, e);
+      p = e + 1;
+      return v;
     };
     if (flg & 0x08) name = cstr();
     if (flg & 0x10) comment = cstr();
-    return { name, comment, extra };
+    if (flg & 0x02) { ensure(p + 2); p += 2; } // FHCRC
+    return { name, comment, extra, length: p };
   } finally { closeSync(fd); }
+}
+
+// Decompresses the single member of `gz` into `out` and proves it was the only thing in the file:
+// header + deflate data consumed + 8-byte trailer == file size, and the trailer's CRC32 and ISIZE match.
+export async function gunzipToFile(gz, out) {
+  const hdr = gzipHeaderFields(gz);
+  const size = statSync(gz).size;
+  const inflate = zlib.createInflateRaw();
+  let crc = 0, isize = 0;
+  const tally = new Transform({
+    transform(chunk, _enc, cb) { crc = crc32(chunk, crc); isize = (isize + chunk.length) >>> 0; cb(null, chunk); },
+  });
+  await pipeline(createReadStream(gz, { start: hdr.length }), inflate, tally, createWriteStream(out));
+  const end = hdr.length + inflate.bytesWritten;
+  if (end + 8 > size) throw refuse("the gzip member has no complete trailer");
+  if (end + 8 < size) throw refuse(`${size - end - 8} byte(s) after the gzip member (a second member or trailing data); a .tar.gz must be exactly one gzip member`);
+  const t = Buffer.alloc(8);
+  const fd = openSync(gz, "r");
+  try { readSync(fd, t, 0, 8, end); } finally { closeSync(fd); }
+  if (t.readUInt32LE(0) !== crc >>> 0 || t.readUInt32LE(4) !== isize) throw refuse("gzip trailer CRC32/size does not match the data");
+}
+
+// zlib.crc32 is Node >= 22.2; a table fallback keeps older 22.x working.
+let crcTable;
+function crc32(buf, prev) {
+  if (typeof zlib.crc32 === "function") return zlib.crc32(buf, prev);
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crcTable[n] = c >>> 0; }
+  }
+  let c = (prev ^ 0xffffffff) >>> 0;
+  for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
 }
 
 const field = (h, off, len) => {

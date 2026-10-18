@@ -3,7 +3,7 @@
 // "Shyn Dev", no team), a pinned third party (the vendored Node runtime), or an
 // ad-hoc signature on a plain file. Identity values are collected as secrets
 // before anything about the item is printed.
-import { accessSync, constants, openSync, readSync, closeSync, readdirSync, statSync } from "node:fs";
+import { accessSync, constants, openSync, readSync, closeSync, readdirSync, readFileSync, rmSync, mkdtempSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { runChild } from "./archive.mjs";
 
@@ -53,17 +53,64 @@ export function allowedAuthorities(env) {
   return list;
 }
 
-export async function checkSigning(codesign, item, allowed) {
+export const FAT_MAGICS = new Set(["cafebabe", "bebafeca", "cafebabf", "bfbafeca"]);
+
+export function lipoPath(env) {
+  return env.SHYN_LIPO || "/usr/bin/lipo";
+}
+
+// nfat_arch of a universal (fat) Mach-O, or null for a thin file.
+function fatSliceCount(path) {
+  let fd;
+  try {
+    fd = openSync(path, "r");
+    const b = Buffer.alloc(8);
+    if (readSync(fd, b, 0, 8, 0) < 4) return null;
+    const magic = b.toString("hex", 0, 4);
+    if (!FAT_MAGICS.has(magic)) return null;
+    return magic === "cafebabe" || magic === "cafebabf" ? b.readUInt32BE(4) : b.readUInt32LE(4);
+  } catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+// Printable ASCII DER string fields (UTF8String, PrintableString, T61String, IA5String; short form, >= 4 chars).
+export function derStrings(der) {
+  const out = [];
+  for (let i = 0; i + 2 < der.length; i++) {
+    const n = der[i + 1];
+    if ([0x0c, 0x13, 0x14, 0x16].includes(der[i]) && n < 0x80 && n >= 4 && i + 2 + n <= der.length) {
+      const v = der.subarray(i + 2, i + 2 + n);
+      if (v.every((c) => c >= 0x20 && c < 0x7f)) out.push(v.toString("latin1"));
+    }
+  }
+  return out;
+}
+
+const childFailure = (tool, e) =>
+  (e?.message === "timed out" ? `${tool} timed out` : `cannot run ${tool} (${String(e?.code || e?.message || "error").split("\n")[0]})`);
+
+// Every string field of the leaf certificate (name, organisation, team, UID): secrets, never printed. Best effort.
+async function leafCertificateFields(codesign, path, arch, workDir) {
+  if (!workDir) return [];
+  let d;
+  try {
+    d = mkdtempSync(join(workDir, "certs-"));
+    await runChild(codesign, ["-d", ...arch, `--extract-certificates=${join(d, "cert-")}`, path], { timeoutMs: CODESIGN_TIMEOUT_MS });
+    return derStrings(readFileSync(join(d, "cert-0")));
+  } catch { return []; } finally { if (d) rmSync(d, { recursive: true, force: true }); }
+}
+
+// One signature: the item itself, or one slice (arch) of a universal file.
+async function checkSlice(codesign, item, allowed, arch, workDir) {
   const problems = [], secrets = [];
+  const a = arch ? ["-a", arch] : [];
   let r;
   try {
-    r = await runChild(codesign, ["--verify", "--strict", ...(item.bundle ? ["--deep"] : []), item.path], { timeoutMs: CODESIGN_TIMEOUT_MS });
+    r = await runChild(codesign, ["--verify", "--strict", ...(item.bundle ? ["--deep"] : []), ...a, item.path], { timeoutMs: CODESIGN_TIMEOUT_MS });
     if (r.code !== 0) problems.push(`verification failed (codesign exit ${r.code})`);
-    r = await runChild(codesign, ["-dvv", item.path], { timeoutMs: CODESIGN_TIMEOUT_MS });
+    r = await runChild(codesign, ["-dvv", ...a, item.path], { timeoutMs: CODESIGN_TIMEOUT_MS });
   } catch (e) {
     // only a real timeout is called one; anything else (spawn EACCES, ...) is a failure to run
-    const why = e?.message === "timed out" ? "codesign timed out" : `cannot run codesign (${String(e?.code || e?.message || "error").split("\n")[0]})`;
-    return { problems: [...problems, why], kind: null, secrets };
+    return { problems: [...problems, childFailure("codesign", e)], kind: null, secrets };
   }
   const text = Buffer.concat([r.stderr, Buffer.from("\n"), r.stdout]).toString("utf8");
   if (r.code !== 0) {
@@ -74,27 +121,73 @@ export async function checkSigning(codesign, item, allowed) {
   const auth = lines.filter((l) => l.startsWith("Authority=")).map((l) => l.slice(10));
   const teams = lines.filter((l) => l.startsWith("TeamIdentifier=")).map((l) => l.slice(15));
   const adhoc = lines.includes("Signature=adhoc");
-  const pinned = auth.length && THIRD_PARTY_SIGNERS.find((s) => s.authority === auth[0] && teams.length === 1 && teams[0] === s.team);
-  for (const a of auth) {
-    if (allowed.includes(a) || APPLE_CHAIN.includes(a) || (pinned && a === pinned.authority)) continue;
-    secrets.push({ label: "signing-authority", value: a });
-    for (const m of a.matchAll(EMAIL)) secrets.push({ label: "email", value: m[0] });
+  // pinned: exactly leaf + the Developer ID chain, in order, and the one team
+  const pinned = THIRD_PARTY_SIGNERS.find((s) => auth.length === 1 + APPLE_CHAIN.length && auth[0] === s.authority
+    && APPLE_CHAIN.every((c, i) => auth[i + 1] === c) && teams.length === 1 && teams[0] === s.team);
+  for (const x of auth) {
+    if (allowed.includes(x) || APPLE_CHAIN.includes(x) || (pinned && x === pinned.authority)) continue;
+    secrets.push({ label: "signing-authority", value: x });
+    for (const m of x.matchAll(EMAIL)) secrets.push({ label: "email", value: m[0] });
     // pieces too, so a CN cut off at a context-window edge is still redacted
-    const id = a.match(/\(([^()]+)\)\s*$/);
+    const id = x.match(/\(([^()]+)\)\s*$/);
     if (id && id[1].length >= 4) secrets.push({ label: "signing-id", value: id[1] });
-    const tail = a.includes(": ") ? a.slice(a.indexOf(": ") + 2).trim() : "";
+    const tail = x.includes(": ") ? x.slice(x.indexOf(": ") + 2).trim() : "";
     if (tail.length >= 4) secrets.push({ label: "signing-authority", value: tail });
+    // the bare name: the tail without its trailing " (ID)"
+    const bare = tail.replace(/\s*\([^()]*\)\s*$/, "").trim();
+    if (bare.length >= 4 && bare !== tail) secrets.push({ label: "signing-authority", value: bare });
   }
   for (const t of teams) if (t !== "not set" && !(pinned && t === pinned.team) && t.length >= 4) secrets.push({ label: "team-id", value: t });
+  if (!adhoc && auth.length) {
+    for (const v of await leafCertificateFields(codesign, item.path, a, workDir)) {
+      if (!allowed.includes(v)) secrets.push({ label: "cert-field", value: v });
+    }
+  }
   let kind = null;
   if (adhoc) {
     if (item.bundle) problems.push("ad-hoc bundle");
     else kind = "adhoc";
   } else if (!auth.length) problems.push("no signing authority reported");
-  else if (pinned && auth.slice(1).every((a) => APPLE_CHAIN.includes(a))) kind = "third-party";
-  else if (auth.length === 1 && allowed.includes(auth[0])) kind = "allowed";
+  else if (pinned) {
+    kind = "third-party";
+    // the chain strings alone could come from a self-signed lookalike: codesign must also prove the Apple anchor
+    const req = `-R=anchor apple generic and certificate leaf[subject.OU] = "${pinned.team}"`;
+    try {
+      const v = await runChild(codesign, ["--verify", "--strict", ...(item.bundle ? ["--deep"] : []), ...a, req, item.path], { timeoutMs: CODESIGN_TIMEOUT_MS });
+      if (v.code !== 0) problems.push(`pinned third party does not satisfy its Apple anchor requirement (codesign exit ${v.code})`);
+    } catch (e) { problems.push(childFailure("codesign", e)); }
+  } else if (auth.length === 1 && allowed.includes(auth[0])) kind = "allowed";
   else problems.push("authority not allowed (<redacted>)");
   if (!teams.length) problems.push("TeamIdentifier not reported");
   else if (teams.some((t) => t !== "not set") && kind !== "third-party") problems.push("TeamIdentifier set (<redacted>)");
   return { problems, kind: problems.length ? null : kind, secrets };
+}
+
+// A universal (fat) file is checked slice by slice (codesign -dvv alone shows only the native slice): every
+// slice must pass, and every slice's identity values are secrets. opts: { lipo, workDir }.
+export async function checkSigning(codesign, item, allowed, { lipo = "/usr/bin/lipo", workDir } = {}) {
+  let archs = [null];
+  const nfat = item.bundle ? null : fatSliceCount(item.path);
+  if (nfat !== null) {
+    let r;
+    try { r = await runChild(lipo, ["-archs", item.path], { timeoutMs: CODESIGN_TIMEOUT_MS }); }
+    catch (e) { return { problems: [`cannot list the architectures: ${childFailure("lipo", e)}`], kind: null, secrets: [] }; }
+    const list = r.code === 0 ? r.stdout.toString("utf8").trim().split(/\s+/).filter(Boolean) : [];
+    if (!list.length) return { problems: [`cannot list the architectures (lipo exit ${r.code})`], kind: null, secrets: [] };
+    if (list.length !== nfat) {
+      return { problems: [`architecture list does not match the fat header (${list.length} listed, ${nfat} in the header)`], kind: null, secrets: [] };
+    }
+    archs = list;
+  }
+  const problems = [], secrets = [], kinds = new Set();
+  for (const arch of archs) {
+    const res = await checkSlice(codesign, item, allowed, arch, workDir);
+    secrets.push(...res.secrets);
+    for (const p of res.problems) problems.push(arch ? `${p} [slice ${arch}]` : p);
+    kinds.add(res.kind);
+  }
+  if (!problems.length && kinds.size > 1) problems.push("slices are signed differently");
+  const seen = new Set();
+  const unique = secrets.filter((x) => !seen.has(x.value) && seen.add(x.value));
+  return { problems, kind: problems.length ? null : [...kinds][0], secrets: unique };
 }

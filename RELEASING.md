@@ -56,7 +56,9 @@ without cutting the GitHub release, for a dry-run.
       noise"). An empty denylist or an empty archive fails, and an archive
       whose listing is ambiguous (duplicates, devices, fifos, entries below
       a symlink, a tree that differs from its listing) is refused, not
-      partially scanned. Any hit aborts the release; fix the source of the
+      partially scanned, and so is a `.tar.gz` that is not exactly one
+      gzip member with nothing after it (the header is read whole, and the
+      raw `.gz` bytes are scanned for builder values too). Any hit aborts the release; fix the source of the
       hit and rebuild, never edit the scan. Vendored third-party
       coincidences go in the owner allowlist
       (`~/.config/shyn/artifact-leak-allow.txt`), also outside the repo.
@@ -66,21 +68,37 @@ without cutting the GitHub release, for a dry-run.
         comma separated, default `Shyn Dev`, the only authority and no
         team id); a pinned third-party signer (the list
         `THIRD_PARTY_SIGNERS` in `scripts/lib/signing.mjs`, today the
-        vendored Node runtime); or an ad-hoc signed file (never an ad-hoc
-        bundle). A tarball must contain at least one `.app`. Identities of
-        anything not allowed are printed as `<redacted>`.
+        vendored Node runtime, which must show exactly the leaf,
+        `Developer ID Certification Authority`, `Apple Root CA` and pass
+        `codesign --verify -R='anchor apple generic and certificate
+        leaf[subject.OU] = "<team>"'`); or an ad-hoc signed file (never an
+        ad-hoc bundle). A universal (fat) Mach-O is checked slice by slice
+        (`lipo -archs`, then `codesign -a <arch>`): every slice must pass.
+        A tarball must contain at least one `.app`. Identities of anything
+        not allowed are printed as `<redacted>`: the authority, its ID, the
+        bare name, and every string field of the leaf certificate
+        (`codesign -d --extract-certificates`). Every target is extracted
+        and signing-checked before any target is scanned, so an identity
+        found in the `.mcpb` is already redacted in the tarball's output.
       - **`--release`.** `scripts/release.sh` runs the gate with
         `--release`: the gate then exits 2 without scanning if
         `SHYN_LEAK_DENYLIST` or `SHYN_ARTIFACT_ALLOW` is set (even empty),
         if `--ci` is passed, or if the home dir is `/Users/runner`.
         Without `--release` the gate prints a `NOTICE` for each override
         and for CI mode, and a `WARNING: test override active: <NAME>` for
-        each test hook (`SHYN_CODESIGN`, `SHYN_GATE_USERNAME`,
+        each test hook (`SHYN_CODESIGN`, `SHYN_LIPO`, `SHYN_GATE_USERNAME`,
         `SHYN_GATE_TEST_DELAY_MS`); `release.sh` strips the hooks. On a CI
         runner pass `--ci` (no private files there, home/username needles
         dropped), never with `--release`.
-      - **`release.sh` refusals.** Before any build step or git check it
-        refuses (exit 1, naming the variable only): `BASH_ENV`, `ENV` or
+      - **`release.sh` refusals.** Run it as an executable
+        (`scripts/release.sh`, not `bash scripts/release.sh`): its shebang
+        (`/usr/bin/env -S -u SHELLOPTS -u BASHOPTS -u PS4 -u BASH_ENV -u ENV
+        bash`) strips variables that would run code before its first line.
+        Under `bash scripts/release.sh`, bash 3.2 traces line 1 (`set +x`)
+        itself, so an inherited `SHELLOPTS=xtrace` with a `PS4` command
+        substitution runs once before the refusal. Before any build step or
+        git check it refuses (exit 1, naming the variable only): an
+        inherited `SHELLOPTS`, `BASHOPTS` or `PS4`; `BASH_ENV`, `ENV` or
         any shell function defined; `NODE_OPTIONS`; the two override
         variables; a `HOME` that is not the account's real home directory
         (or is `/Users/runner`); an empty `SHYN_ALLOWED_AUTHORITIES`; and a

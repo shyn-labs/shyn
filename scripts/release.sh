@@ -1,4 +1,14 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S -u SHELLOPTS -u BASHOPTS -u PS4 -u BASH_ENV -u ENV bash
+# Inherited SHELLOPTS (e.g. xtrace), BASHOPTS or PS4 run code before any line here can refuse them (PS4 is
+# expanded, command substitutions included, for every traced command). Run as an executable (scripts/release.sh),
+# the shebang strips them before bash starts. Run as `bash scripts/release.sh`, bash 3.2 traces line 1 (set +x)
+# itself, expanding an inherited PS4 once before xtrace is off; the check below then refuses. BASH_ENV is
+# sourced by bash before line 1, so the shebang strips it (and ENV) too; the BASH_ENV refusal below covers `bash`.
+set +x
+PS4='+ '
+if /usr/bin/env | /usr/bin/grep -qE '^(SHELLOPTS|BASHOPTS|PS4)='; then
+  echo "release.sh: SHELLOPTS, BASHOPTS or PS4 is set in the environment; they can run code in this script; unset them" >&2; exit 1
+fi
 set -euo pipefail
 
 V="${1:?usage: release.sh <version, e.g. 0.2.0-alpha> [--no-publish]}"
@@ -79,7 +89,7 @@ pnpm build:release
 TARBALL=$(ls dist/release/shyn-v*-darwin-arm64.tar.gz)
 [[ "$TARBALL" == *"shyn-v${V}-darwin-arm64"* ]] || { echo "version mismatch: arg v${V} vs built $(basename "$TARBALL") — bump package versions first"; exit 1; }
 # Scan what actually ships (extracted tarball + .mcpb) for the builder's identity and the private denylist, before anything can be published (dry runs too).
-/usr/bin/env -u SHYN_CODESIGN -u SHYN_GATE_USERNAME -u SHYN_GATE_TEST_DELAY_MS \
+/usr/bin/env -u SHYN_CODESIGN -u SHYN_LIPO -u SHYN_GATE_USERNAME -u SHYN_GATE_TEST_DELAY_MS \
   node scripts/check-artifact-leaks.mjs --release --tarball "$TARBALL" --mcpb dist/shyn.mcpb \
   || { echo "release.sh: artifact leak scan failed: not publishing" >&2; exit 1; }
 SHA256="$(/usr/bin/shasum -a 256 "$TARBALL" | /usr/bin/awk '{print $1}')"

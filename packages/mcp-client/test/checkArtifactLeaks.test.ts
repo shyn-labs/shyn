@@ -22,6 +22,7 @@ let base: string;
 let emptyDist: string;
 let codesignDir: string;
 let shimPath: string;
+let lipoPath: string;
 const deny = (name: string, ...terms: string[]) => {
   const p = join(base, name);
   writeFileSync(p, `# synthetic denylist\n${terms.join("\n")}\n`);
@@ -45,7 +46,7 @@ const baseEnv = (extra: Record<string, string> = {}, drop: string[] = []) => {
   const env: Record<string, string | undefined> = {
     ...process.env, CI: "", SHYN_GATE_USERNAME: NAME, SHYN_LEAK_DENYLIST: D0(),
     SHYN_DIST_DIR: emptyDist, SHYN_ARTIFACT_ALLOW: join(base, "no-allowlist.txt"),
-    SHYN_CODESIGN: shimPath, FAKE_CODESIGN_DIR: codesignDir, ...extra,
+    SHYN_CODESIGN: shimPath, SHYN_LIPO: lipoPath, FAKE_CODESIGN_DIR: codesignDir, ...extra,
   };
   for (const k of drop) delete env[k];
   return env as Record<string, string>;
@@ -100,22 +101,46 @@ const rawTarOf = (name: string, entries: { name: string; type?: string; body?: s
 };
 const gateDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith(PREFIX));
 
-// Fake codesign: --verify exits FAKE_CODESIGN_VERIFY_RC (default 0); -dvv prints
-// $FAKE_CODESIGN_DIR/<basename>.dvv (or default.dvv) to stderr; anything else exits 1.
+// Fake codesign: --verify exits FAKE_CODESIGN_VERIFY_RC (default 0), or 3 for a -R requirement check when
+// $FAKE_CODESIGN_DIR/<basename>.noreq exists; -dvv [-a <arch>] prints $FAKE_CODESIGN_DIR/<basename>.<arch>.dvv,
+// else <basename>.dvv, else default.dvv to stderr; -d --extract-certificates=<prefix> copies <basename>.cert
+// to <prefix>0 when it exists (else writes nothing); anything else exits 1.
 const SHIM = `#!/bin/sh
 for a; do last="$a"; done
+arch=""; req=""; xc=""; prev=""
+for a; do
+  [ "$prev" = "-a" ] && arch="$a"
+  case "$a" in -R=*) req=1 ;; --extract-certificates=*) xc="\${a#--extract-certificates=}" ;; esac
+  prev="$a"
+done
+b="$(basename "$last")"
 case "$1" in
-  --verify) exit "\${FAKE_CODESIGN_VERIFY_RC:-0}" ;;
-  -dvv) f="$FAKE_CODESIGN_DIR/$(basename "$last").dvv"; [ -f "$f" ] || f="$FAKE_CODESIGN_DIR/default.dvv"; cat "$f" >&2; exit 0 ;;
+  --verify) if [ -n "$req" ] && [ -f "$FAKE_CODESIGN_DIR/$b.noreq" ]; then exit 3; fi; exit "\${FAKE_CODESIGN_VERIFY_RC:-0}" ;;
+  -dvv) f="$FAKE_CODESIGN_DIR/$b.$arch.dvv"; if [ -z "$arch" ] || [ ! -f "$f" ]; then f="$FAKE_CODESIGN_DIR/$b.dvv"; fi
+        [ -f "$f" ] || f="$FAKE_CODESIGN_DIR/default.dvv"; cat "$f" >&2; exit 0 ;;
+  -d) if [ -n "$xc" ]; then [ -f "$FAKE_CODESIGN_DIR/$b.cert" ] && cp "$FAKE_CODESIGN_DIR/$b.cert" "\${xc}0"; exit 0; fi ;;
 esac
 exit 1
+`;
+// Fake lipo (SHYN_LIPO): -archs <file> prints $FAKE_CODESIGN_DIR/<basename>.archs, else "x86_64 arm64".
+const LIPO = `#!/bin/sh
+for a; do last="$a"; done
+[ "$1" = "-archs" ] || exit 1
+f="$FAKE_CODESIGN_DIR/$(basename "$last").archs"
+if [ -f "$f" ]; then cat "$f"; else echo "x86_64 arm64"; fi
 `;
 const DVV_SHYN = "Executable=/x\nIdentifier=t\nAuthority=Shyn Dev\nTeamIdentifier=not set\n";
 const DVV_ADHOC = "Executable=/x\nIdentifier=t\nSignature=adhoc\nTeamIdentifier=not set\n";
 const DVV_NODE = "Executable=/x\nAuthority=Developer ID Application: Node.js Foundation (HX7739G8FX)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTeamIdentifier=HX7739G8FX\n";
 const DVV_PERSONAL = "Executable=/x\nAuthority=Apple Development: sam-zq7@example.com (QQ7ZQ7ZQ7Z)\nAuthority=Apple Worldwide Developer Relations Certification Authority\nAuthority=Apple Root CA\nTeamIdentifier=ZQ7ZQ7ZQ7Q\n";
 const MACHO = Buffer.concat([Buffer.from("cffaedfe", "hex"), Buffer.alloc(60)]);
+// a universal (fat) Mach-O header with two slices (nfat_arch = 2, big-endian)
+const FAT = Buffer.concat([Buffer.from("cafebabe00000002", "hex"), Buffer.alloc(56)]);
 const dvv = (file: string, body: string) => writeFileSync(join(codesignDir, `${file}.dvv`), body);
+const fakeFile = (file: string, body: string | Buffer) => writeFileSync(join(codesignDir, file), body);
+// DER string fields as they sit in a certificate: <tag><len><ascii> (UTF8String 0x0c, PrintableString 0x13)
+const der = (...fields: [number, string][]) =>
+  Buffer.concat([Buffer.from([0x30, 0x80]), ...fields.map(([t, v]) => Buffer.concat([Buffer.from([t, v.length]), Buffer.from(v, "latin1")]))]);
 
 beforeAll(() => {
   base = mkdtempSync(join(tmpdir(), "shyn-leakgate-test-"));
@@ -126,10 +151,13 @@ beforeAll(() => {
   shimPath = join(codesignDir, "codesign");
   writeFileSync(shimPath, SHIM);
   chmodSync(shimPath, 0o755);
+  lipoPath = join(codesignDir, "lipo");
+  writeFileSync(lipoPath, LIPO);
+  chmodSync(lipoPath, 0o755);
   dvv("default", DVV_SHYN);
 });
 afterEach(() => {
-  for (const f of readdirSync(codesignDir)) if (f.endsWith(".dvv")) rmSync(join(codesignDir, f));
+  for (const f of readdirSync(codesignDir)) if (/\.(dvv|archs|cert|noreq)$/.test(f)) rmSync(join(codesignDir, f));
   dvv("default", DVV_SHYN);
 });
 afterAll(() => rmSync(base, { recursive: true, force: true }));
@@ -322,6 +350,119 @@ describe("check-artifact-leaks", () => {
     expect(r.out).not.toContain("codesign timed out");
   });
 
+  // ---- final-review fixes: fat slices, bare names, gzip framing, pinned chain, sign-all-first -------------
+  it("a universal binary is checked slice by slice: a personal-signed second slice fails and prints nothing identifying", () => {
+    dvv("fat.dylib", DVV_SHYN); // what a codesign without -a (the native slice) reports
+    dvv("fat.dylib.x86_64", DVV_PERSONAL);
+    const blob = Buffer.concat([FAT, Buffer.from("Apple Development: sam-zq7@example.com (QQ7ZQ7ZQ7Z)"), Buffer.from([0, 1, 2]), Buffer.from("x acme-secret x")]);
+    const r = run(["--tarball", tarOf("fat-bad.tar.gz", { "Fake.app/Contents/Frameworks/fat.dylib": blob })]);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/fat\.dylib {2}signing: authority not allowed \(<redacted>\) \[slice x86_64\]/);
+    expect(r.out).toContain("<denylist-term-0>");
+    for (const s of ["sam-zq7", "example.com", "QQ7ZQ7ZQ7Z", "ZQ7ZQ7ZQ7Q", "Apple Development:"]) expect(r.out).not.toContain(s);
+    // both slices clean: one item, counted once
+    dvv("fat.dylib.x86_64", DVV_SHYN);
+    const ok = run(["--tarball", tarOf("fat-ok.tar.gz", { "fat.dylib": FAT })]);
+    expect(ok.code).toBe(0);
+    expect(ok.out).toMatch(/^signing: 2 code items checked \(2 allowed identity, 0 pinned third party, 0 ad-hoc file\)/m);
+    // lipo listing fewer slices than the fat header holds: refused
+    fakeFile("fat.dylib.archs", "arm64\n");
+    const short = run(["--tarball", tarOf("fat-short.tar.gz", { "fat.dylib": FAT })]);
+    expect(short.code).toBe(1);
+    expect(short.out).toMatch(/fat\.dylib {2}signing: architecture list does not match the fat header/);
+    // a lipo that cannot run fails closed
+    const nolipo = run(["--tarball", tarOf("fat-nolipo.tar.gz", { "fat.dylib": FAT })], { SHYN_LIPO: join(base, "no-lipo") });
+    expect(nolipo.code).toBe(1);
+    expect(nolipo.out).toMatch(/fat\.dylib {2}signing: cannot list the architectures/);
+  });
+
+  it("a signer's bare name (authority tail without its ID, and certificate fields) is never printed", () => {
+    // (a) the authority tail without " (ID)" sits next to a denylist hit
+    dvv("lib.dylib", DVV_PERSONAL.replace("sam-zq7@example.com", "Neutral Bare Zq7"));
+    let blob = Buffer.concat([MACHO, Buffer.from("Neutral Bare Zq7 acme-secret")]);
+    let r = run(["--tarball", tarOf("bare-a.tar.gz", { "lib.dylib": blob })]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("<denylist-term-0>");
+    expect(r.out).not.toContain("Neutral Bare");
+    // (b) a certificate O= field that is in no Authority= line
+    dvv("lib.dylib", DVV_PERSONAL);
+    fakeFile("lib.dylib.cert", der([0x13, "US"], [0x0c, "Neutral Org Zq7"], [0x0c, "Shyn Dev"]));
+    blob = Buffer.concat([MACHO, Buffer.from("Neutral Org Zq7 acme-secret")]);
+    r = run(["--tarball", tarOf("bare-b.tar.gz", { "lib.dylib": blob })]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("<denylist-term-0>");
+    expect(r.out).not.toContain("Neutral Org");
+  });
+
+  // gzip framing helpers: a member with FEXTRA / FNAME set, and the raw tar inside
+  const plainTar = () => {
+    const tb = rawTarOf("frame-src.tar.gz", [{ name: "Fake.app/", type: "5" }, { name: "a.txt", body: "hello\n" }]);
+    return gzipSync(Buffer.from(execFileSync("/usr/bin/gunzip", ["-c", tb])));
+  };
+  const withGzFields = (gz: Buffer, { extra, name }: { extra?: Buffer; name?: string }) => {
+    let flg = gz[3];
+    const parts: Buffer[] = [];
+    if (extra) { flg |= 0x04; const x = Buffer.alloc(2); x.writeUInt16LE(extra.length); parts.push(x, extra); }
+    if (name !== undefined) { flg |= 0x08; parts.push(Buffer.from(name + "\0", "latin1")); }
+    return Buffer.concat([gz.subarray(0, 3), Buffer.from([flg]), gz.subarray(4, 10), ...parts, gz.subarray(10)]);
+  };
+  const gzFile = (name: string, b: Buffer) => { const p = join(base, name); writeFileSync(p, b); return p; };
+
+  it("a .tar.gz that is not exactly one gzip member is refused (trailing bytes, a second member)", () => {
+    const one = plainTar();
+    expect(run(["--tarball", gzFile("one.tar.gz", one)]).code).toBe(0);
+    const e1 = gzFile("e1.tar.gz", Buffer.concat([one, Buffer.from(`\0\0/Users/${NAME}/secret acme-secret\n`)]));
+    const e2 = gzFile("e2.tar.gz", Buffer.concat([one, withGzFields(gzipSync(Buffer.alloc(0)), { name: `/Users/${NAME}/x.tar` })]));
+    for (const tb of [e1, e2]) {
+      const r = run(["--tarball", tb]);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/refusing tarball: .*(gzip member|after the gzip)/);
+      expect(r.out).not.toMatch(/^OK/m);
+      expect(r.out).not.toContain(NAME);
+    }
+  });
+
+  it("a gzip header larger than 64 KiB is read whole (FNAME after a 65535-byte FEXTRA)", () => {
+    const big = Buffer.alloc(65535, 0x2e);
+    const bad = run(["--tarball", gzFile("fx-bad.tar.gz", withGzFields(plainTar(), { extra: big, name: `/Users/${NAME}/x.tar` }))]);
+    expect(bad.code).toBe(1);
+    expect(bad.out).toMatch(/tarball-gzip-header:/);
+    expect(bad.out).not.toContain(NAME);
+    const ok = run(["--tarball", gzFile("fx-ok.tar.gz", withGzFields(plainTar(), { extra: big, name: "plain.tar" }))]);
+    expect(ok.code).toBe(0);
+  });
+
+  it("a pinned third party needs the full Apple chain and the Apple anchor requirement", () => {
+    // self-signed lookalike: the right leaf name and team, no chain
+    dvv("x.dylib", "Executable=/x\nAuthority=Developer ID Application: Node.js Foundation (HX7739G8FX)\nTeamIdentifier=HX7739G8FX\n");
+    let r = run(["--tarball", tarOf("look1.tar.gz", { "x.dylib": MACHO })]);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/x\.dylib {2}signing: authority not allowed/);
+    // the chain strings are right but the requirement check fails
+    dvv("x.dylib", DVV_NODE);
+    fakeFile("x.dylib.noreq", "");
+    r = run(["--tarball", tarOf("look2.tar.gz", { "x.dylib": MACHO })]);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/x\.dylib {2}signing: pinned third party does not satisfy its Apple anchor requirement/);
+  });
+
+  it("every target is signing-checked before any target is scanned (an mcpb identity is not printed by a tarball hit)", () => {
+    const d = mkdtempSync(join(base, "mcpb7-"));
+    writeFileSync(join(d, "manifest.json"), "{}\n");
+    writeFileSync(join(d, "lib.dylib"), MACHO);
+    dvv("lib.dylib", DVV_PERSONAL);
+    const mcpb = join(base, "e7.mcpb");
+    execFileSync("zip", ["-qr", mcpb, "."], { cwd: d });
+    // the tarball: a text hit next to the identity, and an unsigned Mach-O named after it (a signing hit)
+    dvv("QQ7ZQ7ZQ7Z.dylib", "Executable=/x\n");
+    const tb = tarOf("e7.tar.gz", { "notes.txt": "team QQ7ZQ7ZQ7Z acme-secret\n", "QQ7ZQ7ZQ7Z.dylib": MACHO });
+    const r = run(["--tarball", tb, "--mcpb", mcpb]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("<denylist-term-0>");
+    expect(r.out).toMatch(/signing: no signing authority reported/);
+    expect(r.out).not.toContain("QQ7ZQ7ZQ7Z");
+  });
+
   it("--help documents the flags and exits 0", () => {
     const { code, out } = run(["--help"]);
     expect(code).toBe(0);
@@ -466,7 +607,7 @@ describe("check-artifact-leaks", () => {
     const withEnv = src.match(/\bspawn(Sync)?\(\s*"node"[^;]*?env: baseEnv\(/g) ?? [];
     expect(spawns.length).toBeGreaterThan(0);
     expect(withEnv.length).toBe(spawns.length);
-    for (const k of ["SHYN_GATE_USERNAME", "SHYN_LEAK_DENYLIST", "SHYN_ARTIFACT_ALLOW", "SHYN_CODESIGN"]) expect((baseEnv() as Record<string, string>)[k]).toBeTruthy();
+    for (const k of ["SHYN_GATE_USERNAME", "SHYN_LEAK_DENYLIST", "SHYN_ARTIFACT_ALLOW", "SHYN_CODESIGN", "SHYN_LIPO"]) expect((baseEnv() as Record<string, string>)[k]).toBeTruthy();
     expect((baseEnv() as Record<string, string>).SHYN_CODESIGN.startsWith(base + "/")).toBe(true);
     expect((baseEnv({}) as Record<string, string | undefined>).SHYN_ALLOWED_AUTHORITIES).toBe(process.env.SHYN_ALLOWED_AUTHORITIES);
   });
@@ -723,7 +864,7 @@ describe("check-artifact-leaks", () => {
     expect(r.code).toBe(0);
     const lines = r.out.split("\n");
     expect(lines).toContain("NOTICE: SHYN_LEAK_DENYLIST overrides the default");
-    for (const h of ["SHYN_CODESIGN", "SHYN_GATE_USERNAME", "SHYN_GATE_TEST_DELAY_MS"]) expect(lines).toContain(`WARNING: test override active: ${h}`);
+    for (const h of ["SHYN_CODESIGN", "SHYN_LIPO", "SHYN_GATE_USERNAME", "SHYN_GATE_TEST_DELAY_MS"]) expect(lines).toContain(`WARNING: test override active: ${h}`);
     expect(r.out).not.toContain(NAME);
     const want = createHash("sha256").update(readFileSync(tb)).digest("hex");
     expect(lines).toContain(`sha256: ${want}`);
@@ -771,8 +912,38 @@ describe("check-artifact-leaks", () => {
     expect(runReleaseSh({}).out).toMatch(/tag-target safety checks/);
   });
 
+  it("release.sh: inherited SHELLOPTS/BASHOPTS/PS4 are refused (bash script) or stripped with BASH_ENV by the shebang (direct run)", () => {
+    const marker = join(base, "ps4-ran");
+    const evil = { SHELLOPTS: "xtrace", PS4: `$(echo ran >> ${marker})+ ` };
+    const count = () => (existsSync(marker) ? readFileSync(marker, "utf8").split("\n").filter(Boolean).length : 0);
+    for (const env of [evil, { BASHOPTS: "extglob" }, { PS4: "+ " }] as Record<string, string>[]) {
+      rmSync(marker, { force: true });
+      const r = runReleaseSh(env);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/SHELLOPTS, BASHOPTS or PS4 is set/);
+      expect(r.out).not.toMatch(/== gates ==|tag-target|NOTICE/);
+      // bash 3.2 traces the first line (set +x) itself, expanding PS4 once; nothing after it runs traced
+      expect(count()).toBeLessThanOrEqual(1);
+    }
+    // run as an executable (how RELEASING.md says to run it): the shebang strips them before bash starts
+    rmSync(marker, { force: true });
+    const d = mkdtempSync(join(base, "relsh-x-"));
+    mkdirSync(join(d, "scripts"));
+    writeFileSync(join(d, "scripts/release.sh"), readFileSync(RELEASE_SH));
+    chmodSync(join(d, "scripts/release.sh"), 0o755);
+    const realHome = execFileSync("/usr/bin/dscl", [".", "-read", `/Users/${userInfo().username}`, "NFSHomeDirectory"], { encoding: "utf8" })
+      .replace(/^NFSHomeDirectory: /, "").trim();
+    const startup = join(base, "startup-marker.sh");
+    writeFileSync(startup, `echo ran >> ${marker}\n`);
+    const x = spawnSync(join(d, "scripts/release.sh"), ["9.9.9-test", "--no-publish"], {
+      cwd: d, encoding: "utf8", timeout: 25_000, env: { PATH: "/usr/bin:/bin", HOME: realHome, ...evil, BASH_ENV: startup },
+    });
+    expect(count()).toBe(0);
+    expect((x.stdout ?? "") + (x.stderr ?? "")).toMatch(/tag-target safety checks/);
+  });
+
   it("release.sh runs the gate with --release and strips the test hooks", () => {
     const src = readFileSync(RELEASE_SH, "utf8");
-    expect(src).toMatch(/\/usr\/bin\/env -u SHYN_CODESIGN -u SHYN_GATE_USERNAME -u SHYN_GATE_TEST_DELAY_MS \\\n\s+node scripts\/check-artifact-leaks\.mjs --release /);
+    expect(src).toMatch(/\/usr\/bin\/env -u SHYN_CODESIGN -u SHYN_LIPO -u SHYN_GATE_USERNAME -u SHYN_GATE_TEST_DELAY_MS \\\n\s+node scripts\/check-artifact-leaks\.mjs --release /);
   });
 });
