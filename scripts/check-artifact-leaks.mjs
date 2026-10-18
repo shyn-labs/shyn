@@ -378,6 +378,21 @@ async function main() {
     hits++;
     if (printed < 200) { printed++; console.log(`  ${label}:${san(rel)}  signing: ${reason}`); }
   };
+  // Signing runs FIRST in every target (right after extraction and before any
+  // content, name, raw-stream or gzip-header scan can print a context), so every
+  // disallowed identity is a known secret before anything else is printed.
+  const signTree = async (t, root) => {
+    const code = discoverCode(root);
+    if (t.kind === "tarball" && code.apps === 0) signingHit(t.kind, ".", "no .app in the tarball");
+    for (const p of code.problems) signingHit(t.kind, p.rel, p.reason);
+    for (const item of code.items) {
+      codeItems++;
+      const res = await checkSigning(codesign, item, allowedAuth);
+      sanRules.secrets.push(...res.secrets); // before anything about the item is printed
+      for (const reason of res.problems) signingHit(t.kind, item.rel, reason);
+      if (res.kind) kinds[res.kind]++;
+    }
+  };
   for (const t of targets) {
     currentLabel = t.kind;
     let root = t.path;
@@ -389,6 +404,7 @@ async function main() {
       const names = listTarball(raw, rules);
       await extractTarball(raw, root);
       verifyTree("tarball", root, names);
+      await signTree(t, root);
       await scanRaw(raw, "tarball-raw");
       rmSync(raw, { force: true });
       // gzip header fields (FNAME / FCOMMENT / FEXTRA): builder values and denylist
@@ -408,21 +424,12 @@ async function main() {
       const names = await listMcpb(t.path, rules);
       await extractMcpb(t.path, root);
       verifyTree("mcpb", root, names);
+      await signTree(t, root);
       await scanRaw(t.path, "mcpb-raw");
     }
+    if (t.kind === "dir") await signTree(t, root);
     await scanTreeRules(root, rules, stats);
     scanNames(root, rules, onNameHit);
-    // signing of every code item
-    const code = discoverCode(root);
-    if (t.kind === "tarball" && code.apps === 0) signingHit(t.kind, ".", "no .app in the tarball");
-    for (const p of code.problems) signingHit(t.kind, p.rel, p.reason);
-    for (const item of code.items) {
-      codeItems++;
-      const res = await checkSigning(codesign, item, allowedAuth);
-      sanRules.secrets.push(...res.secrets); // before anything about the item is printed
-      for (const reason of res.problems) signingHit(t.kind, item.rel, reason);
-      if (res.kind) kinds[res.kind]++;
-    }
   }
   if (stats.files === 0) throw new Exit(1, "scanned 0 files: nothing to check (empty or unreadable archive?)");
   for (const [k, n] of allowed) {

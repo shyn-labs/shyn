@@ -294,6 +294,28 @@ describe("check-artifact-leaks", () => {
     expect(c.out).not.toContain("example.com");
   });
 
+  it("a content hit next to a signing identity inside a Mach-O prints none of the identity (signing runs before any scan prints)", () => {
+    const blob = Buffer.concat([
+      MACHO, Buffer.from("Apple Development: sam-zq7@example.com (QQ7ZQ7ZQ7Z)"), Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]),
+      Buffer.from("ZQ7ZQ7ZQ7Q"), Buffer.from([0, 1, 2, 3, 4, 5, 6, 7]), Buffer.from("acme-secret"),
+    ]);
+    dvv("lib.dylib", DVV_PERSONAL);
+    const r = run(["--tarball", tarOf("sig-ctx.tar.gz", { "Fake.app/Contents/Frameworks/lib.dylib": blob })]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("<denylist-term-0>"); // the content hit did fire and print
+    for (const x of ["QQ7ZQ7ZQ7Z", "ZQ7ZQ7ZQ7Q", "sam-zq7", "example.com", "Apple Development:"]) expect(r.out).not.toContain(x);
+  });
+
+  it("a codesign that cannot be run is not reported as a timeout", () => {
+    const noexec = join(base, "codesign-noexec");
+    // executable bit passes codesignPath; a bad interpreter makes the spawn itself fail
+    writeFileSync(noexec, "#!/nonexistent/interpreter\n"); chmodSync(noexec, 0o755);
+    const r = run(["--tarball", tarOf("sig-noexec.tar.gz", {})], { SHYN_CODESIGN: noexec });
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/signing: (cannot run codesign \(|verification failed|cannot read the signature)/);
+    expect(r.out).not.toContain("codesign timed out");
+  });
+
   it("--help documents the flags and exits 0", () => {
     const { code, out } = run(["--help"]);
     expect(code).toBe(0);

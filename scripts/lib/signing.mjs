@@ -60,7 +60,11 @@ export async function checkSigning(codesign, item, allowed) {
     r = await runChild(codesign, ["--verify", "--strict", ...(item.bundle ? ["--deep"] : []), item.path], { timeoutMs: CODESIGN_TIMEOUT_MS });
     if (r.code !== 0) problems.push(`verification failed (codesign exit ${r.code})`);
     r = await runChild(codesign, ["-dvv", item.path], { timeoutMs: CODESIGN_TIMEOUT_MS });
-  } catch { return { problems: [...problems, "codesign timed out"], kind: null, secrets }; }
+  } catch (e) {
+    // only a real timeout is called one; anything else (spawn EACCES, ...) is a failure to run
+    const why = e?.message === "timed out" ? "codesign timed out" : `cannot run codesign (${String(e?.code || e?.message || "error").split("\n")[0]})`;
+    return { problems: [...problems, why], kind: null, secrets };
+  }
   const text = Buffer.concat([r.stderr, Buffer.from("\n"), r.stdout]).toString("utf8");
   if (r.code !== 0) {
     if (/code object is not signed/.test(text)) return { problems: [...problems, "unsigned"], kind: null, secrets };
@@ -75,6 +79,11 @@ export async function checkSigning(codesign, item, allowed) {
     if (allowed.includes(a) || APPLE_CHAIN.includes(a) || (pinned && a === pinned.authority)) continue;
     secrets.push({ label: "signing-authority", value: a });
     for (const m of a.matchAll(EMAIL)) secrets.push({ label: "email", value: m[0] });
+    // pieces too, so a CN cut off at a context-window edge is still redacted
+    const id = a.match(/\(([^()]+)\)\s*$/);
+    if (id && id[1].length >= 4) secrets.push({ label: "signing-id", value: id[1] });
+    const tail = a.includes(": ") ? a.slice(a.indexOf(": ") + 2).trim() : "";
+    if (tail.length >= 4) secrets.push({ label: "signing-authority", value: tail });
   }
   for (const t of teams) if (t !== "not set" && !(pinned && t === pinned.team) && t.length >= 4) secrets.push({ label: "team-id", value: t });
   let kind = null;
