@@ -1,7 +1,10 @@
 // Archive handling for the release gate: list a tar from its own headers,
 // refuse entries that could escape or confuse extraction, extract with
 // metadata off, and prove the extracted tree equals the listing.
-import { closeSync, createReadStream, createWriteStream, openSync, readdirSync, readSync } from "node:fs";
+import { spawn } from "node:child_process";
+import {
+  chmodSync, closeSync, createReadStream, createWriteStream, lstatSync, openSync, readdirSync, readSync, rmSync,
+} from "node:fs";
 import { join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
@@ -159,4 +162,45 @@ export function compareTree(dest, names) {
   if (odd) problems.push(`${odd} extracted entr${odd === 1 ? "y is" : "ies are"} not a regular file, directory or symlink`);
   if (unreadable) problems.push(`${unreadable} extracted director${unreadable === 1 ? "y" : "ies"} unreadable`);
   return problems;
+}
+
+// Child processes are tracked so a signal handler can kill them; a timeout
+// kills the child and rejects with Error("timed out").
+const live = new Set();
+export function runChild(cmd, args, { timeoutMs = 300_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    live.add(p);
+    const out = [], err = [];
+    let timedOut = false;
+    p.stdout.on("data", (d) => out.push(d));
+    p.stderr.on("data", (d) => err.push(d));
+    const t = setTimeout(() => { timedOut = true; p.kill("SIGKILL"); }, timeoutMs);
+    p.on("error", (e) => { clearTimeout(t); live.delete(p); reject(e); });
+    p.on("close", (code) => {
+      clearTimeout(t); live.delete(p);
+      if (timedOut) reject(new Error("timed out"));
+      else resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
+    });
+  });
+}
+export function killChildren() {
+  for (const p of live) { try { p.kill("SIGKILL"); } catch { /* already gone */ } }
+  live.clear();
+}
+
+// Extracted trees can hold read-only directories: chmod every directory (never
+// following symlinks) so rmSync can remove them.
+function makeWritable(p) {
+  let st;
+  try { st = lstatSync(p); } catch { return; }
+  if (!st.isDirectory()) return;
+  try { chmodSync(p, 0o700); } catch { /* best effort */ }
+  let names = [];
+  try { names = readdirSync(p); } catch { return; }
+  for (const n of names) makeWritable(join(p, n));
+}
+export function forceRm(p) {
+  makeWritable(p);
+  try { rmSync(p, { recursive: true, force: true }); } catch { /* best effort */ }
 }

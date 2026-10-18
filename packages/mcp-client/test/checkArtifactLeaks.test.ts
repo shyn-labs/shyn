@@ -474,29 +474,63 @@ describe("check-artifact-leaks", () => {
     expect(gateDirs()).toEqual(before);
   });
 
-  it("SIGINT during a scan cleans up and exits 130", async () => {
-    const files: Record<string, string> = {};
-    for (let i = 0; i < 40; i++) files[`f${i}.txt`] = `file ${i}\n`;
-    const tb = tarOf("slow.tar.gz", files);
+  for (const [sig, code] of [["SIGINT", 130], ["SIGHUP", 129], ["SIGQUIT", 131], ["SIGTERM", 143]] as const) {
+    it(`${sig} during a scan cleans up and exits ${code}`, async () => {
+      const files: Record<string, string> = {};
+      for (let i = 0; i < 40; i++) files[`f${i}.txt`] = `file ${i}\n`;
+      const tb = tarOf(`slow-${sig}.tar.gz`, files);
+      const before = gateDirs();
+      const child = spawn("node", [SCRIPT, "--tarball", tb], { cwd: ROOT, env: baseEnv({ SHYN_GATE_TEST_DELAY_MS: "300" }) });
+      let out = "";
+      try {
+        const got = await new Promise<number | null>((resolve, reject) => {
+          const deadline = setTimeout(() => reject(new Error("timeout")), 20_000);
+          child.stdout.on("data", (d) => { out += d; if (out.includes("scanning tarball") && !child.killed) child.kill(sig); });
+          child.on("exit", (c) => { clearTimeout(deadline); resolve(c); });
+        });
+        expect(got).toBe(code);
+        expect(gateDirs()).toEqual(before);
+      } finally { child.kill("SIGKILL"); }
+    }, 30_000);
+  }
+
+  it("removes a temp dir holding read-only extracted directories", () => {
+    const d = mkdtempSync(join(base, "ro-"));
+    mkdirSync(join(d, "Fake.app")); mkdirSync(join(d, "locked")); writeFileSync(join(d, "locked", "a.txt"), "x");
+    chmodSync(join(d, "locked"), 0o555);
+    const tb = join(base, "ro.tar.gz");
+    bsdtar(["-czf", tb, "-C", d, "."]);
+    chmodSync(join(d, "locked"), 0o755);
     const before = gateDirs();
-    const child = spawn("node", [SCRIPT, "--tarball", tb], {
-      cwd: ROOT,
-      env: baseEnv({ SHYN_GATE_TEST_DELAY_MS: "300" }),
-    });
+    run(["--tarball", tb]);
+    expect(gateDirs()).toEqual(before);
+  });
+
+  it("a signal while the extraction child runs kills it and cleans up", async () => {
+    // the hook keeps the extraction child alive (sleep, then exec tar) so the signal lands on a live child
+    const tb = tarOf("child.tar.gz", { "a.txt": "x\n" });
+    const before = gateDirs();
+    const child = spawn("node", [SCRIPT, "--tarball", tb], { cwd: ROOT, env: baseEnv({ SHYN_GATE_TEST_DELAY_MS: "3000" }) });
     let out = "";
     try {
-      const code = await new Promise<number | null>((resolve, reject) => {
+      const got = await new Promise<number | null>((resolve, reject) => {
         const deadline = setTimeout(() => reject(new Error("timeout")), 20_000);
         child.stdout.on("data", (d) => {
           out += d;
-          if (out.includes("scanning tarball") && !child.killed) child.kill("SIGINT");
+          if (out.includes("extracting tarball") && !child.killed) {
+            // give the child a moment to be spawned, and prove it is alive before signalling
+            setTimeout(() => {
+              const alive = spawnSync("pgrep", ["-f", `${PREFIX}.*tarball.raw.tar`]).status === 0;
+              if (!alive) { reject(new Error("extraction child was not running")); return; }
+              child.kill("SIGHUP");
+            }, 300);
+          }
         });
         child.on("exit", (c) => { clearTimeout(deadline); resolve(c); });
       });
-      expect(code).toBe(130);
+      expect(got).toBe(129);
       expect(gateDirs()).toEqual(before);
-    } finally {
-      child.kill("SIGKILL");
-    }
+      expect(spawnSync("pgrep", ["-f", `${PREFIX}.*tarball.raw.tar`]).status).not.toBe(0);
+    } finally { child.kill("SIGKILL"); }
   }, 30_000);
 });

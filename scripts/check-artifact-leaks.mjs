@@ -33,7 +33,6 @@
 // entry's index in the file) and never prints the builder's username, home or
 // checkout path (shown as <username>, <home>, <checkout>).
 
-import { execFileSync } from "node:child_process";
 import {
   existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
@@ -43,7 +42,7 @@ import {
   REPO_ROOT, builderNeedles, newStats, parseDenylist, sanitizeText, scanFileRules, scanNames, scanTreeRules,
 } from "./lib/artifact-scan.mjs";
 import {
-  TAR, UNZIP, checkTarEntries, checkZipNames, compareTree, gunzipToFile, gzipHeaderFields, listTar,
+  TAR, UNZIP, checkTarEntries, checkZipNames, compareTree, forceRm, gunzipToFile, gzipHeaderFields, killChildren, listTar, runChild,
 } from "./lib/archive.mjs";
 
 const HELP = `usage: node scripts/check-artifact-leaks.mjs [options]
@@ -79,7 +78,8 @@ environment:
                            denylist line). Matching hits are reported as allowlisted, not failures.
   SHYN_GATE_USERNAME       override the builder username needle (tests)
   SHYN_DIST_DIR            where the default targets are looked up (default: dist/)
-  SHYN_GATE_TEST_DELAY_MS  test hook: sleep this long per scanned file
+  SHYN_GATE_TEST_DELAY_MS  test hook: sleep this long per scanned file, and before each
+                           extraction child does its work (so a signal can hit a live child)
 
 rules:
   denylist       terms match as whole words (no ASCII letter/digit directly
@@ -131,13 +131,14 @@ const san = (t) => sanitizeText(t, sanRules);
 let workDir = null;
 const cleanup = () => {
   if (workDir) {
-    try { rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    forceRm(workDir);
     workDir = null;
   }
 };
 process.on("exit", cleanup);
-process.on("SIGINT", () => { cleanup(); process.exit(130); });
-process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+for (const [sig, code] of [["SIGHUP", 129], ["SIGINT", 130], ["SIGQUIT", 131], ["SIGTERM", 143]]) {
+  process.on(sig, () => { killChildren(); cleanup(); process.exit(code); });
+}
 
 function parseArgs(argv) {
   const o = { ci: false, showNoise: false, tarball: null, mcpb: null, dir: null, help: false };
@@ -194,29 +195,40 @@ function listTarball(raw, rules) {
   refuseListing("tarball", checkTarEntries(entries), rules);
   return entries.map((e) => e.name);
 }
-function extractTarball(raw, dest) {
+// Test hook (SHYN_GATE_TEST_DELAY_MS): the child sleeps that long before it
+// starts its real work, so a signal can be sent while a child is alive.
+function hooked(cmd, args) {
+  const ms = Number(process.env.SHYN_GATE_TEST_DELAY_MS) || 0;
+  if (!ms) return [cmd, args];
+  return ["/bin/sh", ["-c", 'sleep "$1"; shift; exec "$@"', "sh", String(ms / 1000), cmd, ...args]];
+}
+async function child(step, cmd, args, failMsg) {
+  const [c, a] = hooked(cmd, args);
+  let r;
+  try { r = await runChild(c, a); } catch (e) {
+    throw new Exit(1, e.message === "timed out" ? `${step} timed out` : `${failMsg}: ${firstLine(e)}`);
+  }
+  if (r.code !== 0) throw new Exit(1, `${failMsg}: ${firstLine({ message: r.stderr.toString("utf8").trim() || `exit ${r.code}` })}`);
+  return r;
+}
+async function extractTarball(raw, dest) {
   mkdirSync(dest, { recursive: true });
-  try {
-    execFileSync(TAR, ["-xf", raw, "--no-mac-metadata", "--no-xattrs", "--no-acls", "--no-fflags", "-C", dest],
-      { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28 });
-  } catch (e) { throw new Exit(1, `extracting tarball failed: ${firstLine(e)}`); }
+  console.log("extracting tarball");
+  await child("extracting tarball", TAR, ["-xf", raw, "--no-mac-metadata", "--no-xattrs", "--no-acls", "--no-fflags", "-C", dest],
+    "extracting tarball failed");
 }
 
 // mcpb (zip) steps: list names, extract.
-function listMcpb(file, rules) {
-  let names;
-  try {
-    names = execFileSync(UNZIP, ["-Z1", file], { encoding: "utf8", maxBuffer: 1 << 29, stdio: ["ignore", "pipe", "pipe"] })
-      .split("\n").filter(Boolean);
-  } catch (e) { throw new Exit(1, `cannot list mcpb entries: ${firstLine(e)}`); }
+async function listMcpb(file, rules) {
+  const r = await child("listing mcpb", UNZIP, ["-Z1", file], "cannot list mcpb entries");
+  const names = r.stdout.toString("utf8").split("\n").filter(Boolean);
   refuseListing("mcpb", checkZipNames(names), rules);
   return names;
 }
-function extractMcpb(file, dest) {
+async function extractMcpb(file, dest) {
   mkdirSync(dest, { recursive: true });
-  try {
-    execFileSync(UNZIP, ["-q", file, "-d", dest], { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28 });
-  } catch (e) { throw new Exit(1, `extracting mcpb failed: ${firstLine(e)}`); }
+  console.log("extracting mcpb");
+  await child("extracting mcpb", UNZIP, ["-q", file, "-d", dest], "extracting mcpb failed");
 }
 function verifyTree(kind, root, names) {
   const problems = compareTree(root, names);
@@ -341,7 +353,7 @@ async function main() {
       const raw = join(workDir, "tarball.raw.tar");
       await gunzipTarball(t.path, raw);
       const names = listTarball(raw, rules);
-      extractTarball(raw, root);
+      await extractTarball(raw, root);
       verifyTree("tarball", root, names);
       await scanRaw(raw, "tarball-raw");
       rmSync(raw, { force: true });
@@ -359,8 +371,8 @@ async function main() {
       rmSync(hdrFile, { force: true });
     } else if (t.kind === "mcpb") {
       root = join(workDir, t.kind);
-      const names = listMcpb(t.path, rules);
-      extractMcpb(t.path, root);
+      const names = await listMcpb(t.path, rules);
+      await extractMcpb(t.path, root);
       verifyTree("mcpb", root, names);
       await scanRaw(t.path, "mcpb-raw");
     }
