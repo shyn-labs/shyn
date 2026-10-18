@@ -7,7 +7,8 @@ import { spawn, spawnSync, execFileSync } from "node:child_process";
 import {
   chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
@@ -39,11 +40,16 @@ const allow = (name: string, ...lines: string[]) => {
 // to the owner's real ~/.config/shyn files (a test below enforces it).
 // SHYN_ALLOWED_AUTHORITIES is deliberately NOT set (unset means the default
 // "Shyn Dev"); tests that need a value pass it explicitly.
-const baseEnv = (extra: Record<string, string> = {}) => ({
-  ...process.env, CI: "", SHYN_GATE_USERNAME: NAME, SHYN_LEAK_DENYLIST: D0(),
-  SHYN_DIST_DIR: emptyDist, SHYN_ARTIFACT_ALLOW: join(base, "no-allowlist.txt"),
-  SHYN_CODESIGN: shimPath, FAKE_CODESIGN_DIR: codesignDir, ...extra,
-});
+// `drop` removes keys after `extra` is applied (a --release run must not have the override vars at all).
+const baseEnv = (extra: Record<string, string> = {}, drop: string[] = []) => {
+  const env: Record<string, string | undefined> = {
+    ...process.env, CI: "", SHYN_GATE_USERNAME: NAME, SHYN_LEAK_DENYLIST: D0(),
+    SHYN_DIST_DIR: emptyDist, SHYN_ARTIFACT_ALLOW: join(base, "no-allowlist.txt"),
+    SHYN_CODESIGN: shimPath, FAKE_CODESIGN_DIR: codesignDir, ...extra,
+  };
+  for (const k of drop) delete env[k];
+  return env as Record<string, string>;
+};
 
 const run = (args: string[], env: Record<string, string> = {}) => {
   const r = spawnSync("node", [SCRIPT, ...args], { cwd: ROOT, encoding: "utf8", timeout: 25_000, env: baseEnv(env) });
@@ -675,4 +681,95 @@ describe("check-artifact-leaks", () => {
       expect(spawnSync("pgrep", ["-f", `${PREFIX}.*tarball.raw.tar`]).status).not.toBe(0);
     } finally { child.kill("SIGKILL"); }
   }, 30_000);
+
+  // ---- --release mode, notices, warnings, sha256, release.sh refusals -----------------
+  // A --release run: no override vars at all, and a HOME holding a synthetic denylist at the default location.
+  const OVERRIDES = ["SHYN_LEAK_DENYLIST", "SHYN_ARTIFACT_ALLOW"];
+  const runRelease = (args: string[], extra: Record<string, string> = {}, keep: string[] = []) => {
+    const home = mkdtempSync(join(base, "home-"));
+    mkdirSync(join(home, ".config/shyn"), { recursive: true });
+    writeFileSync(join(home, ".config/shyn/leak-denylist.txt"), "# synthetic\nacme-secret\n");
+    const r = spawnSync("node", [SCRIPT, ...args], {
+      cwd: ROOT, encoding: "utf8", timeout: 25_000,
+      env: baseEnv({ HOME: home, ...extra }, OVERRIDES.filter((k) => !keep.includes(k))),
+    });
+    return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? "") };
+  };
+
+  it("--release with a clean environment scans with the default denylist location", () => {
+    const ok = runRelease(["--release", "--tarball", tarOf("rel-ok.tar.gz", { "a.txt": "x\n" })]);
+    expect(ok.code).toBe(0);
+    expect(ok.out).toMatch(/denylist: 1 term/);
+    expect(ok.out).not.toMatch(/^NOTICE/m);
+    expect(runRelease(["--release", "--tarball", tarOf("rel-hit.tar.gz", { "a.txt": "acme-secret\n" })]).code).toBe(1);
+  });
+
+  it("--release refuses overrides (even empty), --ci and a runner home, naming only the variable", () => {
+    const tb = tarOf("rel-x.tar.gz", { "a.txt": "x\n" });
+    for (const [k, v] of [["SHYN_LEAK_DENYLIST", ""], ["SHYN_LEAK_DENYLIST", join(base, "zq7-o.txt")], ["SHYN_ARTIFACT_ALLOW", ""]]) {
+      const r = runRelease(["--release", "--tarball", tb], { [k]: v }, [k]);
+      expect(r.code).toBe(2);
+      expect(r.out).toContain(k);
+      if (v) expect(r.out).not.toContain(v);
+      expect(r.out).not.toMatch(/^scanning/m);
+    }
+    expect(runRelease(["--release", "--ci", "--tarball", tb]).code).toBe(2);
+    expect(runRelease(["--release", "--tarball", tb], { HOME: "/Users/runner" }).code).toBe(2);
+  });
+
+  it("prints notices outside --release, test-hook warnings (names only) and sha256 lines", () => {
+    const tb = tarOf("notice.tar.gz", { "a.txt": "x\n" });
+    const r = run(["--tarball", tb]);
+    expect(r.code).toBe(0);
+    const lines = r.out.split("\n");
+    expect(lines).toContain("NOTICE: SHYN_LEAK_DENYLIST overrides the default");
+    for (const h of ["SHYN_CODESIGN", "SHYN_GATE_USERNAME"]) expect(lines).toContain(`WARNING: test override active: ${h}`);
+    expect(r.out).not.toContain(NAME);
+    const want = createHash("sha256").update(readFileSync(tb)).digest("hex");
+    expect(lines).toContain(`sha256: ${want}`);
+  });
+
+  // release.sh: only the early refusals are exercised, on a COPY in a temp dir that is not a git repo,
+  // with PATH limited to /usr/bin:/bin so no real gh/pnpm can ever be reached.
+  const RELEASE_SH = join(ROOT, "scripts/release.sh");
+  const runReleaseSh = (env: Record<string, string>) => {
+    const d = mkdtempSync(join(base, "relsh-"));
+    mkdirSync(join(d, "scripts"));
+    writeFileSync(join(d, "scripts/release.sh"), readFileSync(RELEASE_SH));
+    const realHome = execFileSync("/usr/bin/dscl", [".", "-read", `/Users/${userInfo().username}`, "NFSHomeDirectory"], { encoding: "utf8" })
+      .replace(/^NFSHomeDirectory: /, "").trim();
+    const r = spawnSync("/bin/bash", [join(d, "scripts/release.sh"), "9.9.9-test", "--no-publish"], {
+      cwd: d, encoding: "utf8", timeout: 25_000, env: { PATH: "/usr/bin:/bin", HOME: realHome, ...env },
+    });
+    return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? "") };
+  };
+
+  it("release.sh refuses a weakening environment before anything else runs", () => {
+    const startup = join(base, "startup.sh");
+    writeFileSync(startup, "env() { return 0; }\n");
+    const cases: [Record<string, string>, RegExp][] = [
+      [{ BASH_ENV: startup }, /BASH_ENV, ENV or an exported shell function/],
+      [{ "BASH_FUNC_env%%": "() { return 0; }" }, /BASH_ENV, ENV or an exported shell function/],
+      [{ NODE_OPTIONS: "--require /nonexistent.js" }, /NODE_OPTIONS/],
+      [{ SHYN_LEAK_DENYLIST: "" }, /SHYN_LEAK_DENYLIST/],
+      [{ SHYN_ARTIFACT_ALLOW: "x" }, /SHYN_ARTIFACT_ALLOW/],
+      [{ HOME: "/Users/runner" }, /HOME/],
+      [{ HOME: base }, /HOME/],
+      [{ SHYN_ALLOWED_AUTHORITIES: " , " }, /SHYN_ALLOWED_AUTHORITIES/],
+      [{ SHYN_CODESIGN_IDENTITY: "Neutral Test Identity" }, /SHYN_CODESIGN_IDENTITY.*SHYN_ALLOWED_AUTHORITIES/],
+    ];
+    for (const [env, msg] of cases) {
+      const r = runReleaseSh(env);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(msg);
+      expect(r.out).not.toMatch(/== gates ==|tag-target/);
+    }
+    // a clean environment gets past the refusals (and then stops at the git check in the non-repo copy)
+    expect(runReleaseSh({}).out).toMatch(/tag-target safety checks/);
+  });
+
+  it("release.sh runs the gate with --release and strips the test hooks", () => {
+    const src = readFileSync(RELEASE_SH, "utf8");
+    expect(src).toMatch(/\/usr\/bin\/env -u SHYN_CODESIGN -u SHYN_GATE_USERNAME -u SHYN_GATE_TEST_DELAY_MS \\\n\s+node scripts\/check-artifact-leaks\.mjs --release /);
+  });
 });

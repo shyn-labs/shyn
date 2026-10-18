@@ -38,8 +38,9 @@
 // entry's index in the file) and never prints the builder's username, home or
 // checkout path (shown as <username>, <home>, <checkout>).
 
+import { createHash } from "node:crypto";
 import {
-  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -50,6 +51,11 @@ import {
   TAR, UNZIP, checkTarEntries, checkZipNames, compareTree, forceRm, gunzipToFile, gzipHeaderFields, killChildren, listTar, runChild,
 } from "./lib/archive.mjs";
 import { allowedAuthorities, checkSigning, codesignPath, discoverCode } from "./lib/signing.mjs";
+
+// Test hooks (they replace the signing tool, the builder name or add delays): always announced, name only.
+const TEST_HOOKS = ["SHYN_CODESIGN", "SHYN_GATE_USERNAME", "SHYN_GATE_TEST_DELAY_MS"];
+// Files that change what the gate checks: refused in --release, announced otherwise.
+const CONFIG_OVERRIDES = ["SHYN_LEAK_DENYLIST", "SHYN_ARTIFACT_ALLOW"];
 
 const HELP = `usage: node scripts/check-artifact-leaks.mjs [options]
 
@@ -71,6 +77,10 @@ options:
                     needle and an existing denylist still apply. The same
                     happens automatically when the home dir is /Users/runner.
                     Without --ci a missing denylist is a failure.
+  --release         strict mode for a real release (scripts/release.sh uses it): exit 2, scanning
+                    nothing, if SHYN_LEAK_DENYLIST or SHYN_ARTIFACT_ALLOW is set (even empty), if
+                    --ci is passed, or if the home dir is /Users/runner. Without --release each
+                    non-empty override and the runner heuristic print a NOTICE.
   --show-noise      also list the files that contained ignored binary noise
                     (file names only, never terms)
   -h, --help        this text
@@ -82,7 +92,7 @@ environment:
                            one entry per line: <glob relative to the extraction root>|<term>
                            (* and **; the last path segment must be literal; the term must equal a
                            denylist line). Matching hits are reported as allowlisted, not failures.
-  SHYN_GATE_USERNAME       override the builder username needle (tests)
+  SHYN_GATE_USERNAME       override the builder username needle (test hook, WARNING printed)
   SHYN_DIST_DIR            where the default targets are looked up (default: dist/)
   SHYN_GATE_TEST_DELAY_MS  test hook: sleep this long per scanned file, and before each
                            extraction child does its work (so a signal can hit a live child)
@@ -113,7 +123,9 @@ signing policy (every bundle directory and Mach-O file, checked with codesign):
   always printed as <email>.
   SHYN_ALLOWED_AUTHORITIES  comma separated, exact names; empty is a usage error;
                             when set, a count-only NOTICE is printed
-  SHYN_CODESIGN             codesign binary (default /usr/bin/codesign; test hook)
+  SHYN_CODESIGN             codesign binary (default /usr/bin/codesign; test hook, WARNING printed)
+
+output: every archive target also prints "sha256: <hex>" of the copy the gate extracted
 
 exit codes: 0 clean, 1 hits / unreadable files / denylist or signing problem, 2 usage error
 `;
@@ -162,11 +174,12 @@ for (const [sig, code] of [["SIGHUP", 129], ["SIGINT", 130], ["SIGQUIT", 131], [
 }
 
 function parseArgs(argv) {
-  const o = { ci: false, showNoise: false, tarball: null, mcpb: null, dir: null, help: false };
+  const o = { ci: false, release: false, showNoise: false, tarball: null, mcpb: null, dir: null, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") o.help = true;
     else if (a === "--ci") o.ci = true;
+    else if (a === "--release") o.release = true;
     else if (a === "--show-noise") o.showNoise = true;
     else if (a === "--tarball" || a === "--mcpb" || a === "--dir") {
       const v = argv[++i];
@@ -260,6 +273,16 @@ async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) { process.stdout.write(HELP); return; }
 
+  // --- release mode: refuse anything that weakens the gate, before any scan ---
+  const runner = homedir() === "/Users/runner";
+  if (opts.release) {
+    for (const v of CONFIG_OVERRIDES) {
+      if (process.env[v] !== undefined) throw new Exit(2, `--release: ${v} is set; a release is gated with the default denylist and allowlist only (unset it)`);
+    }
+    if (opts.ci) throw new Exit(2, "--release: --ci is not allowed (a release needs the private denylist)");
+    if (runner) throw new Exit(2, "--release: the home dir is the GitHub runner home; a release is gated from the owner's machine");
+  }
+
   // --- targets --------------------------------------------------------------
   const explicit = opts.tarball || opts.mcpb || opts.dir;
   const targets = [];
@@ -280,7 +303,6 @@ async function main() {
   if (!targets.length) throw new Exit(2, "no targets: build first (dist/release/shyn-v*-darwin-arm64.tar.gz, dist/shyn.mcpb) or pass --tarball/--mcpb/--dir");
 
   // --- needles and denylist --------------------------------------------------
-  const runner = homedir() === "/Users/runner";
   const ciMode = opts.ci || runner;
   let needles = builderNeedles({ env: process.env });
   if (ciMode) needles = needles.filter((n) => n.label === "checkout");
@@ -326,6 +348,11 @@ async function main() {
     + (ciMode && !opts.ci ? " (GitHub runner home detected: home and username dropped)" : "")
     + (opts.ci ? " (--ci: home and username dropped)" : ""));
   console.log(denylistNote);
+  if (!opts.release) {
+    for (const v of CONFIG_OVERRIDES) if (process.env[v]) console.log(`NOTICE: ${v} overrides the default`);
+    if (runner) console.log("NOTICE: CI mode on (GitHub runner home detected)");
+  }
+  for (const v of TEST_HOOKS) if (process.env[v] !== undefined) console.log(`WARNING: test override active: ${v}`);
   if (process.env.SHYN_ALLOWED_AUTHORITIES !== undefined) {
     console.log(`NOTICE: signing authorities set by SHYN_ALLOWED_AUTHORITIES (${allowedAuth.length} entries)`);
   } else console.log(`signing: allowed authorities: ${allowedAuth.join(", ")}`);
@@ -393,10 +420,18 @@ async function main() {
       if (res.kind) kinds[res.kind]++;
     }
   };
-  for (const t of targets) {
+  for (const target of targets) {
+    let t = target;
     currentLabel = t.kind;
     let root = t.path;
     console.log(`scanning ${t.kind}: ${san(t.path)}`);
+    if (t.kind !== "dir") {
+      // Hash and extract the SAME bytes: work from a private copy, so the printed digest is that of what was scanned.
+      const copy = join(workDir, `${t.kind}.input`);
+      copyFileSync(t.path, copy);
+      console.log(`sha256: ${createHash("sha256").update(readFileSync(copy)).digest("hex")}`);
+      t = { ...t, path: copy };
+    }
     if (t.kind === "tarball") {
       root = join(workDir, t.kind);
       const raw = join(workDir, "tarball.raw.tar");

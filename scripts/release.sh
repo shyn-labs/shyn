@@ -9,6 +9,39 @@ fi
 
 cd "$(dirname "$0")/.."
 
+# Environment that could weaken the leak gate or replace the commands that decide a release is refused before
+# anything runs (names only, never values). node itself stays PATH-resolved: the whole build uses the same node.
+if [[ -n "${BASH_ENV+set}${ENV+set}" || -n "$(builtin declare -F)" ]]; then
+  echo "release.sh: BASH_ENV, ENV or an exported shell function is set; they can replace the commands that decide the release; unset them" >&2; exit 1
+fi
+if [[ -n "${NODE_OPTIONS+set}" ]]; then
+  echo "release.sh: NODE_OPTIONS is set; it can load code into the build and the leak gate; unset it" >&2; exit 1
+fi
+for var in SHYN_LEAK_DENYLIST SHYN_ARTIFACT_ALLOW; do
+  if [[ -n "${!var+set}" ]]; then
+    echo "release.sh: $var is set: a release is gated with the owner's default denylist and allowlist only; unset it" >&2; exit 1
+  fi
+done
+REAL_HOME="$(/usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" NFSHomeDirectory 2>/dev/null | /usr/bin/sed -n 's/^NFSHomeDirectory: //p')"
+if [[ "${HOME-}" == /Users/runner || -z "$REAL_HOME" || "${HOME-}" != "$REAL_HOME" ]]; then
+  echo "release.sh: HOME is not this user's home dir (the gate reads its denylist, allowlist and home needle from it); release from the owner's machine with the real HOME" >&2; exit 1
+fi
+ALLOWED=("Shyn Dev")
+if [[ -n "${SHYN_ALLOWED_AUTHORITIES+set}" ]]; then
+  ALLOWED=()
+  IFS=',' read -r -a _parts <<< "$SHYN_ALLOWED_AUTHORITIES"
+  for p in "${_parts[@]}"; do p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"; [[ -n "$p" ]] && ALLOWED+=("$p"); done
+  if [[ ${#ALLOWED[@]} -eq 0 ]]; then
+    echo "release.sh: SHYN_ALLOWED_AUTHORITIES is set but has no entries; unset it or list identities" >&2; exit 1
+  fi
+  echo "NOTICE: signing authorities set by SHYN_ALLOWED_AUTHORITIES (${#ALLOWED[@]} entries)"
+fi
+IDENT="${SHYN_CODESIGN_IDENTITY:-Shyn Dev}"
+ok=0; for a in "${ALLOWED[@]}"; do [[ "$a" == "$IDENT" ]] && ok=1; done
+if [[ $ok -ne 1 ]]; then
+  echo "release.sh: the signing identity from SHYN_CODESIGN_IDENTITY is not in SHYN_ALLOWED_AUTHORITIES (unset means \"Shyn Dev\"); refusing before building" >&2; exit 1
+fi
+
 echo "== tag-target safety checks =="
 # A dirty tree or an unpushed HEAD would let `gh release create` tag a commit
 # that isn't the one actually reviewed/built here — e.g. the v0.2.0-alpha
@@ -43,8 +76,10 @@ pnpm build:release
 TARBALL=$(ls dist/release/shyn-v*-darwin-arm64.tar.gz)
 [[ "$TARBALL" == *"shyn-v${V}-darwin-arm64"* ]] || { echo "version mismatch: arg v${V} vs built $(basename "$TARBALL") — bump package versions first"; exit 1; }
 # Scan what actually ships (extracted tarball + .mcpb) for the builder's identity and the private denylist, before anything can be published (dry runs too).
-node scripts/check-artifact-leaks.mjs --tarball "$TARBALL" --mcpb dist/shyn.mcpb || { echo "release.sh: artifact leak scan failed: not publishing" >&2; exit 1; }
-SHA256="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
+/usr/bin/env -u SHYN_CODESIGN -u SHYN_GATE_USERNAME -u SHYN_GATE_TEST_DELAY_MS \
+  node scripts/check-artifact-leaks.mjs --release --tarball "$TARBALL" --mcpb dist/shyn.mcpb \
+  || { echo "release.sh: artifact leak scan failed: not publishing" >&2; exit 1; }
+SHA256="$(/usr/bin/shasum -a 256 "$TARBALL" | /usr/bin/awk '{print $1}')"
 echo "$SHA256  $TARBALL"
 
 # The tap repo slug lives HERE and only here (spec: one-string org migration).

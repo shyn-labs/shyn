@@ -47,20 +47,58 @@ without cutting the GitHub release, for a dry-run.
 - [ ] **Artifact leak scan.** `node scripts/check-artifact-leaks.mjs`
       extracts the built tarball and `.mcpb` and scans the contents of
       every file, the raw archive streams (owner names, path names, link
-      targets, headers) and every extracted path and symlink target for the
-      builder's username, home dir and checkout path (anywhere, exact) plus
-      every term of the private denylist
+      targets, headers), the gzip header and every extracted path and
+      symlink target for the builder's username, home dir and checkout
+      path (anywhere, exact) plus every term of the private denylist
       (`~/.config/shyn/leak-denylist.txt`, kept OUTSIDE this repo on
       purpose; whole words, and inside binaries only within a run of 6+
       printable bytes, shorter matches are counted as "ignored binary
-      noise"). An empty denylist or an empty archive fails. The tarball is
-      built with a fixed owner `shyn:staff` and without xattrs, so the
-      builder's name is not in its headers. `scripts/release.sh` runs the
-      scan and any hit aborts the release; fix the source of the hit and
-      rebuild, never edit the scan. Vendored third-party coincidences go in
-      the owner allowlist (`~/.config/shyn/artifact-leak-allow.txt`), also
-      outside the repo. On a CI runner pass `--ci` (no private files there,
-      home/username needles dropped).
+      noise"). An empty denylist or an empty archive fails, and an archive
+      whose listing is ambiguous (duplicates, devices, fifos, entries below
+      a symlink, a tree that differs from its listing) is refused, not
+      partially scanned. Any hit aborts the release; fix the source of the
+      hit and rebuild, never edit the scan. Vendored third-party
+      coincidences go in the owner allowlist
+      (`~/.config/shyn/artifact-leak-allow.txt`), also outside the repo.
+      - **Signing policy.** Every code item (bundle directory or Mach-O
+        file) must pass `codesign --verify --strict` and be one of three
+        kinds: signed by an allowed identity (`SHYN_ALLOWED_AUTHORITIES`,
+        comma separated, default `Shyn Dev`, the only authority and no
+        team id); a pinned third-party signer (the list
+        `THIRD_PARTY_SIGNERS` in `scripts/lib/signing.mjs`, today the
+        vendored Node runtime); or an ad-hoc signed file (never an ad-hoc
+        bundle). A tarball must contain at least one `.app`. Identities of
+        anything not allowed are printed as `<redacted>`.
+      - **`--release`.** `scripts/release.sh` runs the gate with
+        `--release`: the gate then exits 2 without scanning if
+        `SHYN_LEAK_DENYLIST` or `SHYN_ARTIFACT_ALLOW` is set (even empty),
+        if `--ci` is passed, or if the home dir is `/Users/runner`.
+        Without `--release` the gate prints a `NOTICE` for each override
+        and for CI mode, and a `WARNING: test override active: <NAME>` for
+        each test hook (`SHYN_CODESIGN`, `SHYN_GATE_USERNAME`,
+        `SHYN_GATE_TEST_DELAY_MS`); `release.sh` strips the hooks. On a CI
+        runner pass `--ci` (no private files there, home/username needles
+        dropped), never with `--release`.
+      - **`release.sh` refusals.** Before any build step or git check it
+        refuses (exit 1, naming the variable only): `BASH_ENV`, `ENV` or
+        any shell function defined; `NODE_OPTIONS`; the two override
+        variables; a `HOME` that is not the account's real home directory
+        (or is `/Users/runner`); an empty `SHYN_ALLOWED_AUTHORITIES`; and a
+        signing identity (`SHYN_CODESIGN_IDENTITY`, default `Shyn Dev`) that
+        is not in the allowed list. A non-empty `SHYN_ALLOWED_AUTHORITIES`
+        prints a count-only `NOTICE`.
+      - **Accepted risk: PATH `node`.** The gate runs under the same
+        PATH-resolved `node` as the whole build; a hostile `node` on PATH
+        would defeat every check, so release from a clean shell.
+      - **sha256.** The gate prints `sha256: <hex>` for the tarball and
+        the `.mcpb`, computed from the private copy it extracted.
+        `release.sh` prints the tarball's `shasum -a 256`; confirm the two
+        match before publishing.
+      - **Denylist syntax.** The denylist is shared with a Python gate, so
+        every line must be a regex valid in BOTH JavaScript and Python
+        `re`. There is no dialect validator.
+      - **ReDoS.** Denylist lines are the owner's own regexes; keep them
+        simple literals. Nested quantifiers can make a scan hang.
 - [ ] **Tag.** `git tag vX.Y.Z && git push --tags` once the above are all
       green and the version bump is committed. Write a short tag message
       summarizing what shipped (new readers, new commands, fixed bugs) —
