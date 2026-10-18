@@ -719,11 +719,11 @@ describe("check-artifact-leaks", () => {
 
   it("prints notices outside --release, test-hook warnings (names only) and sha256 lines", () => {
     const tb = tarOf("notice.tar.gz", { "a.txt": "x\n" });
-    const r = run(["--tarball", tb]);
+    const r = run(["--tarball", tb], { SHYN_GATE_TEST_DELAY_MS: "1" });
     expect(r.code).toBe(0);
     const lines = r.out.split("\n");
     expect(lines).toContain("NOTICE: SHYN_LEAK_DENYLIST overrides the default");
-    for (const h of ["SHYN_CODESIGN", "SHYN_GATE_USERNAME"]) expect(lines).toContain(`WARNING: test override active: ${h}`);
+    for (const h of ["SHYN_CODESIGN", "SHYN_GATE_USERNAME", "SHYN_GATE_TEST_DELAY_MS"]) expect(lines).toContain(`WARNING: test override active: ${h}`);
     expect(r.out).not.toContain(NAME);
     const want = createHash("sha256").update(readFileSync(tb)).digest("hex");
     expect(lines).toContain(`sha256: ${want}`);
@@ -750,11 +750,14 @@ describe("check-artifact-leaks", () => {
     const cases: [Record<string, string>, RegExp][] = [
       [{ BASH_ENV: startup }, /BASH_ENV, ENV or an exported shell function/],
       [{ "BASH_FUNC_env%%": "() { return 0; }" }, /BASH_ENV, ENV or an exported shell function/],
+      [{ "BASH_FUNC_builtin%%": "() { :; }" }, /BASH_ENV, ENV or an exported shell function/],
+      [{ "BASH_FUNC_git%%": "() { :; }" }, /BASH_ENV, ENV or an exported shell function/],
       [{ NODE_OPTIONS: "--require /nonexistent.js" }, /NODE_OPTIONS/],
       [{ SHYN_LEAK_DENYLIST: "" }, /SHYN_LEAK_DENYLIST/],
       [{ SHYN_ARTIFACT_ALLOW: "x" }, /SHYN_ARTIFACT_ALLOW/],
       [{ HOME: "/Users/runner" }, /HOME/],
       [{ HOME: base }, /HOME/],
+      [{ SHYN_ALLOWED_AUTHORITIES: "" }, /SHYN_ALLOWED_AUTHORITIES.*no entries/],
       [{ SHYN_ALLOWED_AUTHORITIES: " , " }, /SHYN_ALLOWED_AUTHORITIES/],
       [{ SHYN_CODESIGN_IDENTITY: "Neutral Test Identity" }, /SHYN_CODESIGN_IDENTITY.*SHYN_ALLOWED_AUTHORITIES/],
     ];

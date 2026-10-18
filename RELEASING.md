@@ -92,8 +92,10 @@ without cutting the GitHub release, for a dry-run.
         would defeat every check, so release from a clean shell.
       - **sha256.** The gate prints `sha256: <hex>` for the tarball and
         the `.mcpb`, computed from the private copy it extracted.
-        `release.sh` prints the tarball's `shasum -a 256`; confirm the two
-        match before publishing.
+        `release.sh` then prints the sha256 of the tarball it publishes.
+        Both lines appear in the same run's output, so compare them
+        afterwards (or run with `--no-publish` first); `release.sh` does
+        not pause or compare them itself.
       - **Denylist syntax.** The denylist is shared with a Python gate, so
         every line must be a regex valid in BOTH JavaScript and Python
         `re`. There is no dialect validator.

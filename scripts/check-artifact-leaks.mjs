@@ -40,7 +40,7 @@
 
 import { createHash } from "node:crypto";
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+  copyFileSync, createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -56,6 +56,11 @@ import { allowedAuthorities, checkSigning, codesignPath, discoverCode } from "./
 const TEST_HOOKS = ["SHYN_CODESIGN", "SHYN_GATE_USERNAME", "SHYN_GATE_TEST_DELAY_MS"];
 // Files that change what the gate checks: refused in --release, announced otherwise.
 const CONFIG_OVERRIDES = ["SHYN_LEAK_DENYLIST", "SHYN_ARTIFACT_ALLOW"];
+
+const sha256Of = (file) => new Promise((res, rej) => {
+  const h = createHash("sha256");
+  createReadStream(file).on("data", (c) => h.update(c)).on("error", rej).on("end", () => res(h.digest("hex")));
+});
 
 const HELP = `usage: node scripts/check-artifact-leaks.mjs [options]
 
@@ -429,7 +434,7 @@ async function main() {
       // Hash and extract the SAME bytes: work from a private copy, so the printed digest is that of what was scanned.
       const copy = join(workDir, `${t.kind}.input`);
       copyFileSync(t.path, copy);
-      console.log(`sha256: ${createHash("sha256").update(readFileSync(copy)).digest("hex")}`);
+      console.log(`sha256: ${await sha256Of(copy)}`);
       t = { ...t, path: copy };
     }
     if (t.kind === "tarball") {

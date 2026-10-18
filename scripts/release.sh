@@ -7,11 +7,9 @@ if [[ "${2:-}" == "--no-publish" ]]; then
   NO_PUBLISH=1
 fi
 
-cd "$(dirname "$0")/.."
-
 # Environment that could weaken the leak gate or replace the commands that decide a release is refused before
-# anything runs (names only, never values). node itself stays PATH-resolved: the whole build uses the same node.
-if [[ -n "${BASH_ENV+set}${ENV+set}" || -n "$(builtin declare -F)" ]]; then
+# anything runs, so this block comes before any command a function could replace (names only, never values). node itself stays PATH-resolved: the whole build uses the same node.
+if [[ -n "${BASH_ENV+set}${ENV+set}" || -n "$(/usr/bin/env | /usr/bin/grep '^BASH_FUNC_' || true)" ]]; then
   echo "release.sh: BASH_ENV, ENV or an exported shell function is set; they can replace the commands that decide the release; unset them" >&2; exit 1
 fi
 if [[ -n "${NODE_OPTIONS+set}" ]]; then
@@ -28,6 +26,9 @@ if [[ "${HOME-}" == /Users/runner || -z "$REAL_HOME" || "${HOME-}" != "$REAL_HOM
 fi
 ALLOWED=("Shyn Dev")
 if [[ -n "${SHYN_ALLOWED_AUTHORITIES+set}" ]]; then
+  if [[ -z "${SHYN_ALLOWED_AUTHORITIES//[[:space:],]/}" ]]; then
+    echo "release.sh: SHYN_ALLOWED_AUTHORITIES is set but has no entries; unset it or list identities" >&2; exit 1
+  fi
   ALLOWED=()
   IFS=',' read -r -a _parts <<< "$SHYN_ALLOWED_AUTHORITIES"
   for p in "${_parts[@]}"; do p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"; [[ -n "$p" ]] && ALLOWED+=("$p"); done
@@ -41,6 +42,8 @@ ok=0; for a in "${ALLOWED[@]}"; do [[ "$a" == "$IDENT" ]] && ok=1; done
 if [[ $ok -ne 1 ]]; then
   echo "release.sh: the signing identity from SHYN_CODESIGN_IDENTITY is not in SHYN_ALLOWED_AUTHORITIES (unset means \"Shyn Dev\"); refusing before building" >&2; exit 1
 fi
+
+CDPATH= cd -- "$(/usr/bin/dirname -- "$0")/.."
 
 echo "== tag-target safety checks =="
 # A dirty tree or an unpushed HEAD would let `gh release create` tag a commit
