@@ -2,7 +2,7 @@
 // against SYNTHETIC artifacts in temp dirs. The builder's username comes from
 // SHYN_GATE_USERNAME and the denylist from a temp file via SHYN_LEAK_DENYLIST,
 // so no real identity, name or domain appears in this file.
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import {
   chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync,
@@ -19,6 +19,8 @@ const NAME = "builder-zq7";
 
 let base: string;
 let emptyDist: string;
+let codesignDir: string;
+let shimPath: string;
 const deny = (name: string, ...terms: string[]) => {
   const p = join(base, name);
   writeFileSync(p, `# synthetic denylist\n${terms.join("\n")}\n`);
@@ -35,9 +37,12 @@ const allow = (name: string, ...lines: string[]) => {
 // The ONE place that builds the environment of every spawned gate process:
 // synthetic builder name, temp denylist, temp allowlist. Nothing may fall back
 // to the owner's real ~/.config/shyn files (a test below enforces it).
+// SHYN_ALLOWED_AUTHORITIES is deliberately NOT set (unset means the default
+// "Shyn Dev"); tests that need a value pass it explicitly.
 const baseEnv = (extra: Record<string, string> = {}) => ({
   ...process.env, CI: "", SHYN_GATE_USERNAME: NAME, SHYN_LEAK_DENYLIST: D0(),
-  SHYN_DIST_DIR: emptyDist, SHYN_ARTIFACT_ALLOW: join(base, "no-allowlist.txt"), ...extra,
+  SHYN_DIST_DIR: emptyDist, SHYN_ARTIFACT_ALLOW: join(base, "no-allowlist.txt"),
+  SHYN_CODESIGN: shimPath, FAKE_CODESIGN_DIR: codesignDir, ...extra,
 });
 
 const run = (args: string[], env: Record<string, string> = {}) => {
@@ -89,10 +94,37 @@ const rawTarOf = (name: string, entries: { name: string; type?: string; body?: s
 };
 const gateDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith(PREFIX));
 
+// Fake codesign: --verify exits FAKE_CODESIGN_VERIFY_RC (default 0); -dvv prints
+// $FAKE_CODESIGN_DIR/<basename>.dvv (or default.dvv) to stderr; anything else exits 1.
+const SHIM = `#!/bin/sh
+for a; do last="$a"; done
+case "$1" in
+  --verify) exit "\${FAKE_CODESIGN_VERIFY_RC:-0}" ;;
+  -dvv) f="$FAKE_CODESIGN_DIR/$(basename "$last").dvv"; [ -f "$f" ] || f="$FAKE_CODESIGN_DIR/default.dvv"; cat "$f" >&2; exit 0 ;;
+esac
+exit 1
+`;
+const DVV_SHYN = "Executable=/x\nIdentifier=t\nAuthority=Shyn Dev\nTeamIdentifier=not set\n";
+const DVV_ADHOC = "Executable=/x\nIdentifier=t\nSignature=adhoc\nTeamIdentifier=not set\n";
+const DVV_NODE = "Executable=/x\nAuthority=Developer ID Application: Node.js Foundation (HX7739G8FX)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTeamIdentifier=HX7739G8FX\n";
+const DVV_PERSONAL = "Executable=/x\nAuthority=Apple Development: sam-zq7@example.com (QQ7ZQ7ZQ7Z)\nAuthority=Apple Worldwide Developer Relations Certification Authority\nAuthority=Apple Root CA\nTeamIdentifier=ZQ7ZQ7ZQ7Q\n";
+const MACHO = Buffer.concat([Buffer.from("cffaedfe", "hex"), Buffer.alloc(60)]);
+const dvv = (file: string, body: string) => writeFileSync(join(codesignDir, `${file}.dvv`), body);
+
 beforeAll(() => {
   base = mkdtempSync(join(tmpdir(), "shyn-leakgate-test-"));
   emptyDist = join(base, "empty-dist");
   mkdirSync(emptyDist);
+  codesignDir = join(base, "codesign");
+  mkdirSync(codesignDir);
+  shimPath = join(codesignDir, "codesign");
+  writeFileSync(shimPath, SHIM);
+  chmodSync(shimPath, 0o755);
+  dvv("default", DVV_SHYN);
+});
+afterEach(() => {
+  for (const f of readdirSync(codesignDir)) if (f.endsWith(".dvv")) rmSync(join(codesignDir, f));
+  dvv("default", DVV_SHYN);
 });
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 
@@ -175,6 +207,92 @@ describe("check-artifact-leaks", () => {
     expect(r.out).toMatch(/refusing mcpb: .*escape/);
   });
 
+
+  it("a clean app plus ad-hoc dylib plus the pinned Node runtime passes, with a signing summary", () => {
+    dvv("lib.dylib", DVV_ADHOC); dvv("shynd", DVV_NODE);
+    const tb = tarOf("sig-ok.tar.gz", { "Fake.app/Contents/MacOS/Fake": MACHO, "lib.dylib": MACHO, "bin/shynd": MACHO });
+    const { code, out } = run(["--tarball", tb]);
+    expect(code).toBe(0);
+    // Fake.app (bundle) + Fake.app/Contents/MacOS/Fake (default.dvv: Shyn Dev) + lib.dylib + bin/shynd
+    expect(out).toMatch(/^signing: 4 code items checked \(2 allowed identity, 1 pinned third party, 1 ad-hoc file\)/m);
+    expect(out).toMatch(/^OK: no builder identity, denylist term or disallowed signature in the artifacts/m);
+  });
+
+  it("personal identity on a nested dylib fails and prints nothing identifying", () => {
+    dvv("lib.dylib", DVV_PERSONAL);
+    const tb = tarOf("sig-personal.tar.gz", { "Fake.app/Contents/Frameworks/lib.dylib": MACHO });
+    const { code, out } = run(["--tarball", tb]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/signing: authority not allowed \(<redacted>\)/);
+    expect(out).toMatch(/signing: TeamIdentifier set \(<redacted>\)/);
+    for (const s of ["sam-zq7", "example.com", "QQ7ZQ7ZQ7Z", "ZQ7ZQ7ZQ7Q", "Apple Development:"]) expect(out).not.toContain(s);
+  });
+
+  it("an ad-hoc bundle, an unsigned item, a failed verify and a tarball without an app all fail", () => {
+    dvv("Fake.app", DVV_ADHOC);
+    expect(run(["--tarball", tarOf("sig-adhoc-app.tar.gz", {})]).out).toMatch(/signing: ad-hoc bundle/);
+    dvv("Fake.app", "Executable=/x\n");
+    expect(run(["--tarball", tarOf("sig-none.tar.gz", {})]).out).toMatch(/signing: no signing authority reported/);
+    dvv("Fake.app", DVV_SHYN);
+    const r = run(["--tarball", tarOf("sig-verify.tar.gz", {})], { FAKE_CODESIGN_VERIFY_RC: "3" });
+    expect(r.code).toBe(1); expect(r.out).toMatch(/signing: verification failed \(codesign exit 3\)/);
+    const n = run(["--tarball", tarOf("sig-noapp.tar.gz", { "a.txt": "x" }, { app: false })]);
+    expect(n.code).toBe(1); expect(n.out).toMatch(/no \.app in the tarball/);
+  });
+
+  it("a third-party identity that is not pinned fails; a pinned authority with another team fails", () => {
+    dvv("x.dylib", DVV_NODE.replace("Node.js Foundation (HX7739G8FX)", "Other Vendor (AB12CD34EF)").replace("TeamIdentifier=HX7739G8FX", "TeamIdentifier=AB12CD34EF"));
+    expect(run(["--tarball", tarOf("tp1.tar.gz", { "x.dylib": MACHO })]).code).toBe(1);
+    dvv("x.dylib", DVV_NODE.replace("TeamIdentifier=HX7739G8FX", "TeamIdentifier=AB12CD34EF"));
+    expect(run(["--tarball", tarOf("tp2.tar.gz", { "x.dylib": MACHO })]).code).toBe(1);
+  });
+
+  it("SHYN_ALLOWED_AUTHORITIES: empty is a usage error, a widened list prints a count-only notice", () => {
+    for (const v of ["", " ", ",", " , ,"]) expect(run(["--tarball", tarOf("aa.tar.gz", {})], { SHYN_ALLOWED_AUTHORITIES: v }).code).toBe(2);
+    dvv("Fake.app", DVV_SHYN.replace("Shyn Dev", "Neutral Test Identity"));
+    const r = run(["--tarball", tarOf("aa2.tar.gz", { "a.txt": "x" })], { SHYN_ALLOWED_AUTHORITIES: "Shyn Dev, Neutral Test Identity" });
+    expect(r.code).toBe(0);
+    expect(r.out.split("\n").filter((l) => l.startsWith("NOTICE: signing"))).toEqual(["NOTICE: signing authorities set by SHYN_ALLOWED_AUTHORITIES (2 entries)"]);
+    expect(r.out).not.toContain("Neutral Test Identity");
+    // unset: default list is printed, no notice
+    const d = run(["--tarball", tarOf("aa3.tar.gz", { "a.txt": "x" })]);
+    expect(d.out).toMatch(/^signing: allowed authorities: Shyn Dev$/m);
+    expect(d.out).not.toContain("NOTICE: signing");
+  });
+
+  it("a missing codesign fails closed; an mcpb without code passes; an mcpb with a personal identity fails", () => {
+    expect(run(["--tarball", tarOf("cs.tar.gz", {})], { SHYN_CODESIGN: join(base, "nope") }).code).toBe(1);
+    const d = mkdtempSync(join(base, "mcpb-"));
+    writeFileSync(join(d, "manifest.json"), "{}\n");
+    const clean = join(base, "clean.mcpb");
+    execFileSync("zip", ["-qr", clean, "."], { cwd: d });
+    const ok = run(["--mcpb", clean]);
+    expect(ok.code).toBe(0);
+    expect(ok.out).toMatch(/^signing: 0 code items checked \(0 allowed identity, 0 pinned third party, 0 ad-hoc file\)/m);
+    writeFileSync(join(d, "lib.dylib"), MACHO);
+    dvv("lib.dylib", DVV_PERSONAL);
+    const bad = join(base, "code.mcpb");
+    execFileSync("zip", ["-qr", bad, "."], { cwd: d });
+    const r = run(["--mcpb", bad]);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/mcpb:lib\.dylib {2}signing: authority not allowed \(<redacted>\)/);
+    expect(r.out).not.toContain("sam-zq7");
+  });
+
+  it("an email address anywhere in printed text is redacted", () => {
+    // a name hit (builder name inside a file name that also holds an email)
+    const r = run(["--tarball", tarOf("mail2.tar.gz", { [`${NAME}-sam@example.com`]: "x" })]);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/<email>/);
+    expect(r.out).not.toContain("example.com");
+    expect(r.out).not.toContain("sam@");
+    // a content hit whose printed context holds an email
+    const c = run(["--tarball", tarOf("mail3.tar.gz", { "a.txt": "mail sam-zq7@example.com about acme-secret now\n" })]);
+    expect(c.code).toBe(1);
+    expect(c.out).toContain("<denylist-term-0>");
+    expect(c.out).toMatch(/<email>/);
+    expect(c.out).not.toContain("example.com");
+  });
 
   it("--help documents the flags and exits 0", () => {
     const { code, out } = run(["--help"]);
@@ -320,7 +438,9 @@ describe("check-artifact-leaks", () => {
     const withEnv = src.match(/\bspawn(Sync)?\(\s*"node"[^;]*?env: baseEnv\(/g) ?? [];
     expect(spawns.length).toBeGreaterThan(0);
     expect(withEnv.length).toBe(spawns.length);
-    for (const k of ["SHYN_GATE_USERNAME", "SHYN_LEAK_DENYLIST", "SHYN_ARTIFACT_ALLOW"]) expect((baseEnv() as Record<string, string>)[k]).toBeTruthy();
+    for (const k of ["SHYN_GATE_USERNAME", "SHYN_LEAK_DENYLIST", "SHYN_ARTIFACT_ALLOW", "SHYN_CODESIGN"]) expect((baseEnv() as Record<string, string>)[k]).toBeTruthy();
+    expect((baseEnv() as Record<string, string>).SHYN_CODESIGN.startsWith(base + "/")).toBe(true);
+    expect((baseEnv({}) as Record<string, string | undefined>).SHYN_ALLOWED_AUTHORITIES).toBe(process.env.SHYN_ALLOWED_AUTHORITIES);
   });
 
   it("an owner name in a tar header is found by the raw-stream scan", () => {

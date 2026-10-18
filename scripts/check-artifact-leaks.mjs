@@ -17,6 +17,8 @@
 //      (builder values and denylist terms), reported as name: / link:
 //   4. the gzip header fields of the tarball (FNAME, FCOMMENT, FEXTRA):
 //      builder values and denylist terms, reported as tarball-gzip-header
+//   5. the code signature of every code item (bundle directories and Mach-O
+//      files, scripts/lib/signing.mjs): reported as signing: <reason>
 //
 // Archives are refused, never partially scanned, when the listing (read from
 // the tar headers / zip directory) has duplicate names, unsafe names, devices,
@@ -28,6 +30,9 @@
 // extraction size limits, UTF-16 and case-variant builder needles, denylist
 // terms in tar headers (only builder values are scanned there; the gzip
 // header gets the denylist too).
+//
+// Any email-shaped text is printed as <email>, and signing identities that are
+// not allowed are collected as secrets before anything is printed about them.
 //
 // Never prints a denylist term (matches show as <denylist-term-N>, N = the
 // entry's index in the file) and never prints the builder's username, home or
@@ -44,6 +49,7 @@ import {
 import {
   TAR, UNZIP, checkTarEntries, checkZipNames, compareTree, forceRm, gunzipToFile, gzipHeaderFields, killChildren, listTar, runChild,
 } from "./lib/archive.mjs";
+import { allowedAuthorities, checkSigning, codesignPath, discoverCode } from "./lib/signing.mjs";
 
 const HELP = `usage: node scripts/check-artifact-leaks.mjs [options]
 
@@ -94,7 +100,22 @@ rules:
                  <= 60 chars of context; at most 20 hits per file and 200 in
                  total are printed but ALL are counted
 
-exit codes: 0 clean, 1 hits / unreadable files / denylist problem, 2 usage error
+signing policy (every bundle directory and Mach-O file, checked with codesign):
+  1. codesign --verify --strict exits 0 (--deep added for bundle directories)
+  2. and it is one of:
+     - allowed identity: the only Authority= line is in SHYN_ALLOWED_AUTHORITIES
+       (default "Shyn Dev") and TeamIdentifier is "not set"
+     - pinned third party: an entry of THIRD_PARTY_SIGNERS in scripts/lib/signing.mjs
+       (today the vendored Node runtime) with only the Apple chain above it
+     - ad-hoc file: Signature=adhoc on a FILE (never on a bundle directory)
+  A --tarball must contain at least one .app directory. Identity values of
+  anything not allowed are never printed (<redacted>); email-shaped text is
+  always printed as <email>.
+  SHYN_ALLOWED_AUTHORITIES  comma separated, exact names; empty is a usage error;
+                            when set, a count-only NOTICE is printed
+  SHYN_CODESIGN             codesign binary (default /usr/bin/codesign; test hook)
+
+exit codes: 0 clean, 1 hits / unreadable files / denylist or signing problem, 2 usage error
 `;
 
 // Owner allowlist: `<glob relative to the extraction root>|<term>` per line.
@@ -125,7 +146,7 @@ class Exit extends Error {
 
 // Everything printed that is not an already-sanitized context goes through
 // san(): builder values (any case) and denylist substrings are replaced.
-const sanRules = { needles: builderNeedles({ env: process.env }), denylist: [] };
+const sanRules = { needles: builderNeedles({ env: process.env }), denylist: [], secrets: [] };
 const san = (t) => sanitizeText(t, sanRules);
 
 let workDir = null;
@@ -295,12 +316,19 @@ async function main() {
     }
     allow = parsed.entries;
   }
-  const rules = { needles, denylist, delayMs: Number(process.env.SHYN_GATE_TEST_DELAY_MS) || 0 };
+  let allowedAuth;
+  try { allowedAuth = allowedAuthorities(process.env); } catch (e) { throw new Exit(2, e.message); }
+  let codesign;
+  try { codesign = codesignPath(process.env); } catch (e) { throw new Exit(1, e.message); }
+  const rules = { needles, denylist, secrets: sanRules.secrets, delayMs: Number(process.env.SHYN_GATE_TEST_DELAY_MS) || 0 };
   sanRules.denylist = denylist;
   console.log(`builder needles used: ${needles.map((n) => n.label).join(", ") || "none"}`
     + (ciMode && !opts.ci ? " (GitHub runner home detected: home and username dropped)" : "")
     + (opts.ci ? " (--ci: home and username dropped)" : ""));
   console.log(denylistNote);
+  if (process.env.SHYN_ALLOWED_AUTHORITIES !== undefined) {
+    console.log(`NOTICE: signing authorities set by SHYN_ALLOWED_AUTHORITIES (${allowedAuth.length} entries)`);
+  } else console.log(`signing: allowed authorities: ${allowedAuth.join(", ")}`);
 
   // --- extract + scan --------------------------------------------------------
   workDir = mkdtempSync(join(tmpdir(), "shyn-artifact-gate-"));
@@ -344,6 +372,12 @@ async function main() {
     stats.unreadable += scratch.unreadable;
     currentLabel = prev;
   };
+  const kinds = { allowed: 0, "third-party": 0, adhoc: 0 };
+  let codeItems = 0;
+  const signingHit = (label, rel, reason) => {
+    hits++;
+    if (printed < 200) { printed++; console.log(`  ${label}:${san(rel)}  signing: ${reason}`); }
+  };
   for (const t of targets) {
     currentLabel = t.kind;
     let root = t.path;
@@ -378,6 +412,17 @@ async function main() {
     }
     await scanTreeRules(root, rules, stats);
     scanNames(root, rules, onNameHit);
+    // signing of every code item
+    const code = discoverCode(root);
+    if (t.kind === "tarball" && code.apps === 0) signingHit(t.kind, ".", "no .app in the tarball");
+    for (const p of code.problems) signingHit(t.kind, p.rel, p.reason);
+    for (const item of code.items) {
+      codeItems++;
+      const res = await checkSigning(codesign, item, allowedAuth);
+      sanRules.secrets.push(...res.secrets); // before anything about the item is printed
+      for (const reason of res.problems) signingHit(t.kind, item.rel, reason);
+      if (res.kind) kinds[res.kind]++;
+    }
   }
   if (stats.files === 0) throw new Exit(1, "scanned 0 files: nothing to check (empty or unreadable archive?)");
   for (const [k, n] of allowed) {
@@ -389,10 +434,11 @@ async function main() {
   if (opts.showNoise) {
     for (const f of [...stats.noiseFiles].sort()) console.log(`  ignored binary noise in: ${san(f)}`);
   }
+  console.log(`signing: ${codeItems} code items checked (${kinds.allowed} allowed identity, ${kinds["third-party"]} pinned third party, ${kinds.adhoc} ad-hoc file)`);
   console.log(`scanned ${stats.files} files, ${(stats.bytes / 1048576).toFixed(1)} MB, hits ${hits}, allowlisted ${allowlisted}, `
     + `ignored binary noise ${stats.noise}, unreadable ${stats.unreadable}`);
   if (hits === 0 && stats.unreadable === 0) {
-    console.log("OK: no builder identity or denylist term in the artifacts");
+    console.log("OK: no builder identity, denylist term or disallowed signature in the artifacts");
   } else {
     console.log("FAIL: the artifacts must not ship; fix the source of each hit and rebuild");
     process.exitCode = 1;

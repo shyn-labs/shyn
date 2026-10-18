@@ -59,6 +59,9 @@
 //       unreadableFiles:[] } (see newStats()).
 //   sanitizeText(text, rules) -> text with builder values and denylist matches
 //       replaced (use for any file name or message that may be printed).
+//       rules.secrets = [{ label, value }] (signing identities found at run
+//       time) are replaced by <label> (case-insensitive), and anything shaped
+//       like an email address is always replaced by <email>.
 
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
@@ -181,7 +184,8 @@ export function parseDenylist(text) {
 // Replace builder values and denylist matches in `w`; `own` ({start,end,label})
 // is the span of the hit itself. Returns the sanitized text and where `own`
 // starts in it.
-function sanitizeSpans(w, own, { needles = [], denylist = [] }) {
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+function sanitizeSpans(w, own, { needles = [], denylist = [], secrets = [] }) {
   const spans = own ? [{ ...own, first: true }] : [];
   const lw = w.toLowerCase();
   const ci = lw.length === w.length;
@@ -193,6 +197,17 @@ function sanitizeSpans(w, own, { needles = [], denylist = [] }) {
     for (let i = hay.indexOf(nd); i !== -1; i = hay.indexOf(nd, i + 1))
       spans.push({ start: i, end: i + v.length, label: `<${n.label}>` });
   }
+  // signing identities collected at run time (case-insensitive, <label>)
+  for (const n of normalize(secrets)) {
+    const v = Buffer.from(n.value, "utf8").toString("latin1");
+    const hay = ci ? lw : w;
+    const nd = ci ? v.toLowerCase() : v;
+    if (nd.length !== v.length) continue;
+    for (let i = hay.indexOf(nd); i !== -1; i = hay.indexOf(nd, i + 1))
+      spans.push({ start: i, end: i + v.length, label: `<${n.label}>` });
+  }
+  // any email address, always
+  for (const m of w.matchAll(EMAIL_RE)) spans.push({ start: m.index, end: m.index + m[0].length, label: "<email>" });
   for (const d of denylist) {
     d.reCtx.lastIndex = 0;
     let m;
@@ -206,7 +221,9 @@ function sanitizeSpans(w, own, { needles = [], denylist = [] }) {
   let cursor = 0;
   let q = 0;
   for (const s of spans) {
-    if (s.start < cursor) continue;
+    // an overlapping span that reaches past the previous one: its tail is
+    // covered by the previous label (never left in clear text)
+    if (s.start < cursor) { if (s.end > cursor) cursor = s.end; continue; }
     out += w.slice(cursor, s.start);
     if (own && s.first) q = out.length;
     out += s.label;
