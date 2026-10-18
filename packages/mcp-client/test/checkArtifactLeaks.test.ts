@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(fileURLToPath(import.meta.url), "../../../..");
@@ -43,14 +44,47 @@ const run = (args: string[], env: Record<string, string> = {}) => {
   const r = spawnSync("node", [SCRIPT, ...args], { cwd: ROOT, encoding: "utf8", timeout: 25_000, env: baseEnv(env) });
   return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? "") };
 };
-const tarOf = (name: string, files: Record<string, Buffer | string>) => {
+// bsdtar without AppleDouble (._x) members, which the gate would (rightly) refuse.
+const bsdtar = (args: string[]) =>
+  execFileSync("/usr/bin/tar", ["--no-mac-metadata", "--no-xattrs", ...args], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
+const tarOf = (name: string, files: Record<string, Buffer | string>, { app = true } = {}) => {
   const d = mkdtempSync(join(base, "src-"));
   for (const [f, c] of Object.entries(files)) {
     mkdirSync(join(d, f, ".."), { recursive: true });
     writeFileSync(join(d, f), c);
   }
+  if (app) mkdirSync(join(d, "Fake.app"), { recursive: true });
   const out = join(base, name);
-  execFileSync("tar", ["-czf", out, "-C", d, "."]);
+  bsdtar(["-czf", out, "-C", d, "."]);
+  return out;
+};
+// Sets the FNAME field of a gzip member (FLG bit 0x08) to `fname`.
+const withGzName = (gz: Buffer, fname: string) =>
+  Buffer.concat([gz.subarray(0, 3), Buffer.from([gz[3] | 0x08]), gz.subarray(4, 10), Buffer.from(fname + "\0", "latin1"), gz.subarray(10)]);
+// Builds a .tar.gz from explicit entries (type: "0" file, "2" symlink, "5" dir, "6" fifo, "3" chr),
+// so fifo/device/duplicate entries can be produced without mkfifo or root.
+const rawTarOf = (name: string, entries: { name: string; type?: string; body?: string; link?: string }[],
+  gzName?: string) => {
+  const blocks: Buffer[] = [];
+  for (const e of entries) {
+    const body = Buffer.from(e.body ?? "");
+    const h = Buffer.alloc(512);
+    h.write(e.name, 0, 100, "utf8");
+    h.write("0000644\0", 100); h.write("0000000\0", 108); h.write("0000000\0", 116);
+    h.write(body.length.toString(8).padStart(11, "0") + "\0", 124);
+    h.write("00000000000\0", 136);
+    h.write("        ", 148);
+    h.write(e.type ?? "0", 156);
+    if (e.link) h.write(e.link, 157, 100, "utf8");
+    h.write("ustar\0" + "00", 257);
+    let sum = 0; for (const b of h) sum += b;
+    h.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+    blocks.push(h, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  blocks.push(Buffer.alloc(1024));
+  const tar = Buffer.concat(blocks);
+  const out = join(base, name);
+  writeFileSync(out, gzName === undefined ? gzipSync(tar) : withGzName(gzipSync(tar), gzName));
   return out;
 };
 const gateDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith(PREFIX));
@@ -63,6 +97,85 @@ beforeAll(() => {
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 
 describe("check-artifact-leaks", () => {
+  it("refuses duplicates, devices, fifos and entries below a symlink", () => {
+    const cases = [
+      rawTarOf("dup.tar.gz", [{ name: "Fake.app/", type: "5" }, { name: "a.txt", body: "x" }, { name: "./a.txt", body: "y" }]),
+      rawTarOf("fifo.tar.gz", [{ name: "Fake.app/", type: "5" }, { name: "p", type: "6" }]),
+      rawTarOf("chr.tar.gz", [{ name: "Fake.app/", type: "5" }, { name: "d", type: "3" }]),
+      rawTarOf("below.tar.gz", [{ name: "Fake.app/", type: "5" }, { name: "l", type: "2", link: "/tmp" }, { name: "l/x.txt", body: "x" }]),
+    ];
+    for (const tb of cases) {
+      const before = gateDirs();
+      const { code, out } = run(["--tarball", tb]);
+      expect(code).toBe(1);
+      expect(out).toMatch(/refusing tarball/);
+      expect(out).not.toMatch(/^scanned /m);
+      expect(gateDirs()).toEqual(before);
+    }
+  });
+
+  it("a tree that differs from the listing is refused (AppleDouble member)", () => {
+    const tb = rawTarOf("ad.tar.gz", [{ name: "Fake.app/", type: "5" }, { name: "._a.txt", body: "\x00\x05\x16\x07" }, { name: "a.txt", body: "x" }]);
+    const { code, out } = run(["--tarball", tb]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/extracted tree differs from the listing: \d+ missing, \d+ extra/);
+  });
+
+  it("gzip header FNAME with the builder path is a hit, and a denylist term there too", () => {
+    const files = [{ name: "Fake.app/", type: "5" }, { name: "a.txt", body: "x\n" }];
+    let r = run(["--tarball", rawTarOf("fn1.tar.gz", files, `/Users/${NAME}/x.tar`)]);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/tarball-gzip-header/);
+    expect(r.out).not.toContain(NAME);
+    r = run(["--tarball", rawTarOf("fn2.tar.gz", files, "acme-secret.tar")]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("<denylist-term-0>");
+    r = run(["--tarball", rawTarOf("fn3.tar.gz", files, "plain.tar")]);
+    expect(r.code).toBe(0);
+  });
+
+  it("pax long names are listed and checked", () => {
+    const long = "d/".repeat(70) + "f.txt"; // > 100 bytes: bsdtar writes a pax header
+    const tb = tarOf("long.tar.gz", { [long]: "acme-secret\n" });
+    const { code, out } = run(["--tarball", tb]);
+    expect(code).toBe(1);
+    expect(out).toContain("<denylist-term-0>");
+  });
+
+  it("a zip with duplicate or ../ names is refused", () => {
+    // Built by hand: /usr/bin/zip -g replaces instead of adding a second entry.
+    const zipOf = (name: string, names: string[]) => {
+      const locals: Buffer[] = [], cds: Buffer[] = [];
+      let off = 0;
+      for (const n of names) {
+        const nb = Buffer.from(n), body = Buffer.from("x");
+        const crc = 0x8c736521; // crc32("x")
+        const l = Buffer.alloc(30);
+        l.writeUInt32LE(0x04034b50, 0); l.writeUInt16LE(10, 4); l.writeUInt32LE(crc, 14);
+        l.writeUInt32LE(1, 18); l.writeUInt32LE(1, 22); l.writeUInt16LE(nb.length, 26);
+        const c = Buffer.alloc(46);
+        c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(10, 4); c.writeUInt16LE(10, 6); c.writeUInt32LE(crc, 16);
+        c.writeUInt32LE(1, 20); c.writeUInt32LE(1, 24); c.writeUInt16LE(nb.length, 28); c.writeUInt32LE(off, 42);
+        locals.push(l, nb, body); cds.push(c, nb);
+        off += 30 + nb.length + 1;
+      }
+      const cd = Buffer.concat(cds);
+      const e = Buffer.alloc(22);
+      e.writeUInt32LE(0x06054b50, 0); e.writeUInt16LE(names.length, 8); e.writeUInt16LE(names.length, 10);
+      e.writeUInt32LE(cd.length, 12); e.writeUInt32LE(off, 16);
+      const out = join(base, name);
+      writeFileSync(out, Buffer.concat([...locals, cd, e]));
+      return out;
+    };
+    let r = run(["--mcpb", zipOf("dup.mcpb", ["a.txt", "a.txt"])]);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/refusing mcpb: .*duplicate/);
+    r = run(["--mcpb", zipOf("esc.mcpb", ["a.txt", "../evil.txt"])]);
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/refusing mcpb: .*escape/);
+  });
+
+
   it("--help documents the flags and exits 0", () => {
     const { code, out } = run(["--help"]);
     expect(code).toBe(0);
@@ -214,7 +327,7 @@ describe("check-artifact-leaks", () => {
     const d = mkdtempSync(join(base, "own-"));
     writeFileSync(join(d, "a.txt"), "nothing\n");
     const tb = join(base, "owner.tar.gz");
-    execFileSync("tar", ["--uname", NAME, "--gname", "staff", "-czf", tb, "-C", d, "."]);
+    bsdtar(["--uname", NAME, "--gname", "staff", "-czf", tb, "-C", d, "."]);
     const { code, out } = run(["--tarball", tb]);
     expect(code).toBe(1);
     expect(out).toMatch(/tarball-raw:raw stream {2}@\d+ {2}\[username\]/);
@@ -228,7 +341,7 @@ describe("check-artifact-leaks", () => {
     mkdirSync(join(d, "dir-acme-secret"));
     writeFileSync(join(d, "dir-acme-secret/b.txt"), "clean\n");
     const tb = join(base, "links.tar.gz");
-    execFileSync("tar", ["-czf", tb, "-C", d, "."]);
+    bsdtar(["-czf", tb, "-C", d, "."]);
     const { code, out } = run(["--tarball", tb]);
     expect(code).toBe(1);
     expect(out).toMatch(/tarball:dangling {2}link: {2}\[username\]/);
@@ -262,7 +375,7 @@ describe("check-artifact-leaks", () => {
   it("an archive with zero files fails, even with --ci", () => {
     const d = mkdtempSync(join(base, "emptyar-"));
     const tb = join(base, "empty.tar.gz");
-    execFileSync("tar", ["-czf", tb, "-C", d, "."]);
+    bsdtar(["-czf", tb, "-C", d, "."]);
     expect(run(["--tarball", tb]).code).toBe(1);
     const r = run(["--tarball", tb, "--ci"]);
     expect(r.code).toBe(1);
@@ -295,8 +408,8 @@ describe("check-artifact-leaks", () => {
     mkdirSync(join(work, "in/sub"), { recursive: true });
     writeFileSync(join(work, "in/sub/f"), "hi");
     writeFileSync(join(work, "payload"), "escaped");
-    execFileSync("tar", ["-czPf", join(work, "esc.tgz"), "-C", join(work, "in/sub"), "../../payload", "f"]);
-    execFileSync("tar", ["-czPf", join(work, "abs.tgz"), join(work, "payload")]);
+    bsdtar(["-czPf", join(work, "esc.tgz"), "-C", join(work, "in/sub"), "../../payload", "f"]);
+    bsdtar(["-czPf", join(work, "abs.tgz"), join(work, "payload")]);
     for (const f of ["esc.tgz", "abs.tgz"]) {
       const before = readdirSync(work).sort();
       const { code, out } = run(["--tarball", join(work, f)]);

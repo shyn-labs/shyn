@@ -15,25 +15,36 @@
 //      only): owner names, path names, link targets, extended headers
 //   3. every relative path and symlink target of the extracted trees
 //      (builder values and denylist terms), reported as name: / link:
+//   4. the gzip header fields of the tarball (FNAME, FCOMMENT, FEXTRA):
+//      builder values and denylist terms, reported as tarball-gzip-header
+//
+// Archives are refused, never partially scanned, when the listing (read from
+// the tar headers / zip directory) has duplicate names, unsafe names, devices,
+// fifos, entries below a symlink, or when the extracted tree differs from it
+// (scripts/lib/archive.mjs).
 //
 // Known limits (deliberately not handled): regex punctuation boundaries, the
 // <4-character rule counts characters not bytes, non-ASCII case folding,
 // extraction size limits, UTF-16 and case-variant builder needles, denylist
-// terms in archive headers (only builder values are scanned there).
+// terms in tar headers (only builder values are scanned there; the gzip
+// header gets the denylist too).
 //
 // Never prints a denylist term (matches show as <denylist-term-N>, N = the
 // entry's index in the file) and never prints the builder's username, home or
 // checkout path (shown as <username>, <home>, <checkout>).
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import {
-  closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync,
+  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   REPO_ROOT, builderNeedles, newStats, parseDenylist, sanitizeText, scanFileRules, scanNames, scanTreeRules,
 } from "./lib/artifact-scan.mjs";
+import {
+  TAR, UNZIP, checkTarEntries, checkZipNames, compareTree, gunzipToFile, gzipHeaderFields, listTar,
+} from "./lib/archive.mjs";
 
 const HELP = `usage: node scripts/check-artifact-leaks.mjs [options]
 
@@ -45,7 +56,7 @@ With no target flags it scans the newest dist/release/shyn-v*-darwin-arm64.tar.g
 and dist/shyn.mcpb (whichever exist; at least one must).
 
 options:
-  --tarball <path>  scan this .tar.gz (extracted with tar -xzf into a temp dir)
+  --tarball <path>  scan this .tar.gz (decompressed, listed from its headers, extracted with tar -xf)
   --mcpb <path>     scan this .mcpb (a zip, extracted with unzip -q)
   --dir <path>      scan this directory in place (no extraction)
                     (explicit targets replace the defaults; they can be combined)
@@ -159,32 +170,57 @@ function defaultTargets() {
   return out;
 }
 
-const unsafeEntry = (name) =>
-  name.startsWith("/") || /^[A-Za-z]:/.test(name) || name.split(/[\\/]/).includes("..");
+const plural = (n) => (n === 1 ? "y" : "ies");
+const firstLine = (e) => String(e.message).split("\n")[0];
 
-function extract(kind, file, dest, rules) {
-  const list = kind === "tarball"
-    ? ["tar", ["-tzf", file]]
-    : ["unzip", ["-Z1", file]];
-  let names;
-  try {
-    names = execFileSync(list[0], list[1], { encoding: "utf8", maxBuffer: 1 << 29, stdio: ["ignore", "pipe", "pipe"] })
-      .split("\n").filter(Boolean);
-  } catch (e) {
-    throw new Exit(1, `cannot list ${kind} entries: ${String(e.message).split("\n")[0]}`);
+// Refuses (never partially scans) an archive whose listing is ambiguous.
+function refuseListing(kind, { bad, dups }, rules) {
+  if (dups.length) {
+    throw new Exit(1, `refusing ${kind}: ${dups.length} duplicate entr${plural(dups.length)} (first: ${sanitizeText(dups[0], rules)})`);
   }
-  const bad = names.filter(unsafeEntry);
   if (bad.length) {
-    throw new Exit(1, `refusing ${kind}: ${bad.length} entr${bad.length === 1 ? "y" : "ies"} would escape the extraction dir `
+    throw new Exit(1, `refusing ${kind}: ${bad.length} entr${plural(bad.length)} would escape the extraction dir or are not files, dirs or links `
       + `(first: ${sanitizeText(bad[0], rules)})`);
   }
+}
+
+// Tarball steps: decompress, list from the headers, extract, compare the tree.
+async function gunzipTarball(file, raw) {
+  try { await gunzipToFile(file, raw); } catch (e) { throw new Exit(1, `cannot decompress the tarball stream: ${firstLine(e)}`); }
+}
+function listTarball(raw, rules) {
+  let entries;
+  try { entries = listTar(raw); } catch (e) { throw new Exit(1, `cannot list tarball entries: ${firstLine(e)}`); }
+  refuseListing("tarball", checkTarEntries(entries), rules);
+  return entries.map((e) => e.name);
+}
+function extractTarball(raw, dest) {
   mkdirSync(dest, { recursive: true });
   try {
-    if (kind === "tarball") execFileSync("tar", ["-xzf", file, "-C", dest], { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28 });
-    else execFileSync("unzip", ["-q", file, "-d", dest], { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28 });
-  } catch (e) {
-    throw new Exit(1, `extracting ${kind} failed: ${String(e.message).split("\n")[0]}`);
-  }
+    execFileSync(TAR, ["-xf", raw, "--no-mac-metadata", "--no-xattrs", "--no-acls", "--no-fflags", "-C", dest],
+      { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28 });
+  } catch (e) { throw new Exit(1, `extracting tarball failed: ${firstLine(e)}`); }
+}
+
+// mcpb (zip) steps: list names, extract.
+function listMcpb(file, rules) {
+  let names;
+  try {
+    names = execFileSync(UNZIP, ["-Z1", file], { encoding: "utf8", maxBuffer: 1 << 29, stdio: ["ignore", "pipe", "pipe"] })
+      .split("\n").filter(Boolean);
+  } catch (e) { throw new Exit(1, `cannot list mcpb entries: ${firstLine(e)}`); }
+  refuseListing("mcpb", checkZipNames(names), rules);
+  return names;
+}
+function extractMcpb(file, dest) {
+  mkdirSync(dest, { recursive: true });
+  try {
+    execFileSync(UNZIP, ["-q", file, "-d", dest], { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28 });
+  } catch (e) { throw new Exit(1, `extracting mcpb failed: ${firstLine(e)}`); }
+}
+function verifyTree(kind, root, names) {
+  const problems = compareTree(root, names);
+  if (problems.length) throw new Exit(1, `refusing ${kind}: ${problems.join("; ")}`);
 }
 
 async function main() {
@@ -300,19 +336,32 @@ async function main() {
     currentLabel = t.kind;
     let root = t.path;
     console.log(`scanning ${t.kind}: ${san(t.path)}`);
-    if (t.kind !== "dir") {
-      root = join(workDir, t.kind);
-      extract(t.kind, t.path, root, rules);
-    }
     if (t.kind === "tarball") {
+      root = join(workDir, t.kind);
       const raw = join(workDir, "tarball.raw.tar");
-      const fd = openSync(raw, "w");
-      const r = spawnSync("gzip", ["-dc", t.path], { stdio: ["ignore", fd, "pipe"] });
-      closeSync(fd);
-      if (r.status !== 0) throw new Exit(1, "cannot decompress the tarball stream");
+      await gunzipTarball(t.path, raw);
+      const names = listTarball(raw, rules);
+      extractTarball(raw, root);
+      verifyTree("tarball", root, names);
       await scanRaw(raw, "tarball-raw");
       rmSync(raw, { force: true });
+      // gzip header fields (FNAME / FCOMMENT / FEXTRA): builder values and denylist
+      let hdr;
+      try { hdr = gzipHeaderFields(t.path); } catch (e) { throw new Exit(1, `cannot read the gzip header: ${firstLine(e)}`); }
+      const hdrFile = join(workDir, "gzip-header.txt");
+      writeFileSync(hdrFile, [hdr.name ?? "", hdr.comment ?? "", hdr.extra ? hdr.extra.toString("latin1") : ""].join("\n"), "latin1");
+      const prev = currentLabel;
+      currentLabel = "tarball-gzip-header";
+      const scratch = newStats();
+      await scanFileRules(hdrFile, { needles, denylist, onHit: rules.onHit }, scratch, "gzip header");
+      stats.unreadable += scratch.unreadable;
+      currentLabel = prev;
+      rmSync(hdrFile, { force: true });
     } else if (t.kind === "mcpb") {
+      root = join(workDir, t.kind);
+      const names = listMcpb(t.path, rules);
+      extractMcpb(t.path, root);
+      verifyTree("mcpb", root, names);
       await scanRaw(t.path, "mcpb-raw");
     }
     await scanTreeRules(root, rules, stats);
