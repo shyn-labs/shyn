@@ -396,9 +396,10 @@ describe("search_files", () => {
     const t = (await c.listTools()).tools.find((x) => x.name === "search_files")!;
     expect(t.description).toBe(
       "Find files on the user's Mac by describing them: photos by what they show, PDFs and documents " +
-      "by their text, recordings and videos by what is said or shown. Returns paths, the kind, the time " +
-      "inside the file for recordings and videos, and a short snippet. Needs the thatone app (a separate " +
-      "local file-search app) to be running.");
+      "by their text, recordings and videos by what is said or shown, source code by what it does. Returns " +
+      "paths, the kind, the time inside the file for recordings and videos, the line range for code, and a " +
+      "short snippet. Code is left out unless asked for: pass kinds: [\"code\"] when looking for code. Needs " +
+      "the thatone app (a separate local file-search app) to be running.");
   });
 
   it("falls back to SHYN_FILE_SEARCH_SOCKET when no socket option is given", async () => {
@@ -660,6 +661,35 @@ describe("search_files", () => {
     const t = await oneShot([pageHit(0), pageHit(-1), pageHit(2.5), pageHit(3)]);
     expect(t.match(/page: /g)).toHaveLength(1);
     expect(t).toContain("  page: 3");
+  });
+
+  it("shows the line range of a code hit", async () => {
+    const t = await oneShot([h(["/Users/example/repo/src/retry.ts"],
+      [{ modality: "text", anchor: JSON.stringify({ line0: 12, line1: 48, symbol: "retryWithBackoff" }),
+         text: "src/retry.ts · retryWithBackoff · L12–48\nexport async function retryWithBackoff() {" }], "code")]);
+    expect(t.split("\n")).toEqual([
+      "- retry.ts (code) /Users/example/repo/src",
+      "  path: /Users/example/repo/src/retry.ts",
+      "  lines: 12-48",
+      "  src/retry.ts · retryWithBackoff · L12–48 export async function retryWithBackoff() {",
+    ]);
+  });
+
+  it("shows lines only for positive whole numbers in order", async () => {
+    const lineHit = (line0: number, line1: number) => h([`/Users/example/r/f${line0}-${line1}.ts`],
+      [{ modality: "text", anchor: JSON.stringify({ line0, line1 }), text: "" }], "code");
+    const t = await oneShot([lineHit(0, 3), lineHit(5, 4), lineHit(2.5, 9), lineHit(7, 7)]);
+    expect(t.match(/lines: /g)).toHaveLength(1);
+    expect(t).toContain("  lines: 7-7");
+  });
+
+  it("passes kinds code through to the service", async () => {
+    await startFake(() => ({ ok: true, search: { notice: null, hits: [] } }));
+    const { c } = await connect();
+    await until(() => listed(c));
+    await c.callTool({ name: "search_files", arguments: { query: "retry with backoff", kinds: ["code"] } });
+    const req = fsReceived.find((x) => x.op === "search");
+    expect(req.query.kinds).toEqual(["code"]);
   });
 
   it("a call that reaches the handler after the service stopped says it is not available", async () => {

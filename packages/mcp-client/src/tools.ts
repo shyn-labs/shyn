@@ -96,6 +96,9 @@ const fmtFileHit = (h: FileHit) => {
   }
   if (typeof v.t0 === "number" && Number.isFinite(v.t0)) lines.push(`  at: ${fmtChip(v.t0)}`);
   if (Number.isInteger(v.page) && v.page > 0) lines.push(`  page: ${v.page}`);
+  if (Number.isInteger(v.line0) && Number.isInteger(v.line1) && v.line0 > 0 && v.line1 >= v.line0) {
+    lines.push(`  lines: ${v.line0}-${v.line1}`);
+  }
   const snippet = chosen ? clean(chosen.text) : "";
   // Cut on code points so an emoji at the boundary is never split in half.
   if (snippet) lines.push(`  ${Array.from(snippet).slice(0, SNIPPET_CHARS).join("")}`);
@@ -376,9 +379,10 @@ export function buildMcpServer(
   const searchFiles = server.registerTool("search_files", {
     description:
       "Find files on the user's Mac by describing them: photos by what they show, PDFs and documents " +
-      "by their text, recordings and videos by what is said or shown. Returns paths, the kind, the time " +
-      "inside the file for recordings and videos, and a short snippet. Needs the thatone app (a separate " +
-      "local file-search app) to be running.",
+      "by their text, recordings and videos by what is said or shown, source code by what it does. Returns " +
+      "paths, the kind, the time inside the file for recordings and videos, the line range for code, and a " +
+      "short snippet. Code is left out unless asked for: pass kinds: [\"code\"] when looking for code. Needs " +
+      "the thatone app (a separate local file-search app) to be running.",
     inputSchema: {
       query: z.string(),
       kinds: z.array(z.enum(FILE_KINDS)).optional(),

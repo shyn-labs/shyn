@@ -5,7 +5,7 @@ import { statSync } from "node:fs";
 // (newline-delimited JSON, protocol v1). It only ever writes the `search` and
 // `ping` ops. Node built-ins only: this package is bundled to pure JS.
 
-export const FILE_KINDS = ["image", "pdf", "document", "audio", "video", "text"] as const;
+export const FILE_KINDS = ["image", "pdf", "document", "audio", "video", "text", "code"] as const;
 
 export type FileHit = {
   paths: string[];

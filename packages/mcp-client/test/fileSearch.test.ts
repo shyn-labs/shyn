@@ -70,7 +70,7 @@ afterEach(async () => {
 
 describe("createFileSearch", () => {
   it("exports the kinds tuple", () => {
-    expect(FILE_KINDS).toEqual(["image", "pdf", "document", "audio", "video", "text"]);
+    expect(FILE_KINDS).toEqual(["image", "pdf", "document", "audio", "video", "text", "code"]);
   });
 
   it("parses an ok reply and drops viaKeyword/viaVector", async () => {
@@ -253,10 +253,10 @@ describe("createFileSearch", () => {
     await listen((_l, c) => c.end(okReply([])));
     await createFileSearch(sock).search({
       query: "x",
-      kinds: ["pdf", "exe", "audio", "../x"],
+      kinds: ["pdf", "exe", "audio", "../x", "code"],
       folder: "/Users/example/docs",
     });
-    expect(received[0].query.kinds).toEqual(["pdf", "audio"]);
+    expect(received[0].query.kinds).toEqual(["pdf", "audio", "code"]);
     expect(received[0].query.folder).toBe("/Users/example/docs");
   });
 
