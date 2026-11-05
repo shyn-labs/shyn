@@ -543,13 +543,15 @@ actor MeetingAgent {
             // Infra failure (model missing, offline, unusable): the recording is
             // the only irreplaceable thing here, so keep it and retry once the
             // model is present. Bounded by maxPendingAttempts and the 24h sweep.
-            keepForRetry(dir: dir, start: start, end: end, bundleId: bundleId,
+            let kept = keepForRetry(dir: dir, start: start, end: end, bundleId: bundleId,
                          appName: appName, windowTitle: windowTitle, reason: reason,
                          manualTitle: manualTitle, manualAttendees: manualAttendees)
             // Only the failure CLASS, never the reason string: it can carry a
             // model path or a URL. The daemon would scrub it anyway; not
-            // sending it at all is the stronger guarantee.
-            await client.track("transcription_failed", ["outcome": "error"])
+            // sending it at all is the stronger guarantee. "purged" = the
+            // recording was given up on (retries exhausted or no sidecar), the
+            // one outcome where the user actually loses a meeting.
+            await client.track("transcription_failed", ["outcome": kept ? "error" : "purged"])
             return
         }
         // Stamp first: the far-side roster decides how speakers are labelled.
@@ -634,24 +636,27 @@ actor MeetingAgent {
     // Failure path for a transcription: audio stays on disk with a sidecar
     // holding what the retry needs (the agent can restart in between). Attempts
     // are counted so a present-but-unusable model cannot spin the ANE forever.
+    @discardableResult
     private func keepForRetry(dir: URL, start: Int, end: Int, bundleId: String?,
                               appName: String, windowTitle: String?, reason: String,
-                              manualTitle: String?, manualAttendees: [String] = []) {
+                              manualTitle: String?, manualAttendees: [String] = []) -> Bool {
         let attempts = (readPendingSession(in: dir)?.attempts ?? 0) + 1
         guard attempts <= maxPendingAttempts else {
             logErr("[meeting] transcription failed \(attempts)x — giving up, purging \(dir.lastPathComponent)")
             purgeAudio(sessionDir: dir)
-            return
+            return false
         }
         let pending = PendingSession(start: start, end: end, bundleId: bundleId, appName: appName,
                                      windowTitle: windowTitle, reason: reason, attempts: attempts,
                                      manualTitle: manualTitle, manualAttendees: manualAttendees)
         if writePendingSession(pending, in: dir) {
             logErr("[meeting] transcription failed (attempt \(attempts)): \(reason) — audio kept for retry")
+            return true
         } else {
             // Cannot record the retry intent, so the audio would linger unowned.
             logErr("[meeting] transcription failed and sidecar unwritable — purging \(dir.lastPathComponent)")
             purgeAudio(sessionDir: dir)
+            return false
         }
     }
 
@@ -836,6 +841,13 @@ actor MeetingAgent {
 @MainActor func runAgent() -> Never {
     // Orphaned audio from a crashed session: purge anything >24h old at startup.
     sweepOrphanAudio(root: meetingTmp)
+
+    // Process-scope "did the last run die?" (CaptureCore/RunBreadcrumb.swift).
+    // Clean stops (launchd SIGTERM for upgrades) clear it, so only a real
+    // crash, kill or power loss is reported, on the next start.
+    let lastRunDied = RunBreadcrumb.begin(home: home, agent: "meeting")
+    RunBreadcrumb.endOnTerminate(home: home, agent: "meeting")
+    if lastRunDied { Task.detached { await client.track("agent_crashed", ["agent": "meeting"]) } }
 
     let agent = MeetingAgent()
 

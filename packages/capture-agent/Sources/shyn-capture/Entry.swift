@@ -41,6 +41,10 @@ struct CaptureMain {
 
     @MainActor
     private static func runAgent() async -> Never {
+        // Process-scope "did the last run die?" (CaptureCore/RunBreadcrumb.swift).
+        let lastRunDied = RunBreadcrumb.begin(home: home, agent: "capture")
+        RunBreadcrumb.endOnTerminate(home: home, agent: "capture")
+        if lastRunDied { Task.detached { await client.track("agent_crashed", ["agent": "capture"]) } }
         let agent = Agent(sink: client, configPath: configPath)
         // Say "alive" before the first tick has any reason to ship.
         await agent.start()
