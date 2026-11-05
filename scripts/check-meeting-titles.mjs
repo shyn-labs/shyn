@@ -60,11 +60,13 @@ function rpc(method, params) {
   });
 }
 
-// The fallback shape, anchored: the first " · "-separated segment ends in
-// " meeting". A real title would have to be literally named "<something>
-// meeting" AND sit in first position to false-positive here, which is worth
-// the trade — a false alarm costs a glance, a miss costs a week.
-const isFallbackTitled = (title) => /^.+ meeting · /.test(title);
+// The fallback shape, anchored to its exact two parts: "<app> meeting · <date>"
+// (MeetingPayload.swift). A NAMED meeting is "<name> · <app> · <date>", three
+// parts, so a name the user typed that happens to end in " meeting" ("Carbon
+// check meeting") must not trip this. It did on 2026-11-05, when the looser
+// /^.+ meeting · / flagged two manually named recordings. Neither part of the
+// fallback can contain " · ": the app name and the formatted date do not.
+const isFallbackTitled = (title) => /^[^·]+ meeting · [^·]+$/.test(title);
 
 const timeFrom = Math.floor(Date.now() / 1000) - days * 86_400;
 
