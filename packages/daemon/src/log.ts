@@ -45,16 +45,22 @@ export function makeCrashHandler(
   log: (...args: unknown[]) => void =
     makeStampedWriter((s) => writeSync(2, s)),
   exit: (code: number) => void = (c) => process.exit(c),
+  onFatal?: (label: string, err: unknown) => void,
 ): (err: unknown) => void {
   return (err) => {
     try { log(`fatal: ${label}:`, err); } catch { /* exit anyway */ }
+    // After the log line, before the exit: the marker for next boot's report.
+    // Must never keep the process from exiting.
+    try { onFatal?.(label, err); } catch { /* exit anyway */ }
     exit(1);
   };
 }
 
-export function installCrashLogging(): void {
-  process.on("uncaughtException", makeCrashHandler("uncaught exception"));
-  process.on("unhandledRejection", makeCrashHandler("unhandled rejection"));
+export function installCrashLogging(onFatal?: (label: string, err: unknown) => void): void {
+  const log = makeStampedWriter((s) => writeSync(2, s));
+  const exit = (c: number) => process.exit(c);
+  process.on("uncaughtException", makeCrashHandler("uncaught exception", log, exit, onFatal));
+  process.on("unhandledRejection", makeCrashHandler("unhandled rejection", log, exit, onFatal));
 }
 
 // launchd never rotates StandardOutPath targets (1.1MB accumulated in 9 days
