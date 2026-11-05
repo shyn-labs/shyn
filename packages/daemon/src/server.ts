@@ -42,6 +42,8 @@ export async function startServer(opts: {
   // Analytics is absent unless the user consented. Every call site goes
   // through this so a missing queue, an unknown event, or a throwing tracker
   // can never fail the operation the user actually asked for.
+  const SEARCH_LATENCY_EVERY = 10;
+  let searchCount = 0;
   const track = (event: string, properties?: Record<string, unknown>) => {
     try { opts.analytics?.track(event, properties ?? {}); }
     catch { /* never propagates */ }
@@ -107,7 +109,19 @@ export async function startServer(opts: {
       try { engine.countSearch(); } catch { /* swallowed by design */ }
       // Shape only: THAT a search happened, never what was searched for.
       track("search_memory_called");
-      return engine.search(p);
+      // Latency, sampled 1 in SEARCH_LATENCY_EVERY: a duration is a number and
+      // cannot carry content, and sampling keeps the event volume (and what
+      // leaves the machine) small. A throwing search is timed by nothing and
+      // propagates exactly as before.
+      const sample = ++searchCount % SEARCH_LATENCY_EVERY === 0;
+      const t0 = sample ? performance.now() : 0;
+      const r = engine.search(p);
+      if (sample) {
+        void Promise.resolve(r).then(
+          () => track("search_latency_sampled", { ms: Math.round(performance.now() - t0) }),
+          () => { /* failures are not latency */ });
+      }
+      return r;
     },
     recent: (p) => { track("recent_activity_called"); return engine.recent(p); },
     // Browser rows in a time window, for the meeting agent's title lookup: the

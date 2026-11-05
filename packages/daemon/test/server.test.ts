@@ -462,6 +462,28 @@ describe("export/import rpc", () => {
   });
 });
 
+describe("search latency sampling", () => {
+  it("emits search_latency_sampled for 1 in 10 searches, as a bare number", async () => {
+    const events: { event: string; properties: Record<string, unknown> }[] = [];
+    const lsock = join(dir, "lat.sock");
+    const local = await startServer({
+      socketPath: lsock, engine, version: "0.1.0-test",
+      analytics: { track: (event, properties) => { events.push({ event, properties: properties ?? {} }); } },
+    });
+    try {
+      for (let i = 0; i < 20; i++) await rpcCall(lsock, "search", { query: "private query text " + i });
+      await new Promise((r) => setTimeout(r, 50));
+      const lat = events.filter((e) => e.event === "search_latency_sampled");
+      expect(lat).toHaveLength(2);
+      for (const e of lat) {
+        expect(Object.keys(e.properties)).toEqual(["ms"]);   // nothing but the duration
+        expect(typeof e.properties.ms).toBe("number");
+      }
+      expect(events.filter((e) => e.event === "search_memory_called")).toHaveLength(20);
+    } finally { await local.close(); }
+  });
+});
+
 describe("analytics.track RPC", () => {
   it("accepts a known event and reports it queued", async () => {
     const r = await rpcCall(sock, "analytics.track",

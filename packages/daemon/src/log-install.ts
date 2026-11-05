@@ -9,9 +9,17 @@
 import {
   installStampedConsole, installCrashLogging, rotateLogIfOversized, sweepLogDir,
 } from "./log.js";
+import { loadConsent } from "./analytics-consent.js";
+import { writeCrashMarker } from "./crash-marker.js";
+import { shynHome } from "@shyn/engine/paths";
 
 installStampedConsole();
-installCrashLogging();
+// Opted-in users only: the marker is how a crash becomes a `daemon_error`
+// event on the next boot. Nothing is written for anyone who has not agreed.
+installCrashLogging((label, err) => {
+  const home = shynHome();
+  if (loadConsent(home).enabled) writeCrashMarker(home, label, err);
+});
 
 // SHYN_LOG_PATH is only set under launchd (see cli launchd.ts); dev runs
 // skip rotation entirely. Boot-time rotation handles crash-loop growth; the
