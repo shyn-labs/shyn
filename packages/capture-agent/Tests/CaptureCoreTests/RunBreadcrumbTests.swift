@@ -45,3 +45,21 @@ private func tmpHome() -> String {
     try? "not a pid".write(toFile: RunBreadcrumb.path(home: h, agent: "meeting"), atomically: true, encoding: .utf8)
     #expect(RunBreadcrumb.begin(home: h, agent: "meeting") == true)
 }
+
+// The handler clears the breadcrumb and exits on SIGTERM while the caller's
+// thread is blocked. This does NOT prove the main-queue starvation fix: the
+// test thread is not the main thread, so a main-queue source could pass it too.
+// That failure mode is only visible with the real agent under NSApplication.run(),
+// i.e. the fake-daemon gate (scratchpad gate-agent-crashed.sh).
+@Test func sigtermRemovesTheBreadcrumbAndExitsEvenWhileTheCallerIsBlocked() {
+    let h = tmpHome()
+    RunBreadcrumb.begin(home: h, agent: "meeting")
+    final class Flag: @unchecked Sendable { var code: Int32? }
+    let flag = Flag()
+    RunBreadcrumb.endOnTerminate(home: h, agent: "meeting") { flag.code = $0 }
+    raise(SIGTERM)
+    let deadline = Date().addingTimeInterval(2)
+    while flag.code == nil && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }   // blocks this thread
+    #expect(flag.code == 0)
+    #expect(!FileManager.default.fileExists(atPath: RunBreadcrumb.path(home: h, agent: "meeting")))
+}

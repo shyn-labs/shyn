@@ -37,13 +37,21 @@ public enum RunBreadcrumb {
     // The signal sources must outlive this call or the handlers vanish.
     nonisolated(unsafe) private static var sources: [DispatchSourceSignal] = []
 
-    /// Removes the breadcrumb and exits 0 on SIGTERM / SIGINT. Handlers run on
-    /// the main queue, which the agents' NSApplication loop services.
-    public static func endOnTerminate(home: String, agent: String) {
+    /// Removes the breadcrumb and exits 0 on SIGTERM / SIGINT.
+    ///
+    /// NOT on the main queue. Both agents sit inside NSApplication.run(), which
+    /// is itself running as a main-queue job, and a serial queue runs nothing
+    /// else while a job is active: a main-queue source never fires. Found by
+    /// the fake-daemon gate on 2026-11-05 (the agent ignored SIGTERM and lived
+    /// on, because the signal was set to SIG_IGN for the source to own). Same
+    /// starvation as the heartbeat bug of 2026-09-21. The handler only unlinks a
+    /// file and exits, so a background queue is safe.
+    public static func endOnTerminate(home: String, agent: String,
+                                      exit terminate: @escaping @Sendable (Int32) -> Void = { Foundation.exit($0) }) {
         for sig in [SIGTERM, SIGINT] {
             signal(sig, SIG_IGN)   // let the dispatch source own it
-            let s = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-            s.setEventHandler { end(home: home, agent: agent); exit(0) }
+            let s = DispatchSource.makeSignalSource(signal: sig, queue: DispatchQueue.global(qos: .utility))
+            s.setEventHandler { end(home: home, agent: agent); terminate(0) }
             s.resume()
             sources.append(s)
         }
