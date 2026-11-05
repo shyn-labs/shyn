@@ -1,7 +1,13 @@
 import Foundation
 
-/// Upper bound on one session's diarization. Spike: 2 h of audio diarizes in
-/// ~16 s, so hitting this means something is wedged, and the transcript ships.
+/// Upper bound on one session's diarization, in AWAKE seconds. Spike: 2 h of
+/// audio diarizes in ~16 s, so hitting this means something is wedged, and the
+/// transcript ships.
+///
+/// Awake, not wall-clock: on 2026-11-05 a 1h06m meeting lost its speaker labels
+/// because the Mac was in maintenance sleep for 10 of the 11 minutes after the
+/// diarizer started, and a wall-clock timer counted the sleep (it fired at the
+/// exact moment of the dark wake). Nothing was wedged.
 public let diarizationTimeoutSeconds: Double = 600
 
 private final class RaceState: @unchecked Sendable {
@@ -42,7 +48,9 @@ public func withTimeout<T: Sendable>(seconds: Double,
             }
         }
         let timer = Task {
-            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+            // SuspendingClock stops while the machine sleeps; the default
+            // ContinuousClock does not, which is what burned the 2026-11-05 run.
+            do { try await Task.sleep(for: .seconds(seconds), clock: .suspending) } catch { return }
             if state.claim() { cont.resume(returning: nil); state.cancelBoth() }
         }
         state.set(work: work, timer: timer)
