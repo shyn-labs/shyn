@@ -177,5 +177,5 @@ export function render(vm: ViewModel, nowSec: number, ui: RenderUi = { recordFor
   ${modelSection}
   ${diarSection}
   ${analyticsRow ? `<section class="stats"><h2 class="section-lab">Privacy</h2>${analyticsRow}</section>` : ""}
-  <footer>${controls}${diagnostics}</footer>`;
+  <footer>${controls}<button data-action="open-settings-window" class="wide ghost">Settings…</button>${diagnostics}</footer>`;
 }

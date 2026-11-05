@@ -28,6 +28,7 @@ import {
 } from "./update.js";
 import { spawn } from "node:child_process";
 import type { SettingsPane } from "./derive.js";
+import { readSettings, saveSettings } from "./settings.js";
 
 const DIST = dirname(fileURLToPath(import.meta.url));   // dist/
 const home = shynHome();
@@ -141,6 +142,29 @@ if (!app.requestSingleInstanceLock()) {
     obWin.on("closed", () => { obWin = null; });
     obWin.once("ready-to-show", () => { obWin?.show(); if (lastVm) obWin?.webContents.send("view", lastVm); });
     void obWin.loadFile(join(DIST, "onboarding.html"));
+  }
+
+  // Settings window: a normal titled window (unlike the frosted popover and
+  // dialogs) because it is long-lived and holds forms. The app is an accessory
+  // (no Dock icon), so it must activate itself or the window opens behind
+  // whatever the user was in.
+  let stWin: BrowserWindow | null = null;
+  function showSettings() {
+    if (stWin) { stWin.show(); stWin.focus(); app.focus({ steal: true }); return; }
+    stWin = new BrowserWindow({
+      width: 560, height: 700, minWidth: 480, minHeight: 420, show: false,
+      title: "shyn Settings", fullscreenable: false, minimizable: false,
+      webPreferences: {
+        preload: join(DIST, "preload.cjs"),
+        contextIsolation: true, sandbox: true, nodeIntegration: false,
+      },
+    });
+    stWin.on("closed", () => { stWin = null; });
+    stWin.once("ready-to-show", () => { stWin?.show(); app.focus({ steal: true }); });
+    stWin.webContents.on("console-message", (_e, level, message) => {
+      if (level >= 2) console.error(`settings renderer [${level}]: ${message}`);
+    });
+    void stWin.loadFile(join(DIST, "settings.html"));
   }
 
   const ICONS: Record<TrayState, string> = {
@@ -341,6 +365,30 @@ if (!app.requestSingleInstanceLock()) {
       w.setBounds({ x: bounds.x, y: bounds.y, width: bounds.width, height: Math.round(clamped) });
     });
 
+    ipcMain.handle("settings:get", async () => {
+      let analytics: boolean | null = null;
+      try {
+        const r = await rpcCall(sock, "analytics.consentStatus", {});
+        analytics = r?.needsPrompt ? null : r?.enabled === true;
+      } catch { /* daemon down: the window shows the row as unavailable */ }
+      return { settings: readSettings(home), analytics };
+    });
+    ipcMain.handle("settings:save", async (_e, payload: { patch?: unknown; analytics?: unknown }) => {
+      const hasPatch = !!payload?.patch && Object.keys(payload.patch as object).length > 0;
+      const r = hasPatch ? saveSettings(home, payload.patch) : { ok: true as const };
+      if (!r.ok) return { ok: false, errors: r.errors, saved: false };
+      if (typeof payload?.analytics === "boolean") {
+        try {
+          await rpcCall(sock, "analytics.setConsent", { enabled: payload.analytics });
+          analyticsEnabled = payload.analytics;
+        } catch {
+          return { ok: false, saved: hasPatch,
+                   errors: { analytics: "Could not reach the shyn service, so this was not changed" } };
+        }
+      }
+      return { ok: true };
+    });
+
     ipcMain.on("action", (_e, name: string, arg?: string) => {
       try {
         if (name === "pause") pauseCapture(home, (arg ?? "30m") as PauseSpec, Math.floor(Date.now() / 1000));
@@ -362,6 +410,7 @@ if (!app.requestSingleInstanceLock()) {
         else if (name === "run-update") startUpgrade(updLatest, false);
         else if (name === "dismiss-notice") { if (typeof arg === "string") dismissNotice(home, arg); }
         else if (name === "open-onboarding") showOnboarding();
+        else if (name === "open-settings-window") showSettings();
         else if (name === "analytics-toggle") {
           // Optimistic so the row flips at once; the next tick reconciles it
           // against the daemon, which is the authority.
