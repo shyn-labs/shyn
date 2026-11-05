@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeCrashMarker, consumeCrashMarker } from "../src/crash-marker.js";
+import { writeCrashMarker, consumeCrashMarker, crashFingerprint } from "../src/crash-marker.js";
 import { makeCrashHandler } from "../src/log.js";
 import { AnalyticsQueue, type AnalyticsRecord } from "../src/analytics.js";
 
@@ -50,20 +50,32 @@ describe("crash handler onFatal", () => {
   });
 });
 
-describe("daemon_error end to end through the scrubber", () => {
-  it("a marker with a path and a quoted document title leaves scrubbed", async () => {
+describe("daemon_error fingerprint", () => {
+  it("carries class, symbolic code and reduced frames, and none of the message", async () => {
     const h = home();
-    writeCrashMarker(h, "uncaught exception",
-      new Error('Unexpected token in "Quarterly salary review" at /Users/sam/clients/globex/notes.md'));
-    const crash = consumeCrashMarker(h)!;
+    const err = Object.assign(
+      new Error('Unexpected token in "Quarterly salary review" at /Users/sam/clients/globex/notes.md, call Priya'),
+      { code: "ERR_PARSE" });
+    writeCrashMarker(h, "uncaught exception", err);
+    const fp = crashFingerprint(consumeCrashMarker(h)!);
     const sent: AnalyticsRecord[] = [];
     const q = new AnalyticsQueue({ enabled: true, installId: "i", send: async (b) => { sent.push(...b); } });
-    q.track("daemon_error", { agent: "daemon", outcome: "error", error: crash.label, message: crash.message, stack: crash.stack });
+    q.track("daemon_error", { agent: "daemon", outcome: "error", ...fp });
     await q.flush();
-    const msg = String(sent[0].properties.message);
-    expect(msg).not.toContain("Quarterly salary review");
-    expect(msg).not.toContain("globex");
-    expect(msg).not.toContain("/Users/sam");
-    expect(sent[0].properties.agent).toBe("daemon");
+    const all = JSON.stringify(sent[0].properties);
+    for (const leak of ["Quarterly", "salary", "globex", "/Users/sam", "Priya", "notes.md"])
+      expect(all).not.toContain(leak);
+    expect(sent[0].properties.error).toBe("uncaught exception: Error");
+    expect(sent[0].properties.code).toBe("ERR_PARSE");
+    expect(sent[0].properties).not.toHaveProperty("message");
+  });
+
+  it("reduces frames to function + basename:line and drops non-symbolic codes", () => {
+    const fp = crashFingerprint({ label: "unhandled rejection", name: "TypeError", code: "", message: "m", ts: 1,
+      stack: "TypeError: m\n    at run (/Users/sam/app/dist/main.mjs:10:5)\n    at node:internal/timers:5:1\n    at /x/y/z.js:3:4" });
+    expect(fp.stack.split("\n")).toEqual(["run main.mjs:10", "<anon> node:internal/timers:5"].concat(["<anon> z.js:3"]).slice(0, 3));
+    const w = home();
+    writeCrashMarker(w, "x", Object.assign(new Error("e"), { code: "has spaces and /paths" }));
+    expect(consumeCrashMarker(w)!.code).toBe("");
   });
 });

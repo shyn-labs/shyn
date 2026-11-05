@@ -14,7 +14,7 @@ import { startServer } from "./server.js";
 import { shouldRestartForEmbedFailure } from "./embed-restart.js";
 import { AnalyticsQueue } from "./analytics.js";
 import { loadConsent } from "./analytics-consent.js";
-import { consumeCrashMarker } from "./crash-marker.js";
+import { consumeCrashMarker, crashFingerprint } from "./crash-marker.js";
 import {
   makeAnalyticsSender, detectInstallMethod, ANALYTICS_FLUSH_MS,
 } from "./analytics-transport.js";
@@ -123,9 +123,8 @@ analytics.setEnabled(loadConsent(home).enabled);
 // user who opted out never has it sent later).
 {
   const crash = consumeCrashMarker(home);
-  if (crash) analytics.track("daemon_error", {
-    agent: "daemon", outcome: "error", error: crash.label, message: crash.message, stack: crash.stack,
-  });
+  // Fingerprint only, never the free-text message (see crashFingerprint).
+  if (crash) analytics.track("daemon_error", { agent: "daemon", outcome: "error", ...crashFingerprint(crash) });
 }
 // unref: a telemetry flush must never be the reason the process stays alive.
 setInterval(() => { void queue?.flush(); }, ANALYTICS_FLUSH_MS).unref();
